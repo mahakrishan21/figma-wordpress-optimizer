@@ -7,10 +7,10 @@ Thanks for your interest in improving Figma WordPress Optimizer.
 When filing a bug report, please include:
 
 - Figma platform (Desktop app — required for local/dev plugins) and OS
-- Steps to reproduce, including whether the audit ran on the whole page or a selection
+- Steps to reproduce, including which tab you were on and what you had selected (every tab is selection-only)
 - The issue type(s) involved (e.g. `text-overflow`, `missing-color-style`) if applicable
 - Screenshots of the plugin panel and/or the affected layers, if possible
-- Any messages shown in the plugin's message bar or Figma's developer console
+- The text of any toast the plugin showed, and anything logged to Figma's developer console
 
 ## Suggesting features
 
@@ -35,10 +35,12 @@ Open an issue describing:
 - When adding a new audit check:
   1. Add the detection logic in `code.js` and push an issue with a unique `type` key.
   2. Add a `type → category` mapping in `CAT_MAP` in `ui.html`.
-  3. Add a label/description and "Why & how to fix" entry in `ISSUE_DETAILS`.
-  4. If it should appear in the stats grid, add an entry to `statDefs` and an `ISSUE_TO_STAT` mapping.
-  5. Update the audit checks table in `README.md`.
-- New CSS should use the existing custom-property theme (`--cat-*`, `--surface`, `--border`, etc.) rather than hardcoded colors, so light/dark mode and category color-coding stay consistent.
+  3. Add a label/description and "Why & how to fix" entry in `ISSUE_DETAILS` in `code.js`.
+  4. If it should appear in the stats grid, add an entry to `statDefs` in `ui.html` and an `ISSUE_TO_STAT` mapping in `code.js`.
+  5. Add the rule to `RULE_CATALOG` in `ui.html` so it shows in the rules reference popup (the **i** button).
+  6. Update the audit checks table in `README.md` and the rule count stated above it.
+- New CSS should use the existing custom-property theme (`--cat-*`, `--surface`, `--border`, etc.) rather than hardcoded colors, so category color-coding stays consistent. The plugin is **light-theme only** — the `prefers-color-scheme: dark` block was removed in V18, so don't reintroduce dark-mode variants.
+- Style actions must go through the async style setters (`setFillStyleIdAsync`, `setTextStyleIdAsync`, …) and end with a single `figma.commitUndo()`, so each action is one undo step.
 
 ## Pull requests
 

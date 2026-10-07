@@ -4,7 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
-- Nothing yet.
+### Documentation
+- README **Plugin Window** rewritten for the current UI: the header's rules-reference **i** button, the toast system, the Audit tab's three-panel flow (empty / ready / results), the 10-button toolbar, the collapsible stats grid, Developer Handoff Notes, and the resize handles
+- README **Automated Actions**: documented **Duplicate & Run Audit** (clone placement and `v1`/`v2`/`v3` naming), corrected "Run audit" which still claimed a whole-page fallback that V18 removed, and corrected the button count from 8 to 10
+- README **Architecture**: added the four undocumented sandbox → UI messages (`selection-changed`, `revision-created`, `no-selection`, `texts-collected`) and the two undocumented UI → sandbox messages (`collect-texts`, `resize`); recorded the three retained-on-purpose bits of scaffolding (`prompt-select-frame`, `#msgBar`, the scope badge's "Full page" branch) so they don't get pruned
+- README **Client-side state**: expanded from 2 entries to the 11 the UI actually keeps, including the `CS` / `TS` scope objects, `pendingStyleReq` and the `PG` progress registry
+- README: `Screenshot/` added to the file structure, UI size noted as resizable (400–1200 × 400–960), and the remaining "message bar" references updated to toasts
+- CONTRIBUTING: bug-report checklist now asks for the tab and selection instead of page-vs-selection scope, the new-check procedure includes `RULE_CATALOG`, and the CSS guideline records that the plugin is light-theme only and that style actions use the async setters plus a single `commitUndo()`
 
 ## [1.2.0] — 2026-10-01 (V19)
 

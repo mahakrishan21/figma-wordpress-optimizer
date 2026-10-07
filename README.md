@@ -63,7 +63,7 @@ The **Colors** and **Typography** tabs cover style management for both kinds of 
 | Editor type | Figma (design files only) |
 | Document access | dynamic-page |
 | Network access | none (fully offline) |
-| UI size | 760 × 860 px |
+| UI size | 760 × 860 px (resizable: drag the right edge, bottom edge, or corner — 400–1200 × 400–960) |
 | Tabs | Audit · Spelling & Grammar · Colors · Typography |
 
 ---
@@ -81,20 +81,40 @@ This is a private/local plugin. It is not published to the Figma Community.
 
 ## Plugin Window
 
-The plugin panel is divided into these sections, top to bottom:
+Chrome that is always present, whichever tab you are on:
+
+| Element | Description |
+|---|---|
+| Header | Plugin icon, name, one-line description, and an **i** button that opens the [rules reference popup](#rules-reference-popup) — all 24 audit rules grouped by category |
+| Tab bar | **Audit** · **Spelling & Grammar** · **Colors** · **Typography** |
+| Toasts | Every status message, action result, warning and error slides in at the top of the panel and auto-dismisses; hovering pauses the timer |
+| Footer | Help text that follows the active tab, the selection and the scan results, plus the **Close** button |
+| Resize handles | Right edge, bottom edge, and bottom-right corner. The size is clamped to 400–1200 × 400–960 px |
+
+The **Audit** tab moves through three panels:
+
+| Panel | When it shows | Contents |
+|---|---|---|
+| **Empty** | Nothing selected | "Ready to audit your design" illustration and a disabled **Run Audit** button |
+| **Ready** | A frame is selected, audit not yet run | "Frame ready to audit", the frame's name, **Run Audit**, and the **Create Duplicate Before Changes** checkbox |
+| **Results** | After the first audit | Everything in the table below |
+
+The results panel, top to bottom:
 
 | Section | Description |
 |---|---|
-| Header | Plugin name, one-line description, and tab bar |
-| Tab bar | Switch between **Audit**, **Spelling & Grammar**, **Colors**, and **Typography**. Colors and Typography scan results start with a toolbar: **Generate … Styles** then **Re-Scan**. |
-| Toolbar | 8 audit action buttons (Audit tab) |
-| Scope indicator | Shows whether the audit ran on the page or a selection |
-| Progress bar | Live progress during audit (hidden when idle) |
-| Message bar | Feedback after each action (e.g. "Renamed 12, skipped 3") |
-| Stats grid | Stat cards, 6 columns, color-coded by category |
-| Pill bar | Info pills, badges (total / actionable / shown / ignored), and the Reset Ignore list button |
-| Issues list | Issues grouped into expandable, color-coded category sections with per-category "Ignore all" |
-| Footer | Help text explaining shown/hidden counts + Close button |
+| Toolbar | **Run Audit** and **Duplicate & Run Audit**, then an *Automated Fixes* label and 7 fix buttons (Rename generic, Remove hidden, Mark exports, Auto Layout, Flatten vectors, Outline strokes, Make Auto Layout), then **Re-scan**. All of them disable together while any action runs. |
+| Progress bar | Live progress during the audit, with a percentage (hidden when idle) |
+| Stats grid | Stat cards, 6 columns, color-coded by category, collapsible. Clicking a card jumps to that category's accordion group. A scope badge sits in its header. |
+| Pill bar | Info pills, badges (total / actionable / shown / ignored), and the **Reset Ignore list** button |
+| Issues list | Issues grouped into expandable, color-coded category sections, each with **Ignore all** and a **Why & how to fix** panel per issue |
+| Developer Handoff Notes | Plain-language notes for the issue types a developer needs told about rather than fixed in Figma (`auto-line-height`, `section-overlap`, `no-mobile-frame`) |
+
+The **Colors** and **Typography** tabs each open on an entry screen (**Scan** / **Generate …**), and their scan results start with their own toolbar: **Generate … Styles** then **Re-Scan**.
+
+### Rules reference popup
+
+The **i** button in the header lists all 24 audit rules grouped by the 6 issue categories, so you can see what the audit looks for without running it. Click the backdrop or press Escape to close.
 
 ---
 
@@ -282,11 +302,17 @@ A fully offline text-quality engine accessible via the **Spelling & Grammar** ta
 
 ## Automated Actions
 
-The toolbar exposes 8 actions on the Audit tab. All actions re-run the audit after completing so the stats and issue list stay current.
+The Audit toolbar exposes 10 buttons: **Run Audit**, **Duplicate & Run Audit**, seven automated fixes, and **Re-scan**. Every fix re-runs the audit after completing, so the stats and issue list stay current, and reports its result in a toast (e.g. "Renamed 12, skipped 3").
 
 ### Run audit
 
-Scans all nodes in scope and builds the issue report. Respects current selection as scope if anything is selected; otherwise scans the entire page. Emits live progress updates every 120 nodes.
+Scans every node in the **selection** and builds the issue report — there is no page fallback, and the button stays disabled until a frame is selected. Emits live progress updates every 120 nodes.
+
+### Duplicate & Run Audit
+
+Clones each selected frame before anything is changed, so the original stays untouched as a before/after reference. Each clone is placed 80 px to the right of its source and named `<frame> v1`, `v2`, `v3`… — the first version number not already taken on the page (a trailing `v<n>` on the source name is stripped first, so duplicating "Home v2" gives "Home v3", not "Home v2 v1"). The clones become the selection, and the audit then runs on them.
+
+The same thing is available up front as the **Create Duplicate Before Changes** checkbox on the ready panel.
 
 ### Rename generic layers
 
@@ -342,7 +368,7 @@ Targets nodes flagged as `section-no-auto-layout`, or the current selection if a
 - **FRAME or COMPONENT** — applies smart Auto Layout (see [Smart Detection Logic](#smart-detection-logic)) in-place.
 - **GROUP** — creates a new FRAME at the same position and size, moves all children into it, applies smart Auto Layout, then removes the original group.
 
-Reports how many sections received vertical vs horizontal layout in the message bar.
+Reports how many sections received vertical vs horizontal layout in a toast.
 
 ---
 
@@ -501,6 +527,10 @@ The plugin follows the standard Figma plugin two-process model:
 | `style-conflict` | `{ scope, requestId, names }` | Style names already exist — UI asks Update existing / Keep both and resends |
 | `style-error` | `{ scope, requestId, message }` | A style scan or action failed |
 | `fonts-list` | `{ fonts: [{ family, styles }] }` | Fonts available in Figma, for the type-scale generator |
+| `selection-changed` | `{ count, names }` | Fired on every Figma `selectionchange` (and once at startup); drives the empty/ready panels and the disabled state of every Scan button |
+| `revision-created` | `{ names }` | Names of the duplicate frames made by **Duplicate & Run Audit** |
+| `no-selection` | — | The Spelling & Grammar scan was asked to run with nothing selected |
+| `texts-collected` | `{ texts: [{ id, text, path }] }` | Every text layer in the selection, for the Spelling & Grammar engine to analyze in the iframe |
 
 ### Message types (UI → sandbox)
 
@@ -525,7 +555,11 @@ The plugin follows the standard Figma plugin two-process model:
 | `style-delete` | `{ kind, styleId }` | Deletes a local style |
 | `list-fonts` | — | Requests the font list |
 | `focus-nodes` | `{ nodeIds }` | Selects and zooms to several layers (Focus All) |
+| `collect-texts` | — | Returns every text layer in the selection as `texts-collected` (Spelling & Grammar) |
+| `resize` | `{ width, height }` | Resizes the plugin window; clamped to 400–1200 × 400–960 |
 | `close` | — | Calls `figma.closePlugin()` |
+
+`code.js` also handles a `prompt-select-frame` message that nothing in `ui.html` currently sends — a leftover from the pre-V19 entry screens, kept deliberately. Two other bits of UI scaffolding are kept the same way: the `#msgBar` element (`showMsg` now forwards everything to `showToast`) and the scope badge's "Full page" branch (`markReportData` always reports `selection`). Leave them in place.
 
 ### Session state (sandbox globals)
 
@@ -543,7 +577,15 @@ The plugin follows the standard Figma plugin two-process model:
 | Variable | Type | Purpose |
 |---|---|---|
 | `ignoredAuditKeys` | `Set<string>` | Mirrors `ignoredIssueKeys` for instant UI filtering without a re-audit |
+| `ignoredSpellKeys` | `Set<string>` | Same idea for Spelling & Grammar results, which are filtered entirely in the iframe |
 | `lastIssues` | `Array` | Most recent full issue list, used to recompute summary badges as issues are ignored |
+| `auditHasRun` / `spellHasRun` | `boolean` | Whether each tab should show its results panel or its entry panel |
+| `spellTotalIssues` | `number` | Spelling issue count, for the summary badges |
+| `hasSelection` / `selectionLabel` | `boolean` / `string` | Latest `selection-changed` payload; gates every Scan button and fills the "ready" panels |
+| `revisionCopyNames` | `string[]` | Names reported by `revision-created`, shown in the toast |
+| `CS` / `TS` | `object` | One scope object per style tab (`makeScope`), holding `screen`, `data`, `rows`, `expanded`, `pages`, `collapsed`, `names`, `editing`, `busy`, plus `palette` / `extract` on Colors and `fonts` / `fontMap` on Typography |
+| `pendingStyleReq` | `object` | In-flight style requests by `requestId`, so a `style-conflict` reply can be resent with the user's choice |
+| `PG` | `object` | Progress-bar registry — one entry per tab, keyed `audit` / `spelling` / `colors` / `text` |
 
 ---
 
@@ -555,6 +597,7 @@ figma-wordpress-optimizer/
 ├── code.js           — Plugin sandbox: audit engine, color/text style scans and actions, fix actions, message handler
 ├── ui.html           — Plugin UI: HTML + CSS + inline JS (Audit, Spelling & Grammar, Colors, Typography tabs)
 ├── assets/           — Icon and branding assets (icon-512.png, icon-256.png, icon-128.png)
+├── Screenshot/       — UI reference images for the Colors and Typography tabs (design spec, not shipped code)
 ├── README.md         — This file
 ├── CHANGELOG.md      — Version history
 ├── CONTRIBUTING.md   — Contribution guidelines
@@ -592,7 +635,7 @@ Only for the current plugin session. Ignored issues reset when you close the plu
 The node is either locked, inside a component instance, or no longer exists. See [Blocked vs Actionable Issues](#blocked-vs-actionable-issues).
 
 **Can I run this on just part of my page?**
-Yes — select one or more frames/layers before running the audit, and the scope automatically narrows to the selection and its descendants.
+That is the only way it runs. Every tab works on the selection and its descendants — select one or more frames/layers first. There is no whole-page mode, and the Run Audit / Scan buttons stay disabled until something is selected.
 
 **Does merging styles affect components and instances?**
 Merging re-links every layer in the file that uses the removed style, then deletes it. Layers inside instances can't be edited directly; they follow their main component, which is re-linked like any other layer.
@@ -610,9 +653,9 @@ Figma loads fonts asynchronously per-document; if the font failed to load at sca
 | Symptom | Likely cause / fix |
 |---|---|
 | Plugin doesn't appear under **Plugins → Development** | Make sure you imported `manifest.json` (not `code.js` or `ui.html`) via **Import plugin from manifest…**, and that you're using Figma Desktop. |
-| "Run audit" button stays disabled | Wait for any in-progress action to finish — all toolbar buttons are disabled together while a scan or fix is running (`busy` state). |
-| Audit seems to hang on large files | Very large pages can take longer; progress updates fire every 120 nodes. If it truly stalls, close and reopen the plugin and try auditing a selection instead of the whole page. |
-| An automated fix skipped some nodes | Check the message bar — it reports skipped counts. Common reasons: node is locked or inside an instance (see [Known Limitations](#known-limitations)). |
+| "Run audit" button stays disabled | Either nothing is selected (select a frame first — every tab is selection-only), or an action is still running, which disables all toolbar buttons together (`busy` state). |
+| Audit seems to hang on large files | Very large frames can take longer; progress updates fire every 120 nodes. If it truly stalls, close and reopen the plugin and audit a smaller frame. |
+| An automated fix skipped some nodes | Check the toast — it reports skipped counts. Common reasons: node is locked or inside an instance (see [Known Limitations](#known-limitations)). |
 | Ignored issues reappear after reopening the plugin | Expected — the ignore list is session-only by design (see [Known Limitations](#known-limitations)). |
 | Colors / Typography tab shows no results | Select a frame and click **Scan** — these tabs don't run with the main audit. |
 | "Create & Apply" skipped some layers | Check the toast — locked layers, layers inside instances, and layers with more than one fill/stroke are skipped. |
