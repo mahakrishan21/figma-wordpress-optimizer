@@ -6,6 +6,48 @@ All notable changes to this project are documented in this file.
 
 - Nothing yet.
 
+## [1.2.0] — 2026-10-01 (V19)
+
+### Added
+- **Colors tab** (replaces the color half of Typography & Colors)
+  - Entry screen: **Scan** the selected frame, or **Generate Color Styles** without a selection
+  - Scan covers fills **and strokes**: Color Styles (expand to see layers, Focus All, Delete), Unlinked Colors split into **New Color** (editable suggested names, Create & Apply / All), **Styles from this file** (Apply Style / All) and **Style from other file** (Create & Apply / All), plus Near-Duplicate Colors with **Merge**
+  - Generate: **Extract from image** (JPG/PNG/WebP, offline k-means color extraction with role-based names) and **Create Color Palette** with a custom color picker (saturation/brightness, hue, opacity, hex, eyedropper)
+  - Editable palette list: rename, edit hex/opacity, drag to reorder, delete, add colors, **Create Color Styles**
+- **Typography tab** (replaces the type half of Typography & Colors)
+  - Scan: Text Styles, Unlinked text (New Text / Styles from this file / Styles from other file), Duplicate Text Styles with **Merge / Merge All**, Fonts and size usage
+  - Generate Text Styles: modular scale (1.125–1.618 or custom), base size, separate Heading and Body font/weight/line height/letter spacing, searchable font list filtered by All / Google Fonts / Installed by You, and a per-style editor for H1–H6, Para, Body, Label
+- "Style from other file" detection: layers pasted from another file that still link to that file's **color styles, color variables, or text styles**; Create & Apply makes a local style and re-links them
+- Generate Text Styles: **+ Add Text Style** with web-standard presets (Display, Subtitle, Quote, Body Large/Medium/Bold/Small, Eyebrow, Overline, Caption, Button, Link, Nav, Small) and custom rows; rows can be removed; text case per style
+- Text scan suggests web-standard names (Eyebrow, Body Bold, Body Large, Body Small, Caption)
+- Footer text follows the active tab, the selection, and scan results
+- Colors and Typography scans include layers inside component instances; styles are applied to the main component when it's in this file, otherwise as instance overrides (verified in Figma: 39 color and 13 text layers inside components from another file)
+- "Needs manual fix" list for layers with several fills/strokes, with a description of their paints; these no longer appear as rows whose Apply does nothing
+- Near-duplicate colors use CIE Lab ΔE < 3 at equal opacity; same-color/different-opacity styles are flagged as opacity variants instead of merge candidates
+- Colors/text from another file reuse an existing local style with the same value instead of creating a duplicate
+- **Style guide on canvas** — after Generate, a "Style Guide / Colors" or "Style Guide / Typography" frame is placed beside your content with every new style applied (toggle: *Add style guide to canvas*)
+- Colors and Typography entry screens show a "Frame ready to scan" state with the selected frame's name, like Audit and Spelling
+- Name-conflict prompt (**Update existing / Keep both**) when a new style name already exists
+- Scan results toolbar with **Generate Color/Text Styles** and **Re-Scan**; re-scans keep the scanned frame after Focus changes the selection
+- Colors and Typography screens use the same components as the Audit tab (buttons, toolbar card, stats grid, collapsible sections)
+- Colors and Typography actions are committed as a single undo step and refresh the scan automatically
+
+### Changed
+- Tabs are now Audit · Spelling & Grammar · Colors · Typography
+- Styles are applied with Figma's async style setters (`setFillStyleIdAsync`, `setTextStyleIdAsync`, …), required under `documentAccess: "dynamic-page"`
+- **Outline strokes** only outlines the thin strokes the audit flags as `strokes-found`; card/input borders on frames, components and sections are left alone
+- Manifest renamed to "Figma WordPress Optimizer v19" with a new plugin id, so V18 and V19 can be installed side by side
+
+### Fixed
+- V18 color merge could silently drop fills on layers with several paints, and used a sync style setter that fails under dynamic page access; layers with multiple paints are now skipped and reported
+- Developer Handoff Notes showed the full layer path as the name, and described every note as an AUTO line-height issue
+- Spelling tab empty-state icon lines were invisible (undefined `--violet-500` token); its badge and "ready" check now use consistent colors
+- Opening a dropdown in Generate Text Styles no longer swallows the next click elsewhere
+- README: outdated version, check count, removed `near-dupe-spacing` rule, page-scope fallback, and category mapping
+
+### Removed
+- Typography & Colors tab, its Recommendations / Opportunities builders and the unused WCAG helpers
+
 ## [1.1.0] — 2026-06-26 (V18)
 
 ### Added

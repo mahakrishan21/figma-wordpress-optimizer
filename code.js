@@ -757,14 +757,8 @@ async function collectIssues() {
         }
       }
 
-      if ('strokes' in node && node.strokes !== figma.mixed && Array.isArray(node.strokes) && node.strokes.length > 0) {
-        const strokeWeight = ('strokeWeight' in node && typeof node.strokeWeight === 'number') ? node.strokeWeight : 0;
-        const isContainerBorder = ['FRAME', 'COMPONENT', 'SECTION'].includes(node.type);
-        const isLikelySeparator = node.type === 'LINE' || (strokeWeight <= 1 && Math.min(node.width || 0, node.height || 0) <= 2);
-        const isDecorativeVectorStroke = ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'ELLIPSE', 'POLYGON'].includes(node.type) && strokeWeight <= 1;
-        if (!isContainerBorder && (isLikelySeparator || isDecorativeVectorStroke)) {
-          addIssue(issues, stats, 'strokes-found', 'low', 'Thin stroke may be better handled as a fill or dedicated separator asset.', node, 'strokesFound');
-        }
+      if (isThinStrokeCandidate(node)) {
+        addIssue(issues, stats, 'strokes-found', 'low', 'Thin stroke may be better handled as a fill or dedicated separator asset.', node, 'strokesFound');
       }
 
       if (node.type === 'LINE') addIssue(issues, stats, 'line-object', 'high', 'Avoid line objects for separators. Use borders on the relevant container instead.', node, 'lineObjects');
@@ -1284,14 +1278,26 @@ async function convertButtonsToAutoLayout() {
   return { changed, skipped, reasons };
 }
 
+// Thin separator / decorative strokes — the same layers the audit flags as
+// strokes-found. Container borders (cards, inputs) are intentionally excluded.
+function isThinStrokeCandidate(node) {
+  if (!('strokes' in node) || node.strokes === figma.mixed || !Array.isArray(node.strokes) || node.strokes.length === 0) return false;
+  const strokeWeight = ('strokeWeight' in node && typeof node.strokeWeight === 'number') ? node.strokeWeight : 0;
+  const isContainerBorder = ['FRAME', 'COMPONENT', 'SECTION'].includes(node.type);
+  const isLikelySeparator = node.type === 'LINE' || (strokeWeight <= 1 && Math.min(node.width || 0, node.height || 0) <= 2);
+  const isDecorativeVectorStroke = ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'ELLIPSE', 'POLYGON'].includes(node.type) && strokeWeight <= 1;
+  return !isContainerBorder && (isLikelySeparator || isDecorativeVectorStroke);
+}
+
 async function outlineStrokesInSelection() {
-  const roots = getScopeNodes();
-  const entries = getAllNodes(roots);
+  // Only outline the thin strokes the audit flagged — never card/input borders.
+  let nodes = lastAuditNodeIds.length ? await getActionNodes(['strokes-found']) : [];
+  if (!nodes.length) nodes = getAllNodes(getScopeNodes()).map(x => x.node);
   let changed = 0;
   let skipped = 0;
   const reasons = [];
-  for (const { node } of entries) {
-    if (!('strokes' in node) || node.strokes === figma.mixed || !Array.isArray(node.strokes) || node.strokes.length === 0) continue;
+  for (const node of nodes) {
+    if (!isThinStrokeCandidate(node)) continue;
     const blocked = getBlockedReason(node, 'outline-strokes');
     if (blocked) {
       skipped++;
@@ -1471,18 +1477,6 @@ function hexToHsl(hex) {
   return [hh*360, s*100, l*100];
 }
 
-function colorDist(hex1, hex2) {
-  try {
-    const [h1,s1,l1] = hexToHsl(hex1), [h2,s2,l2] = hexToHsl(hex2);
-    const dh = Math.min(Math.abs(h1-h2), 360-Math.abs(h1-h2))/180;
-    return Math.sqrt(dh*dh*0.5 + ((s1-s2)/100)**2*0.3 + ((l1-l2)/100)**2*0.2);
-  } catch (e) { return 1; }
-}
-
-function relLum(hex) {
-  const c = s => { const v=parseInt(s,16)/255; return v<=0.03928?v/12.92:((v+0.055)/1.055)**2.4; };
-  return 0.2126*c(hex.slice(1,3))+0.7152*c(hex.slice(3,5))+0.0722*c(hex.slice(5,7));
-}
 
 // ── Section spacing consistency helpers ──────────────────────────────────────
 
@@ -1745,356 +1739,1207 @@ function _resolveGenPad(node, depth) {
 
 // ── End section spacing helpers ───────────────────────────────────────────────
 
-function wcagContrast(hex1, hex2) {
-  const l1=relLum(hex1), l2=relLum(hex2);
-  return ((Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05));
+
+// ════════════════════════════════════════════════════════════════════════════
+// V19: Color & text style management (Colors tab + Typography tab)
+// ════════════════════════════════════════════════════════════════════════════
+
+// Last scan per kind, so UI actions can refer to rows by key instead of
+// re-sending every layer id. Roots are remembered so an action's re-scan
+// covers the same frame even after Focus changed the selection.
+let lastColorScan = null;
+let lastTextScan = null;
+let lastColorRootIds = [];
+let lastTextRootIds = [];
+
+function round2(v) {
+  return Math.round(v * 100) / 100;
 }
 
-// Composite a color+opacity over a white background to get the perceived hex
-function blendOnWhite(hex, opacity) {
-  if (typeof opacity !== 'number' || opacity >= 0.99) return hex;
-  var r = parseInt(hex.slice(1,3),16)/255;
-  var g = parseInt(hex.slice(3,5),16)/255;
-  var b = parseInt(hex.slice(5,7),16)/255;
-  var rr = Math.round((opacity*r + (1-opacity))*255).toString(16).padStart(2,'0');
-  var gg = Math.round((opacity*g + (1-opacity))*255).toString(16).padStart(2,'0');
-  var bb = Math.round((opacity*b + (1-opacity))*255).toString(16).padStart(2,'0');
-  return ('#'+rr+gg+bb).toUpperCase();
+function hexToRgb01(hex) {
+  const h = hex.replace('#', '');
+  return {
+    r: parseInt(h.slice(0, 2), 16) / 255,
+    g: parseInt(h.slice(2, 4), 16) / 255,
+    b: parseInt(h.slice(4, 6), 16) / 255
+  };
 }
 
-// Walk up the parent chain and return the hex of the nearest solid-filled ancestor
-function getActualBgHex(node) {
-  var cur = node.parent;
-  while (cur && cur.type !== 'PAGE' && cur.type !== 'DOCUMENT') {
-    if ('fills' in cur && cur.fills !== figma.mixed && Array.isArray(cur.fills)) {
-      for (var _bi = 0; _bi < cur.fills.length; _bi++) {
-        var f = cur.fills[_bi];
-        if (f.type === 'SOLID' && f.visible !== false && (typeof f.opacity !== 'number' || f.opacity > 0.5)) {
-          return rgbToHexStr(f.color);
-        }
+function opPct(op) {
+  return Math.round((typeof op === 'number' ? op : 1) * 100);
+}
+
+function colorKey(hex, op) {
+  return hex + '|' + opPct(op);
+}
+
+// Short "Parent / Layer" label used in the layer lists.
+function shortPath(node) {
+  const parts = [];
+  let current = node;
+  while (current && current.type !== 'PAGE' && current.type !== 'DOCUMENT' && parts.length < 2) {
+    parts.unshift(current.name);
+    current = current.parent;
+  }
+  return parts.join(' / ');
+}
+
+function isInInstance(node) {
+  let current = node;
+  while (current && current.type !== 'PAGE' && current.type !== 'DOCUMENT') {
+    if (current.type === 'INSTANCE') return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+// Short description of a layer's paints, e.g. "4 fills: image, gradient, 2 colors".
+function describePaints(paints, prop) {
+  const counts = {};
+  for (const p of paints) {
+    const t = p.type === 'SOLID' ? 'color' : p.type === 'IMAGE' ? 'image' : p.type === 'VIDEO' ? 'video' : 'gradient';
+    counts[t] = (counts[t] || 0) + 1;
+  }
+  const parts = Object.keys(counts).map(t => counts[t] > 1 ? counts[t] + ' ' + t + 's' : t);
+  return paints.length + ' ' + (prop === 'strokes' ? 'strokes' : 'fills') + ': ' + parts.join(', ');
+}
+
+function useRef(node, prop, multi, paintInfo) {
+  const u = { id: node.id, name: node.name, path: shortPath(node), type: node.type, prop: prop, multi: !!multi, inst: isInInstance(node) };
+  if (paintInfo) u.paints = paintInfo;
+  return u;
+}
+
+function isDescendantOrSelf(node, ancestorId) {
+  let current = node;
+  while (current) {
+    if (current.id === ancestorId) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+// Scan the current selection, unless every selected layer lives inside the
+// frame that was scanned last (e.g. after Focus) — then re-scan that frame.
+async function resolveScanRoots(lastIds) {
+  const sel = figma.currentPage.selection.slice();
+  const lastRoots = await resolveNodesByIds(lastIds);
+  const liveRoots = lastRoots.filter(n => isEditableNode(n) && n.parent);
+  if (liveRoots.length) {
+    const insideLast = sel.every(n => liveRoots.some(r => isDescendantOrSelf(n, r.id)));
+    if (!sel.length || insideLast) return liveRoots;
+  }
+  return sel;
+}
+
+// Hidden layers and component/variant containers are skipped. Layers inside
+// instances ARE scanned: styles are applied to them as instance overrides, or
+// to the main component when it lives in this file (see styleTargetFor).
+function styleScanNodes(roots) {
+  const out = [];
+  const visit = (node) => {
+    if (!node || node.visible === false) return;
+    if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') out.push(node);
+    if (hasChildren(node)) {
+      for (const child of node.children) visit(child);
+    }
+  };
+  for (const root of roots) visit(root);
+  return out;
+}
+
+// Color variables copied in from another file show by name in Figma's fill
+// panel, but don't exist in this file. Resolves aliases in the default mode.
+async function resolveColorVariable(cache, id, depth) {
+  depth = depth || 0;
+  if (depth > 5) return null;
+  if (cache.has(id) && depth === 0) return cache.get(id);
+  let out = null;
+  try {
+    const v = await figma.variables.getVariableByIdAsync(id);
+    if (v && v.resolvedType === 'COLOR') {
+      let modeId = Object.keys(v.valuesByMode)[0];
+      try {
+        const col = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
+        if (col && v.valuesByMode[col.defaultModeId] !== undefined) modeId = col.defaultModeId;
+      } catch (e) {}
+      let value = v.valuesByMode[modeId];
+      if (value && value.type === 'VARIABLE_ALIAS') {
+        const target = await resolveColorVariable(cache, value.id, depth + 1);
+        value = target ? target.color : null;
+      }
+      if (value && typeof value.r === 'number') {
+        out = { variable: v, remote: !!v.remote, name: v.name, color: value };
       }
     }
-    cur = cur.parent;
+  } catch (e) {}
+  if (depth === 0) cache.set(id, out);
+  return out;
+}
+
+async function getStyleCached(cache, id) {
+  if (cache.has(id)) return cache.get(id);
+  let style = null;
+  try { style = await figma.getStyleByIdAsync(id); } catch (e) {}
+  cache.set(id, style);
+  return style;
+}
+
+function solidOfStyle(style) {
+  if (!style || !Array.isArray(style.paints) || style.paints.length !== 1) return null;
+  const p = style.paints[0];
+  if (p.type !== 'SOLID') return null;
+  return { hex: rgbToHexStr(p.color), opacity: typeof p.opacity === 'number' ? p.opacity : 1 };
+}
+
+function uniqueName(name, taken) {
+  let candidate = name;
+  let n = 2;
+  while (taken.has(candidate)) {
+    candidate = name + ' ' + n;
+    n++;
+  }
+  taken.add(candidate);
+  return candidate;
+}
+
+// ── Color naming ───────────────────────────────────────────────────────────
+const HUE_NAMES = [
+  [12, 'Red'], [40, 'Orange'], [65, 'Yellow'], [85, 'Lime'], [150, 'Green'],
+  [175, 'Teal'], [195, 'Cyan'], [235, 'Blue'], [255, 'Indigo'], [275, 'Violet'],
+  [300, 'Purple'], [340, 'Pink'], [361, 'Red']
+];
+
+function colorShade(hex) {
+  const hsl = hexToHsl(hex);
+  const h = hsl[0], s = hsl[1], l = hsl[2];
+  // Low chroma counts as neutral, so tinted grays (e.g. #E5E7EB) stay "Gray".
+  const ch = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+  const chroma = (Math.max.apply(null, ch) - Math.min.apply(null, ch)) / 255;
+  if (chroma < 0.1 || s < 12 || l >= 92 || l <= 15) {
+    let name = 'Black';
+    if (l >= 98) name = 'White';
+    else if (l >= 85) name = 'Light Gray';
+    else if (l >= 45) name = 'Gray';
+    else if (l >= 18) name = 'Dark Gray';
+    return { neutral: true, name: name };
+  }
+  let hue = 'Red';
+  for (let i = 0; i < HUE_NAMES.length; i++) {
+    if (h < HUE_NAMES[i][0]) { hue = HUE_NAMES[i][1]; break; }
+  }
+  const prefix = l >= 80 ? 'Light ' : l <= 25 ? 'Dark ' : '';
+  return { neutral: false, name: prefix + hue };
+}
+
+const ICON_TYPES = ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'LINE'];
+
+function colorRoleOf(use) {
+  if (use.prop === 'strokes') return 'Border';
+  if (use.type === 'TEXT') return 'Text';
+  if (ICON_TYPES.indexOf(use.type) !== -1) return 'Icon';
+  return 'Fill';
+}
+
+// "Text / Dark Gray", "Brand / Blue", "Neutral / White / 6%" …
+function suggestColorName(hex, opacity, uses, taken) {
+  const shade = colorShade(hex);
+  const counts = {};
+  for (const u of uses) {
+    const role = colorRoleOf(u);
+    counts[role] = (counts[role] || 0) + 1;
+  }
+  let group = shade.neutral ? 'Neutral' : 'Brand';
+  for (const role of ['Text', 'Border', 'Icon']) {
+    if (uses.length && (counts[role] || 0) / uses.length >= 0.7) { group = role; break; }
+  }
+  const pct = opPct(opacity);
+  const base = group + ' / ' + shade.name + (pct < 100 ? ' / ' + pct + '%' : '');
+  return uniqueName(base, taken);
+}
+
+// ── Color scan ─────────────────────────────────────────────────────────────
+async function scanColors(roots) {
+  const nodes = styleScanNodes(roots);
+  const locals = await figma.getLocalPaintStylesAsync();
+  const localIds = new Set(locals.map(s => s.id));
+  const localByKey = new Map();
+  const localByNameKey = new Map();
+  for (const s of locals) {
+    const sp = solidOfStyle(s);
+    if (!sp) continue;
+    const k = colorKey(sp.hex, sp.opacity);
+    if (!localByKey.has(k)) localByKey.set(k, s);
+    localByNameKey.set(s.name + '||' + k, s);
+  }
+
+  const cache = new Map();
+  const varCache = new Map();
+  const localUse = new Map();   // local styleId -> uses
+  const remoteUse = new Map();  // remote styleId -> { style, uses }
+  const remoteVarUse = new Map(); // remote variableId -> { name, hex, opacity, uses }
+  const unlinked = new Map();   // colorKey -> { hex, opacity, uses }
+
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    for (const prop of ['fills', 'strokes']) {
+      if (!(prop in node)) continue;
+      const paints = node[prop];
+      if (paints === figma.mixed || !Array.isArray(paints) || !paints.length) continue;
+      const styleProp = prop === 'fills' ? 'fillStyleId' : 'strokeStyleId';
+      const sid = styleProp in node ? node[styleProp] : '';
+      if (sid === figma.mixed) continue;
+      if (typeof sid === 'string' && sid) {
+        const style = await getStyleCached(cache, sid);
+        if (!style) continue;
+        if (localIds.has(sid) && !style.remote) {
+          if (!localUse.has(sid)) localUse.set(sid, []);
+          localUse.get(sid).push(useRef(node, prop));
+        } else {
+          if (!remoteUse.has(sid)) remoteUse.set(sid, { style: style, uses: [] });
+          remoteUse.get(sid).uses.push(useRef(node, prop));
+        }
+        continue;
+      }
+      const solids = paints.filter(p => p.type === 'SOLID' && p.visible !== false);
+      // A style replaces every paint on the layer, so only single-paint
+      // layers can be linked automatically.
+      const multi = !(paints.length === 1 && solids.length === 1);
+      const paintInfo = multi ? describePaints(paints, prop) : null;
+      for (const p of solids) {
+        if (p.boundVariables && p.boundVariables.color) {
+          // Local variables count as linked; variables from another file don't.
+          const rv = await resolveColorVariable(varCache, p.boundVariables.color.id);
+          if (rv && rv.remote) {
+            const vid = p.boundVariables.color.id;
+            const op = (typeof rv.color.a === 'number' ? rv.color.a : 1) * (typeof p.opacity === 'number' ? p.opacity : 1);
+            if (!remoteVarUse.has(vid)) remoteVarUse.set(vid, { name: rv.name, hex: rgbToHexStr(rv.color), opacity: op, uses: [] });
+            remoteVarUse.get(vid).uses.push(useRef(node, prop, multi, paintInfo));
+          }
+          continue;
+        }
+        const hex = rgbToHexStr(p.color);
+        const op = typeof p.opacity === 'number' ? p.opacity : 1;
+        const k = colorKey(hex, op);
+        if (!unlinked.has(k)) unlinked.set(k, { hex: hex, opacity: op, uses: [] });
+        unlinked.get(k).uses.push(useRef(node, prop, multi, paintInfo));
+      }
+    }
+    if ((i + 1) % 300 === 0) {
+      figma.ui.postMessage({ type: 'style-progress', scope: 'colors', completed: i + 1, total: nodes.length });
+      await pause();
+    }
+  }
+
+  const taken = new Set(locals.map(s => s.name));
+  const matchLocalById = new Map();
+  const addLocalMatch = (style, hex, opacity, uses) => {
+    if (!matchLocalById.has(style.id)) {
+      matchLocalById.set(style.id, { key: 'l:' + style.id, styleId: style.id, styleName: style.name, hex: hex, opacity: opacity, uses: [] });
+    }
+    Array.prototype.push.apply(matchLocalById.get(style.id).uses, uses);
+  };
+
+  // Styles linked from another file (layers pasted in keep the link).
+  const matchRemote = [];
+  const remoteByKey = new Map();
+  for (const [sid, r] of remoteUse) {
+    const sp = solidOfStyle(r.style);
+    const k = sp ? colorKey(sp.hex, sp.opacity) : null;
+    // Reuse a local style with the same value (same name preferred) instead of
+    // creating a duplicate of the other file's style.
+    const twin = k ? (localByNameKey.get(r.style.name + '||' + k) || localByKey.get(k)) : null;
+    if (twin) {
+      addLocalMatch(twin, sp.hex, sp.opacity, r.uses);
+      continue;
+    }
+    const row = {
+      key: 'r:' + sid, styleId: sid, name: r.style.name, source: 'style',
+      hex: sp ? sp.hex : null, opacity: sp ? sp.opacity : 1, uses: r.uses.slice()
+    };
+    matchRemote.push(row);
+    if (k && !remoteByKey.has(k)) remoteByKey.set(k, row);
+  }
+  for (const [vid, rv] of remoteVarUse) {
+    const k = colorKey(rv.hex, rv.opacity);
+    const twin = localByNameKey.get(rv.name + '||' + k) || localByKey.get(k);
+    if (twin) { addLocalMatch(twin, rv.hex, rv.opacity, rv.uses); continue; }
+    const row = { key: 'v:' + vid, variableId: vid, name: rv.name, source: 'variable', hex: rv.hex, opacity: rv.opacity, uses: rv.uses.slice() };
+    matchRemote.push(row);
+    if (!remoteByKey.has(k)) remoteByKey.set(k, row);
+  }
+
+  const newColors = [];
+  for (const [k, e] of unlinked) {
+    const local = localByKey.get(k);
+    if (local) { addLocalMatch(local, e.hex, e.opacity, e.uses); continue; }
+    const remote = remoteByKey.get(k);
+    if (remote) { Array.prototype.push.apply(remote.uses, e.uses); continue; }
+    newColors.push({ key: 'n:' + k, hex: e.hex, opacity: e.opacity, uses: e.uses, suggested: '' });
+  }
+  newColors.sort((a, b) => b.uses.length - a.uses.length);
+  for (const row of newColors) row.suggested = suggestColorName(row.hex, row.opacity, row.uses, taken);
+
+  let matchLocal = Array.from(matchLocalById.values());
+
+  // A style replaces every paint on a layer, so layers with several fills
+  // (e.g. image + color) can't be linked automatically. They move to a
+  // "Needs manual fix" list and rows left with no fixable layers disappear.
+  const manual = [];
+  const splitManual = (rows, label) => rows.filter(row => {
+    const fixable = row.uses.filter(u => !u.multi);
+    for (const u of row.uses) {
+      if (!u.multi) continue;
+      manual.push({ id: u.id, path: u.path, type: u.type, prop: u.prop, inst: u.inst, paints: u.paints || '',
+        hex: row.hex, opacity: row.opacity, label: label(row) });
+    }
+    row.uses = fixable;
+    return fixable.length > 0;
+  });
+  const newColorsFixable = splitManual(newColors, r => 'Unlinked color');
+  matchLocal = splitManual(matchLocal, r => 'Matches “' + r.styleName + '”');
+  const matchRemoteFixable = splitManual(matchRemote, r => (r.source === 'variable' ? 'Variable' : 'Style') + ' “' + r.name + '” from another file');
+  matchLocal.sort((a, b) => b.uses.length - a.uses.length);
+  matchRemoteFixable.sort((a, b) => b.uses.length - a.uses.length);
+
+  const colorStyles = [];
+  for (const s of locals) {
+    const uses = localUse.get(s.id);
+    if (!uses) continue;
+    const sp = solidOfStyle(s);
+    colorStyles.push({ key: 's:' + s.id, styleId: s.id, name: s.name, hex: sp ? sp.hex : null, opacity: sp ? sp.opacity : 1, uses: uses });
+  }
+
+  // Near-duplicates across ALL local styles: same opacity and practically the
+  // same color (CIE Lab ΔE < 3). Same color at a different opacity is usually
+  // a deliberate overlay, so it's only flagged, never offered for merging.
+  const pool = [];
+  for (const s of locals) {
+    const sp = solidOfStyle(s);
+    if (!sp) continue;
+    pool.push({ id: s.id, name: s.name, hex: sp.hex, opacity: sp.opacity, lab: hexToLab(sp.hex), uses: (localUse.get(s.id) || []).length });
+  }
+  const nearDupes = [];
+  const grouped = new Set();
+  for (let i = 0; i < pool.length; i++) {
+    if (grouped.has(i)) continue;
+    const group = [pool[i]];
+    for (let j = i + 1; j < pool.length; j++) {
+      if (grouped.has(j)) continue;
+      if (opPct(pool[i].opacity) === opPct(pool[j].opacity) && labDistance(pool[i].lab, pool[j].lab) < 3) { group.push(pool[j]); grouped.add(j); }
+    }
+    if (group.length > 1) { grouped.add(i); nearDupes.push(group.map(stripLab)); }
+  }
+  const byHex = new Map();
+  for (const p of pool) {
+    if (!byHex.has(p.hex)) byHex.set(p.hex, []);
+    byHex.get(p.hex).push(p);
+  }
+  const opacityVariants = [];
+  for (const list of byHex.values()) {
+    const pcts = new Set(list.map(p => opPct(p.opacity)));
+    if (pcts.size > 1) opacityVariants.push(list.slice().sort((a, b) => b.opacity - a.opacity).map(stripLab));
+  }
+
+  const detachedLayers = new Set();
+  for (const r of newColorsFixable) for (const u of r.uses) detachedLayers.add(u.id);
+  for (const r of matchLocal) for (const u of r.uses) detachedLayers.add(u.id);
+  for (const r of matchRemoteFixable) for (const u of r.uses) detachedLayers.add(u.id);
+  const manualLayers = new Set(manual.map(m => m.id));
+  let instanceLayers = 0;
+  for (const list of [newColorsFixable, matchLocal, matchRemoteFixable]) for (const r of list) for (const u of r.uses) if (u.inst) instanceLayers++;
+
+  return {
+    colorStyles: colorStyles,
+    newColors: newColorsFixable,
+    matchLocal: matchLocal,
+    matchRemote: matchRemoteFixable,
+    nearDupes: nearDupes,
+    opacityVariants: opacityVariants,
+    manual: manual,
+    summary: {
+      localStyles: colorStyles.length,
+      remoteStyles: matchRemoteFixable.length,
+      detached: newColorsFixable.length + matchLocal.length + matchRemoteFixable.length,
+      detachedLayers: detachedLayers.size,
+      manualLayers: manualLayers.size,
+      instanceLayers: instanceLayers,
+      dupes: nearDupes.length,
+      scannedNodes: nodes.length
+    }
+  };
+}
+
+function stripLab(p) {
+  return { id: p.id, name: p.name, hex: p.hex, opacity: p.opacity, uses: p.uses };
+}
+
+function hexToLab(hex) {
+  const lin = v => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  const R = lin(parseInt(hex.slice(1, 3), 16)), G = lin(parseInt(hex.slice(3, 5), 16)), B = lin(parseInt(hex.slice(5, 7), 16));
+  const f = t => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+  const x = f((R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047);
+  const y = f(R * 0.2126 + G * 0.7152 + B * 0.0722);
+  const z = f((R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883);
+  return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+}
+
+function labDistance(a, b) {
+  return Math.sqrt(Math.pow(a[0] - b[0], 2) + Math.pow(a[1] - b[1], 2) + Math.pow(a[2] - b[2], 2));
+}
+
+// ── Text helpers ───────────────────────────────────────────────────────────
+function lhKey(lh) {
+  if (!lh || lh.unit === 'AUTO') return 'AUTO';
+  return lh.unit + ':' + round2(lh.value);
+}
+
+function lsKey(ls) {
+  if (!ls || !ls.value) return 'ZERO';
+  return ls.unit + ':' + round2(ls.value);
+}
+
+function textSpecKey(spec) {
+  return spec.family + '|' + spec.style + '|' + round2(spec.fontSize) + '|' + lhKey(spec.lineHeight) + '|' + lsKey(spec.letterSpacing);
+}
+
+function textSpecOfStyle(style) {
+  return {
+    family: style.fontName ? style.fontName.family : '',
+    style: style.fontName ? style.fontName.style : '',
+    fontSize: style.fontSize || 0,
+    lineHeight: style.lineHeight || { unit: 'AUTO' },
+    letterSpacing: style.letterSpacing || { unit: 'PERCENT', value: 0 }
+  };
+}
+
+function textSpecOfNode(node) {
+  if (node.fontName === figma.mixed || node.fontSize === figma.mixed || node.lineHeight === figma.mixed || node.letterSpacing === figma.mixed) return null;
+  const chars = typeof node.characters === 'string' ? node.characters : '';
+  const upper = node.textCase === 'UPPER' || (/[A-Z]/.test(chars) && chars === chars.toUpperCase());
+  return {
+    family: node.fontName.family,
+    style: node.fontName.style,
+    fontSize: node.fontSize,
+    lineHeight: node.lineHeight,
+    letterSpacing: node.letterSpacing,
+    upper: upper
+  };
+}
+
+function hasTextVariableBinding(node) {
+  const bound = node.boundVariables || {};
+  return !!bound.fontSize || !!bound.fontFamily || !!bound.fontWeight || !!bound.fontStyle || !!bound.letterSpacing || !!bound.lineHeight;
+}
+
+// Web-standard names: H1–H6 for clearly larger text; small uppercase text
+// becomes Eyebrow; otherwise Body Large / Body / Body Small / Caption relative
+// to the most common size in the frame, plus the weight when not Regular
+// (e.g. "Body Bold", "Body Small Medium").
+const HEADING_STEPS = [[56, 'H1'], [46, 'H2'], [38, 'H3'], [30, 'H4'], [26, 'H5'], [22, 'H6']];
+
+function weightSuffix(style) {
+  const s = String(style || '').replace(/\bRegular\b/i, '').replace(/\s+/g, ' ').trim();
+  return s ? ' ' + s : '';
+}
+
+function suggestTextName(spec, baseSize, taken) {
+  let name = null;
+  for (const step of HEADING_STEPS) {
+    if (spec.fontSize >= step[0]) { name = step[1]; break; }
+  }
+  if (!name && spec.upper && spec.fontSize <= baseSize + 2) name = 'Eyebrow';
+  if (!name) {
+    let group = 'Body';
+    if (spec.fontSize > baseSize + 1) group = 'Body Large';
+    else if (spec.fontSize <= 12) group = 'Caption';
+    else if (spec.fontSize < baseSize - 1) group = 'Body Small';
+    name = group + weightSuffix(spec.style);
+  }
+  if (taken.has(name) && /^(H\d|Eyebrow)$/.test(name)) name = name + weightSuffix(spec.style);
+  return uniqueName(name, taken);
+}
+
+// ── Text scan ──────────────────────────────────────────────────────────────
+async function scanText(roots) {
+  const nodes = styleScanNodes(roots).filter(n => n.type === 'TEXT');
+  const locals = await figma.getLocalTextStylesAsync();
+  const localIds = new Set(locals.map(s => s.id));
+  const localByKey = new Map();
+  const localByNameKey = new Map();
+  for (const s of locals) {
+    const k = textSpecKey(textSpecOfStyle(s));
+    if (!localByKey.has(k)) localByKey.set(k, s);
+    localByNameKey.set(s.name + '||' + k, s);
+  }
+
+  const cache = new Map();
+  const localUse = new Map();
+  const remoteUse = new Map();
+  const unlinked = new Map();
+  const sizeFreq = new Map();
+  const famMap = new Map();
+  let mixedSkipped = 0;
+
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (node.fontSize !== figma.mixed) {
+      const sz = Math.round(node.fontSize);
+      if (sz > 0) sizeFreq.set(sz, (sizeFreq.get(sz) || 0) + 1);
+    }
+    if (node.fontName !== figma.mixed) {
+      const fam = node.fontName.family;
+      if (!famMap.has(fam)) famMap.set(fam, { family: fam, styles: new Set(), count: 0 });
+      famMap.get(fam).styles.add(node.fontName.style);
+      famMap.get(fam).count++;
+    }
+
+    const sid = node.textStyleId;
+    if (sid === figma.mixed) { mixedSkipped++; continue; }
+    if (typeof sid === 'string' && sid) {
+      const style = await getStyleCached(cache, sid);
+      if (!style) continue;
+      if (localIds.has(sid) && !style.remote) {
+        if (!localUse.has(sid)) localUse.set(sid, []);
+        localUse.get(sid).push(useRef(node, 'text'));
+      } else {
+        if (!remoteUse.has(sid)) remoteUse.set(sid, { style: style, uses: [] });
+        remoteUse.get(sid).uses.push(useRef(node, 'text'));
+      }
+      continue;
+    }
+    if (hasTextVariableBinding(node)) continue;
+    const spec = textSpecOfNode(node);
+    if (!spec) { mixedSkipped++; continue; }
+    const k = textSpecKey(spec);
+    if (!unlinked.has(k)) unlinked.set(k, { spec: spec, uses: [] });
+    unlinked.get(k).uses.push(useRef(node, 'text'));
+
+    if ((i + 1) % 300 === 0) {
+      figma.ui.postMessage({ type: 'style-progress', scope: 'text', completed: i + 1, total: nodes.length });
+      await pause();
+    }
+  }
+
+  let baseSize = 16;
+  let bestCount = -1;
+  for (const [size, count] of sizeFreq) {
+    if (count > bestCount) { bestCount = count; baseSize = size; }
+  }
+
+  const matchLocalById = new Map();
+  const addLocalMatch = (style, uses) => {
+    if (!matchLocalById.has(style.id)) {
+      matchLocalById.set(style.id, { key: 'l:' + style.id, styleId: style.id, styleName: style.name, styleSpec: textSpecOfStyle(style), spec: textSpecOfStyle(style), uses: [] });
+    }
+    Array.prototype.push.apply(matchLocalById.get(style.id).uses, uses);
+  };
+
+  const matchRemote = [];
+  const remoteByKey = new Map();
+  for (const [sid, r] of remoteUse) {
+    const spec = textSpecOfStyle(r.style);
+    const k = textSpecKey(spec);
+    const twin = localByNameKey.get(r.style.name + '||' + k) || localByKey.get(k);
+    if (twin) { addLocalMatch(twin, r.uses); continue; }
+    const row = { key: 'r:' + sid, styleId: sid, name: r.style.name, spec: spec, styleSpec: spec, uses: r.uses.slice() };
+    matchRemote.push(row);
+    if (!remoteByKey.has(k)) remoteByKey.set(k, row);
+  }
+
+  const taken = new Set(locals.map(s => s.name));
+  const newText = [];
+  for (const [k, e] of unlinked) {
+    const local = localByKey.get(k);
+    if (local) { addLocalMatch(local, e.uses); continue; }
+    const remote = remoteByKey.get(k);
+    if (remote) { Array.prototype.push.apply(remote.uses, e.uses); continue; }
+    newText.push({ key: 'n:' + k, spec: e.spec, uses: e.uses, suggested: '' });
+  }
+  // Largest first so heading names are handed out top-down.
+  newText.sort((a, b) => b.spec.fontSize - a.spec.fontSize || b.uses.length - a.uses.length);
+  for (const row of newText) row.suggested = suggestTextName(row.spec, baseSize, taken);
+
+  const matchLocal = Array.from(matchLocalById.values()).sort((a, b) => b.uses.length - a.uses.length);
+  matchRemote.sort((a, b) => b.uses.length - a.uses.length);
+
+  const textStyles = [];
+  for (const s of locals) {
+    const uses = localUse.get(s.id);
+    if (!uses) continue;
+    textStyles.push({ key: 's:' + s.id, styleId: s.id, name: s.name, spec: textSpecOfStyle(s), uses: uses });
+  }
+
+  // Duplicate local text styles: identical font, weight, size and line height.
+  const dupMap = new Map();
+  for (const s of locals) {
+    const spec = textSpecOfStyle(s);
+    const k = spec.family + '|' + spec.style + '|' + round2(spec.fontSize) + '|' + lhKey(spec.lineHeight);
+    if (!dupMap.has(k)) dupMap.set(k, []);
+    dupMap.get(k).push({ id: s.id, name: s.name, spec: spec, uses: (localUse.get(s.id) || []).length });
+  }
+  const duplicates = Array.from(dupMap.values()).filter(g => g.length > 1);
+
+  const fontFamilies = Array.from(famMap.values())
+    .map(f => ({ family: f.family, styles: Array.from(f.styles).sort(), count: f.count }))
+    .sort((a, b) => b.count - a.count);
+  const typeSizeInfo = Array.from(sizeFreq.entries()).map(e => ({ size: e[0], count: e[1] })).sort((a, b) => b.size - a.size);
+
+  const unlinkedLayers = new Set();
+  let instanceLayers = 0;
+  for (const list of [newText, matchLocal, matchRemote]) for (const r of list) for (const u of r.uses) if (u.inst) instanceLayers++;
+  for (const r of newText) for (const u of r.uses) unlinkedLayers.add(u.id);
+  for (const r of matchLocal) for (const u of r.uses) unlinkedLayers.add(u.id);
+  for (const r of matchRemote) for (const u of r.uses) unlinkedLayers.add(u.id);
+
+  return {
+    textStyles: textStyles,
+    newText: newText,
+    matchLocal: matchLocal,
+    matchRemote: matchRemote,
+    duplicates: duplicates,
+    fontFamilies: fontFamilies,
+    typeSizeInfo: typeSizeInfo,
+    summary: {
+      localStyles: textStyles.length,
+      remoteStyles: matchRemote.length,
+      unlinked: newText.length + matchLocal.length + matchRemote.length,
+      unlinkedLayers: unlinkedLayers.size,
+      dupes: duplicates.length,
+      families: fontFamilies.length,
+      sizes: typeSizeInfo.length,
+      mixedSkipped: mixedSkipped,
+      instanceLayers: instanceLayers,
+      scannedNodes: nodes.length
+    }
+  };
+}
+
+function indexScanRows(data) {
+  const byKey = {};
+  const lists = [data.colorStyles || data.textStyles || [], data.newColors || data.newText || [], data.matchLocal || [], data.matchRemote || []];
+  for (const list of lists) for (const row of list) byKey[row.key] = row;
+  return byKey;
+}
+
+// ── Style creation / application ───────────────────────────────────────────
+async function findLocalStylesByName(kind) {
+  const list = kind === 'paint' ? await figma.getLocalPaintStylesAsync() : await figma.getLocalTextStylesAsync();
+  const map = new Map();
+  for (const s of list) if (!map.has(s.name)) map.set(s.name, s);
+  return map;
+}
+
+// Returns the list of names that already exist, or [] when there is no conflict.
+async function styleNameConflicts(kind, names) {
+  const existing = await findLocalStylesByName(kind);
+  const out = [];
+  for (const n of names) if (existing.has(n) && out.indexOf(n) === -1) out.push(n);
+  return out;
+}
+
+async function createOrUpdatePaintStyle(name, paints, conflict, existing) {
+  let style = conflict === 'update' ? existing.get(name) : null;
+  if (!style) {
+    style = figma.createPaintStyle();
+    existing.set(name, style);
+  }
+  style.name = name;
+  style.paints = paints;
+  return style;
+}
+
+async function loadTextNodeFonts(node) {
+  if (node.fontName !== figma.mixed) {
+    await figma.loadFontAsync(node.fontName);
+    return;
+  }
+  const fonts = node.getRangeAllFontNames(0, node.characters.length);
+  for (const f of fonts) await figma.loadFontAsync(f);
+}
+
+async function createOrUpdateTextStyle(name, spec, conflict, existing) {
+  const fontName = { family: spec.family, style: spec.style };
+  await figma.loadFontAsync(fontName);
+  let style = conflict === 'update' ? existing.get(name) : null;
+  if (!style) {
+    style = figma.createTextStyle();
+    existing.set(name, style);
+  }
+  style.name = name;
+  style.fontName = fontName;
+  style.fontSize = spec.fontSize;
+  style.lineHeight = spec.lineHeight;
+  style.letterSpacing = spec.letterSpacing;
+  if (spec.textCase) style.textCase = spec.textCase;
+  if (spec.textDecoration) style.textDecoration = spec.textDecoration;
+  if (spec.extra) {
+    for (const k in spec.extra) {
+      try { style[k] = spec.extra[k]; } catch (e) {}
+    }
+  }
+  return style;
+}
+
+function pushReason(result, reason) {
+  if (reason && result.reasons.length < 3 && result.reasons.indexOf(reason) === -1) result.reasons.push(reason);
+}
+
+// Where a style should go for a layer. Inside an instance of a component that
+// lives in this file, the matching layer in the main component is styled (so
+// every instance updates); inside a component from another file, the layer
+// itself is styled as an instance override.
+async function styleTargetFor(node) {
+  let outer = null;
+  let current = node;
+  while (current && current.type !== 'PAGE' && current.type !== 'DOCUMENT') {
+    if (current.type === 'INSTANCE') outer = current;
+    current = current.parent;
+  }
+  if (!outer) return { node: node, via: null };
+  let main = null;
+  try { main = await outer.getMainComponentAsync(); } catch (e) {}
+  if (!main || main.remote) return { node: node, via: 'override' };
+  if (node.id === outer.id) return { node: main, via: 'component' };
+  const parts = node.id.split(';');
+  if (parts.length === 2 && parts[0] === 'I' + outer.id) {
+    let source = null;
+    try { source = await figma.getNodeByIdAsync(parts[1]); } catch (e) {}
+    if (source && isDescendantOrSelf(source, main.id)) return { node: source, via: 'component' };
+  }
+  return { node: node, via: 'override' };
+}
+
+// Style edits are allowed on instance layers (as overrides), so only missing
+// or locked layers are blocked here.
+function styleBlockedReason(node) {
+  if (!isEditableNode(node)) return 'Layer no longer exists.';
+  let current = node;
+  while (current && current.type !== 'PAGE' && current.type !== 'DOCUMENT') {
+    if (current.locked) return 'Layer is locked.';
+    current = current.parent;
   }
   return null;
 }
 
-async function collectTypographyAndColors() {
-  const allNodes = [];
-  function walkAll(node) {
-    allNodes.push(node);
-    if ('children' in node) { for (const c of node.children) walkAll(c); }
-  }
-  for (const child of getScopeNodes()) walkAll(child);
-
-  const colorStylesLocal = await figma.getLocalPaintStylesAsync();
-  const textStylesLocal  = await figma.getLocalTextStylesAsync();
-
-  const colorStyleUsage = new Map();
-  const textStyleUsage  = new Map();
-  const localColorMap   = new Map();
-  const localTextMap    = new Map();
-
-  for (const node of allNodes) {
-    if (node.visible === false) continue;
-    // Skip components, instances, and anything nested inside an instance
-    if (node.type === 'INSTANCE' || node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') continue;
-    if (ancestorTypes(node).includes('INSTANCE')) continue;
-
-    if ('fills' in node && node.fills !== figma.mixed && Array.isArray(node.fills)) {
-      const fsId = 'fillStyleId' in node ? node.fillStyleId : '';
-      const linked = typeof fsId === 'string' && fsId.length > 0 && fsId !== figma.mixed;
-      for (const fill of node.fills) {
-        if (!fill || fill.visible === false || fill.type !== 'SOLID') continue;
-        if (linked) {
-          colorStyleUsage.set(fsId, (colorStyleUsage.get(fsId)||0)+1);
-        } else {
-          const hex = rgbToHexStr(fill.color);
-          const op  = typeof fill.opacity === 'number' ? fill.opacity : 1;
-          const key = hex + '|' + Math.round(op*100);
-          if (!localColorMap.has(key)) localColorMap.set(key, { hex, opacity: op, count: 0, exNodes: [] });
-          const e = localColorMap.get(key);
-          e.count++;
-          if (e.exNodes.length < 3) e.exNodes.push({ id: node.id, name: node.name });
-        }
-      }
+async function applyStyleToUses(kind, style, uses, result) {
+  if (kind === 'text') {
+    try { await figma.loadFontAsync(style.fontName); } catch (e) {
+      result.skipped += uses.length;
+      pushReason(result, 'Font "' + style.fontName.family + ' ' + style.fontName.style + '" is not available.');
+      return;
     }
-
-    if (node.type === 'TEXT') {
-      const tsId = 'textStyleId' in node ? node.textStyleId : '';
-      const linked = typeof tsId === 'string' && tsId.length > 0 && tsId !== figma.mixed;
-      if (linked) {
-        textStyleUsage.set(tsId, (textStyleUsage.get(tsId)||0)+1);
+  }
+  for (const u of uses) {
+    if (u.multi) {
+      result.skipped++;
+      pushReason(result, 'Layers with more than one fill/stroke were skipped — a style replaces every paint.');
+      continue;
+    }
+    let found = null;
+    try { found = await figma.getNodeByIdAsync(u.id); } catch (e) {}
+    if (!found) { result.skipped++; continue; }
+    const target = await styleTargetFor(found);
+    const node = target.node;
+    const blocked = styleBlockedReason(node);
+    if (blocked) { result.skipped++; pushReason(result, blocked); continue; }
+    const doneKey = node.id + '|' + u.prop;
+    if (result.done && result.done.has(doneKey)) { result.applied++; continue; }
+    try {
+      if (kind === 'text') {
+        await loadTextNodeFonts(node);
+        await node.setTextStyleIdAsync(style.id);
+      } else if (u.prop === 'strokes') {
+        await node.setStrokeStyleIdAsync(style.id);
       } else {
-        const fn = node.fontName !== figma.mixed ? node.fontName : { family:'(mixed)', style:'' };
-        const fs = node.fontSize !== figma.mixed ? Math.round(node.fontSize) : 0;
-        const lh = node.lineHeight !== figma.mixed ? node.lineHeight : { unit:'AUTO' };
-        const key = fn.family+'||'+fn.style+'||'+fs+'||'+(lh.unit==='PIXELS'?Math.round(lh.value):lh.unit);
-        if (!localTextMap.has(key)) localTextMap.set(key, { fontFamily:fn.family, fontStyle:fn.style, fontSize:fs, lineHeight:lh, count:0, exNodes:[] });
-        const e = localTextMap.get(key);
-        e.count++;
-        if (e.exNodes.length < 3) e.exNodes.push({ id:node.id, name:node.name, text:(node.characters||'').slice(0,40) });
+        await node.setFillStyleIdAsync(style.id);
       }
+      result.applied++;
+      if (!result.done) result.done = new Set();
+      result.done.add(doneKey);
+      if (target.via === 'override') result.overrides = (result.overrides || 0) + 1;
+      if (target.via === 'component') result.components = (result.components || 0) + 1;
+    } catch (e) {
+      result.skipped++;
+      pushReason(result, e && e.message ? e.message : 'Apply failed.');
     }
   }
-
-  // Build map: colorStyleId → Set of actual background hexes (from real usage contexts)
-  const styleActualBgs = new Map();
-  for (const node of allNodes) {
-    if (node.visible === false) continue;
-    const fsId = 'fillStyleId' in node ? node.fillStyleId : '';
-    if (typeof fsId === 'string' && fsId.length > 0 && fsId !== figma.mixed) {
-      const bgHex = getActualBgHex(node);
-      if (bgHex) {
-        if (!styleActualBgs.has(fsId)) styleActualBgs.set(fsId, new Set());
-        styleActualBgs.get(fsId).add(bgHex);
-      }
-    }
-  }
-
-  // Build color styles data
-  const colorStylesData = colorStylesLocal.map(s => {
-    const p = s.paints.find(p => p.type==='SOLID' && p.visible!==false);
-    const hex = p ? rgbToHexStr(p.color) : '#CCCCCC';
-    const op  = p ? (typeof p.opacity==='number' ? p.opacity : 1) : 1;
-    const usageCount = colorStyleUsage.get(s.id)||0;
-    let cw = null, cb = null;
-    try { cw = parseFloat(wcagContrast(hex,'#FFFFFF').toFixed(2)); } catch(e) {}
-    try { cb = parseFloat(wcagContrast(hex,'#000000').toFixed(2)); } catch(e) {}
-    // Actual design backgrounds where this style is used
-    const bgSet = styleActualBgs.get(s.id);
-    const actualContrasts = bgSet
-      ? Array.from(bgSet).slice(0, 3).map(function(bg) {
-          var r = null;
-          try { r = parseFloat(wcagContrast(hex, bg).toFixed(2)); } catch(e) {}
-          return { hex: bg, ratio: r };
-        }).filter(function(x) { return x.ratio !== null; })
-      : [];
-    return { id:s.id, name:s.name, hex, opacity:op, usageCount, used:usageCount>0, contrastWhite:cw, contrastBlack:cb, actualContrasts:actualContrasts };
-  });
-
-  // Build text styles data
-  const textStylesData = textStylesLocal.map(s => {
-    const usageCount = textStyleUsage.get(s.id)||0;
-    const lh = s.lineHeight;
-    const ls = s.letterSpacing;
-    const lhStr = !lh||lh.unit==='AUTO' ? 'Auto' : lh.unit==='PIXELS' ? Math.round(lh.value)+'px' : Math.round(lh.value)+'%';
-    const lsStr = ls && ls.value !== 0 ? (ls.unit==='PIXELS'?ls.value.toFixed(1)+'px':ls.value.toFixed(1)+'%') : '0';
-    return {
-      id:s.id, name:s.name,
-      fontFamily: s.fontName ? s.fontName.family : '',
-      fontStyle:  s.fontName ? s.fontName.style  : '',
-      fontSize: s.fontSize||0,
-      lineHeightStr: lhStr, letterSpacing: lsStr,
-      usageCount, used: usageCount>0
-    };
-  });
-
-  // Scope styles to selection — only those with at least one use in the scanned nodes
-  const selectionColorStyles = colorStylesData.filter(s => s.usageCount > 0);
-  const selectionTextStyles  = textStylesData.filter(s => s.usageCount > 0);
-
-  // Near-duplicate colors (selection-scoped styles + local unlinked)
-  const topLocal = [...localColorMap.values()].sort((a,b)=>b.count-a.count).slice(0,40);
-  const hexPool = [
-    ...selectionColorStyles.map(s=>{
-      var opLabel = (typeof s.opacity==='number' && s.opacity<0.99) ? ' '+Math.round(s.opacity*100)+'%' : '';
-      return { hex:s.hex, opacity:s.opacity||1, visualHex:blendOnWhite(s.hex,s.opacity), label:s.name+opLabel, source:'style' };
-    }),
-    ...topLocal.map(l=>{
-      var op = typeof l.opacity==='number' ? l.opacity : 1;
-      var opLabel = op<0.99 ? ' '+Math.round(op*100)+'%' : '';
-      return { hex:l.hex, opacity:op, visualHex:blendOnWhite(l.hex,op), label:'Local ('+l.count+'×)'+opLabel, source:'local' };
-    })
-  ].filter(x=>/^#[0-9A-Fa-f]{6}$/.test(x.hex));
-  const nearDupeGroups = [];
-  const usedIdx = new Set();
-  for (let i=0; i<hexPool.length; i++) {
-    if (usedIdx.has(i)) continue;
-    const group=[hexPool[i]], gIdx=[i];
-    for (let j=i+1; j<hexPool.length; j++) {
-      if (usedIdx.has(j)) continue;
-      // Compare perceived colors (blended on white) — different opacity = different visual color
-      if (colorDist(hexPool[i].visualHex, hexPool[j].visualHex) < 0.07) { group.push(hexPool[j]); gIdx.push(j); }
-    }
-    if (group.length > 1) { gIdx.forEach(x=>usedIdx.add(x)); nearDupeGroups.push(group); }
-  }
-
-  // Duplicate text styles (selection-scoped)
-  const tsKeyMap = new Map();
-  for (const s of selectionTextStyles) {
-    const key = s.fontFamily+'|'+s.fontStyle+'|'+s.fontSize+'|'+s.lineHeightStr;
-    if (!tsKeyMap.has(key)) tsKeyMap.set(key, []);
-    tsKeyMap.get(key).push(s.name);
-  }
-  const dupTextGroups = [...tsKeyMap.values()].filter(g=>g.length>1);
-
-  // Font size frequency
-  const sizeFreq = new Map();
-  for (const node of allNodes) {
-    if (node.type==='TEXT' && node.visible!==false && node.fontSize!==figma.mixed) {
-      const sz = Math.round(node.fontSize);
-      if (sz>0) sizeFreq.set(sz,(sizeFreq.get(sz)||0)+1);
-    }
-  }
-  const typeSizeInfo = [...sizeFreq.entries()].map(([size,count])=>({size,count})).sort((a,b)=>b.size-a.size);
-
-  // Font families
-  const famMap = new Map();
-  for (const node of allNodes) {
-    if (node.type==='TEXT' && node.visible!==false && node.fontName!==figma.mixed) {
-      const fam = node.fontName.family;
-      if (!famMap.has(fam)) famMap.set(fam,{ family:fam, styles:new Set(), count:0 });
-      const e = famMap.get(fam);
-      e.styles.add(node.fontName.style);
-      e.count++;
-    }
-  }
-  const fontFamilies = [...famMap.values()].map(f=>({ family:f.family, styles:[...f.styles].sort(), count:f.count })).sort((a,b)=>b.count-a.count);
-
-  const localColorList = [...localColorMap.values()].sort((a,b)=>b.count-a.count);
-  const localTextList  = [...localTextMap.values()].sort((a,b)=>b.count-a.count);
-
-  const summary = {
-    totalColorStyles: selectionColorStyles.length,
-    unusedColorStyles: 0,
-    localColorVariants: localColorList.length,
-    totalLocalColorUses: localColorList.reduce((s,v)=>s+v.count,0),
-    nearDupeColorGroups: nearDupeGroups.length,
-    totalTextStyles: selectionTextStyles.length,
-    unusedTextStyles: 0,
-    localTextVariants: localTextList.length,
-    totalLocalTextUses: localTextList.reduce((s,v)=>s+v.count,0),
-    duplicateTextGroups: dupTextGroups.length
-  };
-  const payload = {
-    colorStyles: selectionColorStyles, localColors: localColorList,
-    nearDupeColorGroups: nearDupeGroups, unusedColorStyles: [],
-    textStyles: selectionTextStyles, localTextCombos: localTextList,
-    duplicateTextGroups: dupTextGroups, unusedTextStyles: [],
-    typeSizeInfo, fontFamilies, summary
-  };
-  payload.textStyleGroups  = groupTextStyles(selectionTextStyles);
-  payload.recommendations  = buildRecommendations(payload);
-  payload.opportunities    = buildOpportunities(payload);
-  return payload;
 }
 
-// ── Smart text-style grouping ────────────────────────────────────────────
-const TEXT_GROUPS = [
-  { key:'display',    label:'Display & Hero',   rx:/\b(display|hero|banner|jumbo|mega|super)\b/i },
-  { key:'heading',    label:'Headings',          rx:/\b(h[1-6]\b|heading\s*[1-6]?|headline|title)\b/i },
-  { key:'subheading', label:'Subheadings',       rx:/\b(sub.?head|subtitle|section.?title)\b/i },
-  { key:'body',       label:'Body Text',         rx:/\b(body|paragraph|p[1-3]|content|copy)\b/i },
-  { key:'caption',    label:'Captions & Labels', rx:/\b(caption|small|footnote|label|hint|helper|detail|supporting|eyebrow|overline)\b/i },
-  { key:'button',     label:'Buttons & CTAs',    rx:/\b(button|btn|cta|action)\b/i },
-  { key:'ui',         label:'UI & Utility',      rx:/\b(nav|menu|chip|tag|badge|tooltip)\b/i },
-];
+function cloneJson(v) {
+  return JSON.parse(JSON.stringify(v));
+}
 
-function groupTextStyles(textStyles) {
-  const groups = {};
-  const unclassified = [];
-  for (const style of textStyles) {
-    let matched = false;
-    for (const g of TEXT_GROUPS) {
-      if (g.rx.test(style.name)) {
-        if (!groups[g.key]) groups[g.key] = { key:g.key, label:g.label, styles:[] };
-        groups[g.key].styles.push(style);
-        matched = true; break;
-      }
+// Builds the style spec for a scan row (or a remote style copy).
+async function rowStyleSource(kind, row) {
+  if (kind === 'paint') {
+    if (row.key.indexOf('r:') === 0) {
+      const remote = await figma.getStyleByIdAsync(row.styleId);
+      return remote ? cloneJson(remote.paints) : null;
     }
-    if (!matched) unclassified.push(style);
+    return [{ type: 'SOLID', color: hexToRgb01(row.hex), opacity: row.opacity }];
   }
-  const result = Object.values(groups);
-  if (unclassified.length > 0) result.push({ key:'other', label:'Other Styles', styles:unclassified });
+  if (row.key.indexOf('r:') === 0) {
+    const remote = await figma.getStyleByIdAsync(row.styleId);
+    if (!remote) return null;
+    const spec = textSpecOfStyle(remote);
+    spec.extra = {};
+    for (const k of ['paragraphSpacing', 'paragraphIndent', 'textCase', 'textDecoration']) {
+      if (k in remote) spec.extra[k] = remote[k];
+    }
+    return spec;
+  }
+  return row.spec;
+}
+
+// UI → sandbox: { action: 'apply' | 'create' | 'copy', rows: [{ key, name }] }
+async function runRowAction(kind, msg) {
+  const scan = kind === 'paint' ? lastColorScan : lastTextScan;
+  if (!scan) throw new Error('Run a scan first.');
+  const rows = (msg.rows || []).map(r => ({ ref: r, row: scan.byKey[r.key] })).filter(x => x.row);
+  const result = { created: 0, applied: 0, skipped: 0, reasons: [] };
+
+  if (msg.action === 'apply') {
+    for (const x of rows) {
+      const style = await figma.getStyleByIdAsync(x.row.styleId);
+      if (!style) { result.skipped += x.row.uses.length; continue; }
+      await applyStyleToUses(kind, style, x.row.uses, result);
+    }
+    return result;
+  }
+
+  const names = rows.map(x => (x.ref.name || '').trim() || x.row.suggested || x.row.name);
+  if (msg.conflict !== 'update' && msg.conflict !== 'keep') {
+    const conflicts = await styleNameConflicts(kind, names);
+    if (conflicts.length) return { conflict: conflicts };
+  }
+  const existing = await findLocalStylesByName(kind);
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i].row;
+    const source = await rowStyleSource(kind, row);
+    if (!source) { result.skipped += row.uses.length; pushReason(result, 'Source style is no longer available.'); continue; }
+    let style;
+    try {
+      style = kind === 'paint'
+        ? await createOrUpdatePaintStyle(names[i], source, msg.conflict, existing)
+        : await createOrUpdateTextStyle(names[i], source, msg.conflict, existing);
+      result.created++;
+    } catch (e) {
+      result.skipped += row.uses.length;
+      pushReason(result, e && e.message ? e.message : 'Could not create style.');
+      continue;
+    }
+    await applyStyleToUses(kind, style, row.uses, result);
+  }
   return result;
 }
 
-function buildRecommendations(d) {
-  const recs = [];
-  if (d.nearDupeColorGroups.length > 0) {
-    const cnt = d.nearDupeColorGroups.reduce(function(s,g) { return s+g.length; }, 0);
-    recs.push({ id:'near-dupe-colors', sev:'high',
-      issue: cnt+' similar color'+(cnt>1?'s':'')+' across '+d.nearDupeColorGroups.length+' group'+(d.nearDupeColorGroups.length>1?'s':'')+' detected.',
-      impact: 'Visual inconsistency in the design and harder maintenance during global color updates.',
-      action: 'Merge each group into a single shared Color Style (e.g. "Gray/500", "Brand/Primary").',
-      benefit: 'Reduces inconsistency — global color changes become a single update.' });
+// Generate flows: create styles from a palette / type scale (no layers).
+async function createStylesFromList(kind, msg) {
+  const items = msg.items || [];
+  const result = { created: 0, applied: 0, skipped: 0, reasons: [] };
+  if (msg.conflict !== 'update' && msg.conflict !== 'keep') {
+    const conflicts = await styleNameConflicts(kind, items.map(i => i.name));
+    if (conflicts.length) return { conflict: conflicts };
   }
-  if (d.localColors.length > 0) {
-    const total = d.summary.totalLocalColorUses;
-    const hp = d.localColors.filter(function(c) { return c.count>=3; }).length;
-    recs.push({ id:'unassigned-colors', sev: d.localColors.length>5 ? 'high' : 'medium',
-      issue: d.localColors.length+' color'+(d.localColors.length>1?'s':'')+' applied on '+total+' layer'+(total>1?'s':'')+' without Color Styles.',
-      impact: 'Cannot update these colors globally — each layer must be changed individually.',
-      action: 'Create Color Styles for the '+(hp||d.localColors.length)+' most-used color'+((hp||d.localColors.length)>1?'s':'')+' and link all matching layers.',
-      benefit: 'Enables global color updates and improves design system coverage.' });
+  const existing = await findLocalStylesByName(kind);
+  const made = [];
+  for (const item of items) {
+    try {
+      const style = kind === 'paint'
+        ? await createOrUpdatePaintStyle(item.name, [{ type: 'SOLID', color: hexToRgb01(item.hex), opacity: item.opacity }], msg.conflict, existing)
+        : await createOrUpdateTextStyle(item.name, item, msg.conflict, existing);
+      made.push(style);
+      result.created++;
+    } catch (e) {
+      result.skipped++;
+      pushReason(result, item.name + ': ' + (e && e.message ? e.message : 'failed'));
+    }
   }
-  if (d.duplicateTextGroups.length > 0) {
-    const total = d.duplicateTextGroups.reduce(function(s,g) { return s+g.length; }, 0);
-    recs.push({ id:'duplicate-text', sev:'medium',
-      issue: total+' text style'+(total>1?'s':'')+' share identical properties across '+d.duplicateTextGroups.length+' group'+(d.duplicateTextGroups.length>1?'s':'')+' — this creates redundancy.',
-      impact: 'Redundant styles clutter the library and lead to inconsistent usage by designers.',
-      action: 'Merge each group into a single canonical style and update all references.',
-      benefit: 'Cleaner typography system and easier maintenance.' });
+  if (msg.placeOnCanvas && made.length) {
+    try {
+      await buildStyleGuide(kind, made);
+      result.guide = true;
+    } catch (e) {
+      pushReason(result, 'Styles were created, but the style guide frame failed: ' + (e && e.message ? e.message : 'unknown error'));
+    }
   }
-  if (d.localTextCombos.length > 0) {
-    const total = d.summary.totalLocalTextUses;
-    const hp = d.localTextCombos.filter(function(c) { return c.count>=3; }).length;
-    recs.push({ id:'unassigned-text', sev: hp>0 ? 'high' : 'medium',
-      issue: d.localTextCombos.length+' text combination'+(d.localTextCombos.length>1?'s':'')+' found on '+total+' layer'+(total>1?'s':'')+' without Text Styles.',
-      impact: 'Typography changes require manually updating every individual text layer.',
-      action: 'Start with the '+(hp||d.localTextCombos.length)+' combination'+((hp||d.localTextCombos.length)>1?'s':'')+' used 3+ times — create Text Styles and link them.',
-      benefit: 'Enables global typography updates and speeds up developer handoff.' });
-  }
-  if (d.unusedColorStyles.length > 0 || d.unusedTextStyles.length > 0) {
-    const total = d.unusedColorStyles.length + d.unusedTextStyles.length;
-    recs.push({ id:'unused-styles', sev:'low',
-      issue: total+' style'+(total>1?' are':' is')+' defined but not used on this page ('+d.unusedColorStyles.length+' color, '+d.unusedTextStyles.length+' text).',
-      impact: 'Unused styles clutter the library and may confuse developers during handoff.',
-      action: 'Remove styles not needed, or move them to an "Archive" page if reuse is possible.',
-      benefit: 'Cleaner style library and simpler handoff documentation.' });
-  }
-  if (d.fontFamilies.length > 2) {
-    recs.push({ id:'many-fonts', sev:'medium',
-      issue: d.fontFamilies.length+' font families detected in this file.',
-      impact: 'Multiple font families increase page load time and can create visual inconsistency.',
-      action: 'Aim for 1–2 primary families. Identify and consolidate any one-off or decorative fonts.',
-      benefit: 'Faster page load and more cohesive, intentional typography.' });
-  }
-  return recs;
+  return result;
 }
 
-function buildOpportunities(d) {
-  const ops = [];
-  d.nearDupeColorGroups.forEach(function(g) {
-    const hexes = g.map(function(c) { return c.hex; }).slice(0,2).join(', ')+(g.length>2?'…':'');
-    ops.push({ p:1, text:'Merge '+g.length+' similar colors ('+hexes+') into one Color Style.' });
-  });
-  d.duplicateTextGroups.forEach(function(g) {
-    ops.push({ p:1, text:'Merge duplicate text styles: '+g.slice(0,2).join(', ')+(g.length>2?' + '+(g.length-2)+' more':'')+' into one.' });
-  });
-  const highColors = d.localColors.filter(function(c) { return c.count>=3; });
-  if (highColors.length > 0) {
-    ops.push({ p:2, text:'Create Color Styles for '+highColors.length+' frequently-used color'+(highColors.length>1?'s':'')+' (3+ uses each).' });
+// ── Style guide frame (placed on the canvas after Generate) ─────────────────
+const GUIDE_INK = { r: 0.067, g: 0.094, b: 0.153 };    // #111827
+const GUIDE_MUTED = { r: 0.42, g: 0.447, b: 0.502 };   // #6B7280
+const GUIDE_LINE = { r: 0.898, g: 0.906, b: 0.922 };   // #E5E7EB
+const GUIDE_FONT = { family: 'Inter', style: 'Regular' };
+const GUIDE_FONT_BOLD = { family: 'Inter', style: 'Semi Bold' };
+const GUIDE_SAMPLE = 'Pack my box with five-dozen liquor jugs.';
+
+function guideFrame(name, direction, gap, padding) {
+  const f = figma.createFrame();
+  f.name = name;
+  f.layoutMode = direction;
+  f.primaryAxisSizingMode = 'AUTO';
+  f.counterAxisSizingMode = 'AUTO';
+  f.itemSpacing = gap;
+  f.paddingTop = padding; f.paddingBottom = padding; f.paddingLeft = padding; f.paddingRight = padding;
+  f.fills = [];
+  return f;
+}
+
+function guideLabel(text, size, bold, color, width) {
+  const t = figma.createText();
+  t.fontName = bold ? GUIDE_FONT_BOLD : GUIDE_FONT;
+  t.characters = text;
+  t.fontSize = size;
+  t.fills = [{ type: 'SOLID', color: color || GUIDE_INK }];
+  if (width) {
+    t.textAutoResize = 'HEIGHT';
+    t.resize(width, t.height);
   }
-  const highText = d.localTextCombos.filter(function(c) { return c.count>=3; });
-  if (highText.length > 0) {
-    ops.push({ p:2, text:'Convert '+highText.length+' unlinked text combination'+(highText.length>1?'s':'')+' into reusable Text Styles.' });
+  return t;
+}
+
+function lineHeightLabel(lh) {
+  if (!lh || lh.unit === 'AUTO') return 'Auto';
+  return round2(lh.value) + (lh.unit === 'PIXELS' ? 'px' : '%');
+}
+
+// Places the guide to the right of everything on the page, selects it and zooms to it.
+async function buildStyleGuide(kind, styles) {
+  await figma.loadFontAsync(GUIDE_FONT);
+  await figma.loadFontAsync(GUIDE_FONT_BOLD);
+  const isPaint = kind === 'paint';
+  const root = guideFrame(isPaint ? 'Style Guide / Colors' : 'Style Guide / Typography', 'VERTICAL', 28, 48);
+  root.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];
+  root.cornerRadius = 16;
+
+  const head = guideFrame('Header', 'VERTICAL', 6, 0);
+  head.appendChild(guideLabel(isPaint ? 'Color Styles' : 'Text Styles', 28, true));
+  head.appendChild(guideLabel(styles.length + ' style' + (styles.length !== 1 ? 's' : '') + ' · generated by Figma WordPress Optimizer', 13, false, GUIDE_MUTED));
+  root.appendChild(head);
+
+  if (isPaint) {
+    const CARD = 168, GAP = 20, PER_ROW = 4;
+    const grid = guideFrame('Swatches', 'HORIZONTAL', GAP, 0);
+    grid.layoutWrap = 'WRAP';
+    grid.counterAxisSpacing = 24;
+    grid.primaryAxisSizingMode = 'FIXED';
+    grid.resize(CARD * PER_ROW + GAP * (PER_ROW - 1), 100);
+    grid.counterAxisSizingMode = 'AUTO';
+    for (const style of styles) {
+      const card = guideFrame(style.name, 'VERTICAL', 8, 0);
+      const swatch = figma.createRectangle();
+      swatch.name = 'Swatch';
+      swatch.resize(CARD, 104);
+      swatch.cornerRadius = 10;
+      swatch.strokes = [{ type: 'SOLID', color: GUIDE_LINE }];
+      swatch.strokeWeight = 1;
+      await swatch.setFillStyleIdAsync(style.id);
+      card.appendChild(swatch);
+      card.appendChild(guideLabel(style.name, 13, true, GUIDE_INK, CARD));
+      const sp = solidOfStyle(style);
+      card.appendChild(guideLabel(sp ? sp.hex + ' · ' + opPct(sp.opacity) + '%' : 'Gradient', 12, false, GUIDE_MUTED, CARD));
+      grid.appendChild(card);
+    }
+    root.appendChild(grid);
+  } else {
+    const list = guideFrame('Styles', 'VERTICAL', 24, 0);
+    for (const style of styles) {
+      const row = guideFrame(style.name, 'VERTICAL', 6, 0);
+      const meta = style.name + '  —  ' + style.fontName.family + ' ' + style.fontName.style + ' · ' + round2(style.fontSize) + 'px · LH ' + lineHeightLabel(style.lineHeight);
+      row.appendChild(guideLabel(meta, 12, false, GUIDE_MUTED));
+      const sample = figma.createText();
+      sample.fontName = GUIDE_FONT;
+      sample.characters = GUIDE_SAMPLE;
+      await figma.loadFontAsync(style.fontName);
+      await sample.setTextStyleIdAsync(style.id);
+      sample.fills = [{ type: 'SOLID', color: GUIDE_INK }];
+      row.appendChild(sample);
+      list.appendChild(row);
+    }
+    root.appendChild(list);
   }
-  const unused = d.unusedColorStyles.length + d.unusedTextStyles.length;
-  if (unused > 0) {
-    ops.push({ p:3, text:'Remove '+unused+' unused style'+(unused>1?'s':'')+' ('+d.unusedColorStyles.length+' color, '+d.unusedTextStyles.length+' text).' });
+
+  // Right of the existing content, top-aligned with it.
+  let maxRight = 0, minTop = null;
+  for (const n of figma.currentPage.children) {
+    if (n.id === root.id || typeof n.x !== 'number') continue;
+    maxRight = Math.max(maxRight, n.x + n.width);
+    minTop = minTop === null ? n.y : Math.min(minTop, n.y);
   }
-  if (d.fontFamilies.length > 2) {
-    ops.push({ p:3, text:'Review '+d.fontFamilies.length+' font families — consolidate one-off fonts for consistency.' });
+  root.x = Math.round(maxRight + 200);
+  root.y = Math.round(minTop === null ? 0 : minTop);
+  figma.currentPage.selection = [root];
+  figma.viewport.scrollAndZoomIntoView([root]);
+  return root;
+}
+
+// Merge and delete touch every page — styles are shared by the whole file.
+async function relinkStylesInFile(kind, keepId, removeIds, result) {
+  const remove = new Set(removeIds);
+  for (const page of figma.root.children) {
+    const nodes = page.findAll(() => true);
+    for (const node of nodes) {
+      try {
+        if (kind === 'text') {
+          if (node.type !== 'TEXT') continue;
+          if (node.textStyleId === figma.mixed) {
+            const segs = node.getStyledTextSegments(['textStyleId']);
+            const hits = segs.filter(s => remove.has(s.textStyleId));
+            if (!hits.length) continue;
+            await loadTextNodeFonts(node);
+            for (const s of hits) await node.setRangeTextStyleIdAsync(s.start, s.end, keepId);
+            result.applied++;
+          } else if (remove.has(node.textStyleId)) {
+            await loadTextNodeFonts(node);
+            await node.setTextStyleIdAsync(keepId);
+            result.applied++;
+          }
+          continue;
+        }
+        if ('fillStyleId' in node) {
+          if (node.fillStyleId === figma.mixed && node.type === 'TEXT') {
+            const segs = node.getStyledTextSegments(['fillStyleId']);
+            const hits = segs.filter(s => remove.has(s.fillStyleId));
+            if (hits.length) {
+              await loadTextNodeFonts(node);
+              for (const s of hits) await node.setRangeFillStyleIdAsync(s.start, s.end, keepId);
+              result.applied++;
+            }
+          } else if (remove.has(node.fillStyleId)) {
+            await node.setFillStyleIdAsync(keepId);
+            result.applied++;
+          }
+        }
+        if ('strokeStyleId' in node && remove.has(node.strokeStyleId)) {
+          await node.setStrokeStyleIdAsync(keepId);
+          result.applied++;
+        }
+      } catch (e) {
+        // Layers inside instances follow their main component.
+        result.skipped++;
+      }
+    }
   }
-  if (d.localColors.length > 0 && d.colorStyles.length === 0) {
-    ops.unshift({ p:1, text:'No Color Styles exist yet — create styles from the most-used colors to start your palette.' });
+}
+
+async function mergeStyles(kind, groups) {
+  const result = { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0 };
+  await figma.loadAllPagesAsync();
+  for (const g of groups) {
+    const keep = await figma.getStyleByIdAsync(g.keepId);
+    if (!keep) { pushReason(result, 'Style to keep no longer exists.'); continue; }
+    await relinkStylesInFile(kind, g.keepId, g.removeIds, result);
+    for (const id of g.removeIds) {
+      const s = await figma.getStyleByIdAsync(id);
+      if (s && !s.remote) {
+        try { s.remove(); result.removed++; } catch (e) { pushReason(result, e && e.message ? e.message : 'Remove failed.'); }
+      }
+    }
   }
-  if (d.localTextCombos.length > 0 && d.textStyles.length === 0) {
-    ops.unshift({ p:1, text:'No Text Styles exist yet — create styles from your most-used font combinations.' });
+  return result;
+}
+
+function describeResult(label, r) {
+  const parts = [];
+  if (r.created) parts.push(r.created + ' style' + (r.created !== 1 ? 's' : '') + ' created');
+  if (r.removed) parts.push(r.removed + ' style' + (r.removed !== 1 ? 's' : '') + ' removed');
+  if (r.applied) parts.push(r.applied + ' layer' + (r.applied !== 1 ? 's' : '') + ' updated');
+  if (r.skipped) parts.push(r.skipped + ' skipped');
+  if (r.overrides) parts.push(r.overrides + ' as instance override' + (r.overrides !== 1 ? 's' : ''));
+  if (r.components) parts.push(r.components + ' via main component');
+  if (r.guide) parts.push('style guide added to the canvas');
+  let msg = label + ': ' + (parts.length ? parts.join(', ') : 'nothing changed');
+  if (r.reasons && r.reasons.length) msg += '. ' + r.reasons[0];
+  return msg;
+}
+
+async function postStyleScan(kind) {
+  const isPaint = kind === 'paint';
+  const roots = await resolveScanRoots(isPaint ? lastColorRootIds : lastTextRootIds);
+  if (!roots.length) {
+    figma.ui.postMessage({ type: 'style-error', scope: isPaint ? 'colors' : 'text', message: 'No frame selected — select a frame on the canvas first.' });
+    return;
   }
-  return ops;
+  const rootIds = roots.map(n => n.id);
+  const data = isPaint ? await scanColors(roots) : await scanText(roots);
+  data.rootName = roots.length === 1 ? roots[0].name : roots.length + ' layers';
+  const record = { data: data, byKey: indexScanRows(data) };
+  if (isPaint) { lastColorScan = record; lastColorRootIds = rootIds; }
+  else { lastTextScan = record; lastTextRootIds = rootIds; }
+  figma.ui.postMessage({ type: isPaint ? 'color-scan-result' : 'text-scan-result', data: data });
+}
+
+// Single entry point for every Colors / Typography tab message.
+async function handleStyleMessage(msg) {
+  const kind = msg.kind === 'text' ? 'text' : 'paint';
+  const scope = kind === 'paint' ? 'colors' : 'text';
+  const label = msg.label || 'Done';
+  try {
+    if (msg.type === 'style-scan') {
+      // A Scan from the entry screen always uses the current selection.
+      if (msg.fresh) {
+        if (kind === 'paint') lastColorRootIds = []; else lastTextRootIds = [];
+      }
+      await postStyleScan(kind);
+      return;
+    }
+    let result;
+    if (msg.type === 'style-rows') result = await runRowAction(kind, msg);
+    else if (msg.type === 'style-create') result = await createStylesFromList(kind, msg);
+    else if (msg.type === 'style-merge') result = await mergeStyles(kind, msg.groups || []);
+    else if (msg.type === 'style-delete') {
+      result = { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0 };
+      const style = await figma.getStyleByIdAsync(msg.styleId);
+      if (style && !style.remote) { style.remove(); result.removed = 1; }
+    } else return;
+
+    if (result.conflict) {
+      figma.ui.postMessage({ type: 'style-conflict', scope: scope, requestId: msg.requestId, names: result.conflict });
+      return;
+    }
+    figma.commitUndo();
+    const ok = (result.created || result.applied || result.removed) && !result.skipped;
+    figma.ui.postMessage({
+      type: 'style-action-done', scope: scope, requestId: msg.requestId,
+      message: describeResult(label, result),
+      tone: ok ? 'success' : (result.created || result.applied || result.removed) ? 'warning' : 'error'
+    });
+    // Generate flows have no scan to refresh.
+    if (msg.type !== 'style-create') await postStyleScan(kind);
+  } catch (e) {
+    figma.ui.postMessage({ type: 'style-error', scope: scope, requestId: msg.requestId, message: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+async function postFontList() {
+  const fonts = await figma.listAvailableFontsAsync();
+  const map = new Map();
+  for (const f of fonts) {
+    const fam = f.fontName.family;
+    if (!map.has(fam)) map.set(fam, []);
+    const styles = map.get(fam);
+    if (styles.indexOf(f.fontName.style) === -1) styles.push(f.fontName.style);
+  }
+  const list = Array.from(map.entries()).map(e => ({ family: e[0], styles: e[1] })).sort((a, b) => a.family.localeCompare(b.family));
+  figma.ui.postMessage({ type: 'fonts-list', fonts: list });
+}
+
+async function focusNodes(ids) {
+  const nodes = [];
+  for (const id of ids || []) {
+    try {
+      const node = await figma.getNodeByIdAsync(id);
+      if (node && 'visible' in node && isDescendantOrSelf(node, figma.currentPage.id)) nodes.push(node);
+    } catch (e) {}
+  }
+  if (!nodes.length) {
+    figma.notify('Those layers are no longer on this page.', { timeout: 2500 });
+    return;
+  }
+  figma.currentPage.selection = nodes;
+  figma.viewport.scrollAndZoomIntoView(nodes);
 }
 
 figma.ui.onmessage = async (msg) => {
@@ -2220,58 +3065,16 @@ figma.ui.onmessage = async (msg) => {
       figma.notify('Click on a frame or component in the canvas to select it', { timeout: 3000 });
       return;
     }
-    if (msg.type === 'collect-typo-colors') {
-      if (!figma.currentPage.selection.length) {
-        figma.ui.postMessage({ type: 'no-selection' });
-        return;
-      }
-      figma.ui.postMessage({ type: 'typo-colors-busy' });
-      try {
-        const data = await collectTypographyAndColors();
-        figma.ui.postMessage({ type: 'typo-colors-result', data });
-      } catch (e) {
-        figma.ui.postMessage({ type: 'typo-colors-error', message: e instanceof Error ? e.message : String(e) });
-      }
+    if (msg.type === 'style-scan' || msg.type === 'style-rows' || msg.type === 'style-create' || msg.type === 'style-merge' || msg.type === 'style-delete') {
+      await handleStyleMessage(msg);
       return;
     }
-    if (msg.type === 'merge-color-group') {
-      try {
-        const hexes = msg.hexes || [];
-        const name  = (msg.name || '').trim() || (hexes[0] || 'Merged Color');
-        if (hexes.length === 0) return;
-        const target = hexes[0];
-        const tr = parseInt(target.slice(1,3),16)/255;
-        const tg = parseInt(target.slice(3,5),16)/255;
-        const tb = parseInt(target.slice(5,7),16)/255;
-        const localStyles = await figma.getLocalPaintStylesAsync();
-        let style = null;
-        for (const s of localStyles) {
-          const p = s.paints.find(function(p) { return p.type==='SOLID'; });
-          if (p && hexes.includes(rgbToHexStr(p.color))) { style = s; break; }
-        }
-        if (!style) {
-          style = figma.createPaintStyle();
-        }
-        style.name   = name;
-        style.paints = [{ type:'SOLID', color:{ r:tr, g:tg, b:tb }, opacity:1 }];
-        const allNodes = [];
-        function walkMerge(node) { allNodes.push(node); if ('children' in node) { for (const c of node.children) walkMerge(c); } }
-        for (const child of figma.currentPage.children) walkMerge(child);
-        let updated = 0;
-        for (const node of allNodes) {
-          if (!('fills' in node) || node.fills === figma.mixed || !Array.isArray(node.fills)) continue;
-          const fsId = 'fillStyleId' in node ? node.fillStyleId : '';
-          if (typeof fsId === 'string' && fsId.length > 0 && fsId !== figma.mixed) continue;
-          let matched = false;
-          for (const fill of node.fills) {
-            if (fill.type==='SOLID' && hexes.includes(rgbToHexStr(fill.color))) { matched=true; break; }
-          }
-          if (matched) { try { node.fillStyleId = style.id; updated++; } catch (e) {} }
-        }
-        figma.ui.postMessage({ type:'merge-color-done', name:style.name, updated, mergeId:msg.mergeId });
-      } catch (e) {
-        figma.ui.postMessage({ type:'merge-color-error', message:e instanceof Error?e.message:String(e), mergeId:msg.mergeId });
-      }
+    if (msg.type === 'list-fonts') {
+      await postFontList();
+      return;
+    }
+    if (msg.type === 'focus-nodes') {
+      await focusNodes(msg.nodeIds);
       return;
     }
     if (msg.type === 'collect-texts') {

@@ -1,7 +1,7 @@
 {
   "name": "figma-wordpress-optimizer",
-  "version": "1.1.0",
-  "description": "Figma plugin that audits designs for WordPress handoff readiness, checks typography/color consistency, and runs an offline spelling & grammar pass.",
+  "version": "1.2.0",
+  "description": "Figma plugin that audits designs for WordPress handoff readiness, manages color and text styles, and runs an offline spelling & grammar pass.",
   "license": "MIT",
   "private": true,
   "main": "code.js"

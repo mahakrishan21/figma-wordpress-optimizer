@@ -2,16 +2,16 @@
   <img src="assets/icon-256.png" alt="Figma WordPress Optimizer icon" width="128" height="128" />
 </p>
 
-<h1 align="center">Figma WordPress Optimizer — V18</h1>
+<h1 align="center">Figma WordPress Optimizer — V19</h1>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.0.0-2563eb">
+  <img alt="version" src="https://img.shields.io/badge/version-1.2.0-2563eb">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-16a34a">
   <img alt="figma api" src="https://img.shields.io/badge/Figma%20API-1.0.0-7c3aed">
   <img alt="network" src="https://img.shields.io/badge/network-offline-6b7280">
 </p>
 
-A Figma plugin that audits designs against a WordPress conversion SOP (Standard Operating Procedure), checks typography and color consistency, runs an offline spelling/grammar pass, and applies one-click automated fixes to prepare files for handoff.
+A Figma plugin that audits designs against a WordPress conversion SOP (Standard Operating Procedure), creates and manages color and text styles, runs an offline spelling/grammar pass, and applies one-click automated fixes to prepare files for handoff.
 
 ---
 
@@ -22,11 +22,12 @@ A Figma plugin that audits designs against a WordPress conversion SOP (Standard 
 - [Plugin Window](#plugin-window)
 - [How to Use](#how-to-use)
 - [Audit Checks](#audit-checks)
-- [Typography & Colors](#typography--colors)
+- [Colors](#colors)
+- [Typography](#typography)
 - [Spelling & Grammar](#spelling--grammar)
 - [Automated Actions](#automated-actions)
 - [Issue Categories](#issue-categories)
-- [Scope: Page vs Selection](#scope-page-vs-selection)
+- [Scope](#scope)
 - [Issue Management](#issue-management)
 - [Smart Detection Logic](#smart-detection-logic)
 - [Blocked vs Actionable Issues](#blocked-vs-actionable-issues)
@@ -45,20 +46,25 @@ A Figma plugin that audits designs against a WordPress conversion SOP (Standard 
 
 ## Overview
 
-The plugin scans a Figma page (or a selection) and flags structural, stylistic, typographic, and export-readiness issues that would cause friction when converting designs to WordPress themes or blocks. After auditing, it offers one-click automated fixes for issues it can safely resolve, plus a dedicated Typography & Colors audit and an offline Spelling & Grammar checker.
+The plugin scans the selected frame and flags structural, stylistic, typographic, and export-readiness issues that would cause friction when converting designs to WordPress themes or blocks. After auditing, it offers one-click automated fixes for issues it can safely resolve.
+
+The **Colors** and **Typography** tabs cover style management for both kinds of work:
+
+- **Existing designs** — scan a frame to find unlinked colors and text, then create or apply the right styles in one click.
+- **New designs** — generate a color palette (from an image or by hand) and a full type scale before you start designing.
 
 **Plugin metadata:**
 
 | Field | Value |
 |---|---|
 | Name | Figma WordPress Optimizer |
-| Version | 1.0.0 |
+| Version | 1.2.0 |
 | Figma API | 1.0.0 |
 | Editor type | Figma (design files only) |
 | Document access | dynamic-page |
 | Network access | none (fully offline) |
 | UI size | 760 × 860 px |
-| Tabs | Audit · Spelling & Grammar · Typography & Colors |
+| Tabs | Audit · Spelling & Grammar · Colors · Typography |
 
 ---
 
@@ -69,7 +75,7 @@ This is a private/local plugin. It is not published to the Figma Community.
 1. Open Figma Desktop (required for local plugin development).
 2. Go to **Plugins → Development → Import plugin from manifest…**
 3. Select the `manifest.json` file from this folder.
-4. The plugin will appear under **Plugins → Development → Figma WordPress Optimizer v18**.
+4. The plugin will appear under **Plugins → Development → Figma WordPress Optimizer v19**.
 
 ---
 
@@ -80,7 +86,7 @@ The plugin panel is divided into these sections, top to bottom:
 | Section | Description |
 |---|---|
 | Header | Plugin name, one-line description, and tab bar |
-| Tab bar | Switch between **Audit**, **Spelling & Grammar**, and **Typography & Colors** |
+| Tab bar | Switch between **Audit**, **Spelling & Grammar**, **Colors**, and **Typography**. Colors and Typography scan results start with a toolbar: **Generate … Styles** then **Re-Scan**. |
 | Toolbar | 8 audit action buttons (Audit tab) |
 | Scope indicator | Shows whether the audit ran on the page or a selection |
 | Progress bar | Live progress during audit (hidden when idle) |
@@ -96,15 +102,15 @@ The plugin panel is divided into these sections, top to bottom:
 
 ### Typical workflow
 
-1. Open the plugin via **Plugins → Development → Figma WordPress Optimizer v18**.
-2. Optionally select one or more frames to narrow the scope. If nothing is selected the entire page is scanned.
+1. Open the plugin via **Plugins → Development → Figma WordPress Optimizer v19**.
+2. Select the frame (or component) you want to check. All scans work on the selection only.
 3. Click **Run audit**. A progress bar shows live progress through nodes.
 4. Review the stats grid and the issue groups below it.
 5. For each issue group, use the **Focus** button to jump to the node in the canvas.
 6. Use the action buttons in the toolbar to apply automated fixes.
 7. Re-run the audit after each batch of fixes to see the updated count.
 8. Use **Ignore** on any single issue, or **Ignore all** on an entire category, if it's intentional or out of scope for this handoff.
-9. Switch to the **Typography & Colors** tab and click **Scan File** to review font/color consistency and merge duplicates.
+9. Switch to the **Colors** and **Typography** tabs and click **Scan** to link unlinked colors and text to styles, and merge duplicates.
 10. Switch to the **Spelling & Grammar** tab to catch copy issues before handoff.
 
 ### Recommended fix order
@@ -116,14 +122,14 @@ The plugin panel is divided into these sections, top to bottom:
 5. Mark exportable assets
 6. Flatten vectors
 7. Outline strokes
-8. Resolve Typography & Colors recommendations (merge duplicate colors/text styles)
-9. Address missing text/color styles and font issues manually in Figma
+8. Colors and Typography tabs: create & apply styles for unlinked colors and text, then merge duplicate styles
+9. Address remaining font issues manually in Figma
 
 ---
 
 ## Audit Checks
 
-The plugin runs **23 checks** on every node in scope, across **6 categories**. Each check produces issues with one of three severity levels: **high**, **medium**, or **low**.
+The plugin runs **24 checks** on every node in scope, across **6 categories**. Each check produces issues with one of three severity levels: **high**, **medium**, or **low**.
 
 ### Accuracy & performance (added in V17, expanded V18)
 
@@ -133,10 +139,12 @@ The plugin runs **23 checks** on every node in scope, across **6 categories**. E
 | `auto-line-height` | medium | Text uses AUTO line-height — developers need an explicit value to implement accurately. | `TEXT` node has `lineHeight.unit === 'AUTO'`. |
 | `missing-font` | high | Referenced font is not available — text will render with a fallback. | A `TEXT` node references a font family/style that fails `figma.loadFontAsync()`. |
 | `section-overlap` | medium | One section overlaps another by a measurable amount. | Two consecutive top-level FRAME/COMPONENT/GROUP/SECTION nodes where the bottom edge of one overlaps the top edge of the next by more than 2px. |
-| `near-dupe-spacing` | low | Near-duplicate spacing values found (e.g. 30px / 32px) — standardize to a consistent scale. | Padding/gap values on Auto Layout frames where two distinct values differ by ≤2px. |
+| `section-spacing-inconsistency` | low | A section's padding differs from the dominant spacing pattern on the page. | Content-area padding on direct children of the selected frame deviates by more than 8px from the dominant (or secondary) pattern across 3+ sections. |
 | `no-mobile-frame` | medium | No mobile frame found on this page — WordPress themes require responsive design for all breakpoints. | The page has a frame wider than 1024px but no frame ≤480px wide. |
 | `multiple-fonts` | low | Multiple distinct font families detected — review and consolidate. | More than 2 unique font families are used across `TEXT` nodes in scope. |
 | `interactive-no-states` | low | Component looks like a carousel/accordion/tabs/modal but has no state variants (hover, open, closed). | Node name matches an interactive-pattern (carousel, accordion, tabs, modal) but no child/sibling layer names indicate state variants. |
+
+`auto-line-height`, `section-overlap`, and `no-mobile-frame` are listed under **Developer Handoff Notes** below the issue list rather than as errors.
 
 ### Structure and hierarchy
 
@@ -169,6 +177,7 @@ The plugin runs **23 checks** on every node in scope, across **6 categories**. E
 | `missing-export` | medium | Asset should be marked exportable. | Node is an exportable leaf (image fill, vector primitive, or small icon/logo group) and has no `exportSettings`. |
 | `flatten-vectors` | low | Icon vector group may be flattened to reduce nested structure. | A FRAME, GROUP, or COMPONENT that is ≤64×64 px (or ≤150×150 px with an "icon"/"ico" name), containing ≥2 direct vector-like children (VECTOR, BOOLEAN_OPERATION, STAR, ELLIPSE, POLYGON, RECTANGLE). |
 | `strokes-found` | low | Thin stroke may be better handled as a fill or dedicated separator asset. | Node has strokes and is NOT a container (FRAME/COMPONENT/SECTION), and is either a LINE, has a stroke weight ≤1 with minimal height/width, or is a decorative vector with stroke weight ≤1. |
+| `image-fit-mode` | medium | Image fill uses Fit (letterboxing) or Crop (hard-to-replicate pan/zoom) instead of Fill. | A node has an `IMAGE` fill with `scaleMode` `FIT` or `CROP`. |
 
 ### Cleanup and separators
 
@@ -182,41 +191,80 @@ Each issue card includes an expandable **"Why & how to fix"** panel with the rat
 
 ---
 
-## Typography & Colors
+## Colors
 
-A dedicated tab for auditing font and color consistency, separate from the structural audit. Click **Scan File** to run it.
+The **Colors** tab opens on an entry screen with two choices: **Scan** (needs a selected frame) or **Generate Color Styles** (no selection needed).
 
-### What it shows
+### Scan — color audit
 
-- **Color styles** — every defined color style, with WCAG contrast ratios against white and black backgrounds.
-- **Unlinked colors** — solid fills used directly on layers without a Color Style, flagged when used 3+ times.
-- **Near-duplicate colors** — visually similar colors grouped by a color-distance algorithm (e.g. two near-identical blues that should be one style).
-- **Unused styles** — Color and Text styles defined in the file but not used anywhere on the current page.
-- **Text styles** — grouped by semantic role (Display, Headings, Body, Captions, Buttons, UI).
-- **Unlinked text** — font/size/weight combinations used 3+ times without a Text Style.
-- **Font families** — every font family and style variant detected in the file.
-- **Font size usage** — a frequency chart of font sizes, flagging one-off sizes that don't fit the scale.
+Scans every visible fill **and stroke** in the selected frame, **including layers inside component instances** (tagged *in component*). Results:
 
-### Merge duplicate colors
+| Section | What it lists | Actions |
+|---|---|---|
+| Stat cards | Color styles in this file · styles from another file · detached colors (and layer count) · near-duplicate styles | Click a card to jump to its section |
+| **Color Styles** | Local color styles used in the frame, with hex, opacity, and use count. Expand a row to see each layer (5 per page). | **Focus All**, **Delete** (asks first) |
+| **Unlinked Colors → New Color** | Solid colors with no style and no matching style anywhere. Each gets an editable suggested name (e.g. `Brand / Blue`, `Text / Dark Gray`, `Neutral / White / 6%`). | **Create & Apply**, **Create & Apply All** |
+| **Unlinked Colors → Matches Existing → Styles from this file** | Unlinked colors whose hex **and** opacity exactly match a local style. | **Apply Style**, **Apply All** |
+| **Unlinked Colors → Matches Existing → Style from other file** | Colors that come from another Figma file — typical after copy-pasting between files. Figma keeps the link and shows the name in the fill panel, but the color isn't defined in this file. Covers both **color styles** and **color variables** from the other file (aliases are resolved to their final color), plus unlinked colors that match them. | **Create & Apply** (makes a local color style with the same name and color, then re-links the layers), **Create & Apply All** |
+| **Needs manual fix** | Layers with several fills or strokes (e.g. image + color + gradients). A style replaces every paint, so these can't be linked automatically; each row explains what the layer has. | **Focus** |
+| **Near-Duplicate Colors** | Local styles with the same opacity and practically the same color (CIE Lab ΔE < 3). Same color at a different opacity (e.g. White 100% / 20% / 8%) is listed separately as an *opacity variant* and never offered for merging — those are usually overlays. | **Merge colors →** (choose which style to keep), **Merge All** |
 
-For each near-duplicate color group, click **Merge colors →** to open an inline form:
+If a pasted style or variable has the same value as a local color style (same name preferred), it's treated as "from this file" so no duplicate is created. Color variables defined in this file count as linked and aren't listed.
 
-1. Edit the suggested name for the merged Color Style (pre-filled from the first color's name or hex).
-2. Click **Confirm Merge**.
-3. The plugin creates/updates the Color Style and re-points every matching unlinked layer to it, then reports how many layers were updated.
+### Generate Color Styles
 
-### Recommendations
+Opens **Generate Color Styles from your brand assets** with two options:
 
-A prioritized list of actionable cards (severity high/medium/low), covering:
+- **Extract from image** — upload or drag in a JPG, PNG, or WebP. Colors are extracted offline (k-means clustering in Lab color space, up to 8 colors) and named by prominence: `Primary`, `Secondary`, `Accent`, `Tertiary`, with neutrals as `White` / `Light Gray` / `Gray` / `Dark Gray` / `Black` and a strong red as `Error`.
+- **Create Color Palette** — build the palette by hand. Click a swatch for the color picker (saturation/brightness square, hue and opacity sliders, hex/% inputs, and an eyedropper where the browser supports it), or type hex codes directly.
 
-- Merging near-duplicate colors
-- Creating Color Styles for frequently-used unassigned colors
-- Merging duplicate text styles with identical properties
-- Converting frequently-used text combinations into Text Styles
-- Removing or archiving unused Color/Text styles
-- Reviewing/consolidating font families when more than 2 are in use
+Both screens share the same editable list: edit name, hex, and opacity; drag rows to reorder; delete rows; **+ Add New Color**; then **Create Color Styles**.
 
-Each card expands to show **Impact**, **Action**, and **Benefit**.
+With **Add style guide to canvas** checked (the default), the plugin also places a **Style Guide / Colors** frame to the right of your content — one swatch card per style (linked to the style), with its name, hex and opacity — then selects and zooms to it.
+
+## Typography
+
+The **Typography** tab works the same way: **Scan** or **Generate Text Styles**.
+
+### Scan — text audit
+
+Text layers are grouped by font family, weight, size, line height, and letter spacing.
+
+| Section | What it lists | Actions |
+|---|---|---|
+| Stat cards | Text styles in this file · styles from another file · unlinked text (and layers) · duplicate styles · fonts (families, sizes) | Click to jump |
+| **Text Styles** | Local text styles used in the frame | **Focus All**, **Delete** |
+| **Unlinked text → New Text** | Combinations with no matching style. Suggested web-standard names: `H1`–`H6` for large sizes (≥22px), `Eyebrow` for small uppercase text, otherwise `Body Large`, `Body`, `Body Small` or `Caption` relative to the most common size in the frame, with the weight added when it isn't Regular (`Body Bold`, `Body Small Medium`). | **Create & Apply**, **Create & Apply All** |
+| **Matches Existing → Styles from this file** | Unlinked text exactly matching a local style | **Apply Style**, **Apply All** |
+| **Matches Existing → Styles from other file** | Text linked to (or matching) a style from another file | **Create & Apply**, **Create & Apply All** |
+| **Duplicate Text Styles** | Local styles with identical font, weight, size, and line height | **Merge**, **Merge All** |
+| **Fonts** | Font families and weights in use, plus a size-usage chart that flags one-off sizes | — |
+
+Text layers that mix fonts or styles inside one layer are skipped and counted in a note.
+
+### Generate Text Styles
+
+Builds a modular type scale and creates it as text styles:
+
+- **Scale** — 1.125 Major Second (default), 1.200 Minor Third, 1.250 Major Third, 1.333 Perfect Fourth, 1.618 Golden Ratio, or a **Custom** ratio.
+- **Base Size** — default 16px.
+- **Heading** and **Body** settings — font, weight, line height (%), letter spacing (%). Defaults: Inter Regular, 150%, 0%.
+- **Font list** — searchable, filterable by **All Fonts / Google Fonts / Installed by You**. Weights come from the styles Figma actually has for the font.
+- **Styles generated** — `H1`–`H6` use the heading settings; `Para`, `Body`, and `Label` use the body settings. Each step multiplies the previous rounded size (at 1.125: Label 14.22 · Body 16 · Para 18 · H6 20.25 · H5 22.78 · H4 25.63 · H3 28.83 · H2 32.43 · H1 36.48).
+- **Per-style edits** — the pencil on any row opens an editor for name, typeface, size, weight, line height, letter spacing, and text case; **Save** keeps that override (marked with a dot) and **Reset to scale** removes it. The trash icon removes a row.
+- **+ Add Text Style** — adds more web-standard styles, each placed on the scale with sensible defaults: *Headings* (Display, H1–H6, Subtitle, Quote), *Body* (Para, Body Large, Body, Body Medium, Body Bold, Body Small) and *UI & labels* (Eyebrow and Overline — uppercase with tracking, Label, Caption, Button, Link — underlined, Nav, Small). **Custom style…** adds a blank row and opens the editor.
+
+With **Add style guide to canvas** checked (the default), a **Style Guide / Typography** frame is placed on the canvas with a sample line for every style (linked to the style) and its font, size and line height.
+
+The preview can only render fonts installed on this computer. Other fonts preview in a fallback with a note — the generated styles still use the chosen font.
+
+### How styles are applied
+
+- **Selection only** for scans and apply actions. **Merge** and **Delete** affect the whole file (styles are shared by every page) and always ask first.
+- A style replaces every paint on a layer, so layers with **more than one fill or stroke are skipped** (and labelled in the layer list) rather than losing paints.
+- **Layers inside component instances** are styled on the main component when it lives in this file (so every instance updates), otherwise as an instance override. Locked layers are skipped.
+- **Name conflicts** — when a new style's name already exists, you choose **Update existing** (changes that style everywhere) or **Keep both**.
+- Each action is a **single undo step** (⌘Z), and the tab re-scans automatically afterwards.
 
 ---
 
@@ -285,7 +333,7 @@ Groups vector siblings into "buckets" by parent node, then calls `figma.flatten(
 
 ### Outline strokes
 
-Scans all nodes in scope (not just audit results). Calls `figma.outlineStroke()` on every node that has strokes. Skips nodes inside instances or locked nodes.
+Outlines only the thin separator/decorative strokes flagged as `strokes-found` (or, before any audit has run, the same thin-stroke candidates in the selection). Container borders on frames, components, and sections — cards, inputs — are never outlined. Skips nodes inside instances or locked nodes.
 
 ### Make Auto Layout
 
@@ -304,27 +352,22 @@ Issues are grouped into **6 collapsible sections** in the UI, each with its own 
 
 | Category key | Display label | Color | Issue types |
 |---|---|---|---|
-| `accuracy` | Accuracy & performance | Red | text-overflow, auto-line-height, missing-font, section-overlap, near-dupe-spacing, no-mobile-frame, multiple-fonts, interactive-no-states |
-| `structure` | Structure & hierarchy | Blue | generic-name, deep-nesting, background-layer, empty-group |
-| `styles` | Styles & variables | Violet | missing-text-style, missing-color-style |
+| `accuracy` | Accuracy & performance | Red | text-overflow, auto-line-height, missing-font, section-overlap, no-mobile-frame, interactive-no-states, section-spacing-inconsistency |
+| `structure` | Structure & hierarchy | Blue | generic-name, deep-nesting, background-layer |
+| `styles` | Styles & variables | Violet | missing-text-style, missing-color-style, multiple-fonts |
 | `buttons` | Buttons & sections | Amber | button-no-auto-layout, section-no-auto-layout, fixed-height-section |
-| `assets` | Assets & vectors | Green | missing-export, flatten-vectors, strokes-found |
-| `cleanup` | Cleanup & separators | Gray | hidden-layer, line-object, mask-found |
+| `assets` | Assets & vectors | Green | missing-export, flatten-vectors, strokes-found, image-fit-mode |
+| `cleanup` | Cleanup & separators | Gray | hidden-layer, line-object, mask-found, empty-group |
 
 Each category group is rendered as a collapsible section (open by default) with a colored dot, a count badge, and an **Ignore all** button in its header.
 
 ---
 
-## Scope: Page vs Selection
+## Scope
 
-| Condition | Scope |
-|---|---|
-| Nothing selected | Entire page (`figma.currentPage.children`) |
-| One or more nodes selected | Only the selected nodes and their descendants |
+Every tab works on the **current selection** only — select a frame or component first. Scan buttons stay disabled until something is selected.
 
-The scope label ("Selected layers" or "Current page") is shown below the toolbar after every audit.
-
-**Tip shown automatically:** When the page has more than one top-level frame/section and nothing is selected, the plugin displays a tip suggesting the user select the specific frame first for a narrower report.
+The Colors and Typography tabs remember the frame they scanned: after **Focus** moves the selection to a single layer, **Re-Scan** and post-action refreshes still cover the original frame. Select a different frame and press **Re-Scan** to switch.
 
 ---
 
@@ -452,11 +495,12 @@ The plugin follows the standard Figma plugin two-process model:
 | `idle` | — | Re-enables buttons, hides progress bar |
 | `report` | `{ report, extraMessage }` | Full audit results; triggers a re-render |
 | `error` | `{ message }` | Shows error state in the UI |
-| `typo-colors-busy` | — | Shows progress for the Typography & Colors scan |
-| `typo-colors-result` | `{ summary, recommendations, opportunities, ... }` | Full Typography & Colors report |
-| `typo-colors-error` | `{ message }` | Shows error state for the Typography & Colors tab |
-| `merge-color-done` | `{ updated }` | Reports how many layers were re-pointed after a color merge |
-| `merge-color-error` | `{ message }` | Shows error state for a failed color merge |
+| `color-scan-result` / `text-scan-result` | `{ data }` | Full Colors / Typography scan (rows, summary, duplicates) |
+| `style-progress` | `{ scope, completed, total }` | Scan progress for the Colors / Typography tab |
+| `style-action-done` | `{ scope, requestId, message, tone }` | Result of a style action (a re-scan follows, except for Generate) |
+| `style-conflict` | `{ scope, requestId, names }` | Style names already exist — UI asks Update existing / Keep both and resends |
+| `style-error` | `{ scope, requestId, message }` | A style scan or action failed |
+| `fonts-list` | `{ fonts: [{ family, styles }] }` | Fonts available in Figma, for the type-scale generator |
 
 ### Message types (UI → sandbox)
 
@@ -474,8 +518,13 @@ The plugin follows the standard Figma plugin two-process model:
 | `ignore-issue` | `{ nodeId, issueType }` | Adds a single issue key to the ignore set |
 | `ignore-issues-bulk` | `{ pairs: [{ nodeId, issueType }] }` | Adds multiple issue keys to the ignore set (used by "Ignore all") |
 | `clear-ignored` | — | Clears ignore set and re-audits |
-| `collect-typo-colors` | — | Runs the Typography & Colors scan |
-| `merge-color-group` | `{ hexes, name }` | Merges a near-duplicate color group into one Color Style |
+| `style-scan` | `{ kind: 'paint' \| 'text', fresh }` | Scans colors or text in the selection |
+| `style-rows` | `{ kind, action: 'apply' \| 'create' \| 'copy', rows: [{ key, name }], conflict? }` | Acts on scan rows by key (sandbox keeps the layer lists) |
+| `style-create` | `{ kind, items, conflict? }` | Generate flows: creates color styles from a palette or text styles from a type scale |
+| `style-merge` | `{ kind, groups: [{ keepId, removeIds }] }` | Re-links every layer in the file to the kept style, then deletes the others |
+| `style-delete` | `{ kind, styleId }` | Deletes a local style |
+| `list-fonts` | — | Requests the font list |
+| `focus-nodes` | `{ nodeIds }` | Selects and zooms to several layers (Focus All) |
 | `close` | — | Calls `figma.closePlugin()` |
 
 ### Session state (sandbox globals)
@@ -486,6 +535,8 @@ The plugin follows the standard Figma plugin two-process model:
 | `lastAuditIssueTypesByNode` | `Map<string, string[]>` | Issue types per node ID from the last audit |
 | `ignoredIssueKeys` | `Set<string>` | Session-level ignored `"nodeId:issueType"` keys |
 | `lastUserSelectionIds` | `string[]` | Selection snapshot before each action, used to restore selection after ignore operations |
+| `lastColorScan` / `lastTextScan` | `{ data, byKey }` | Most recent Colors / Typography scan, so UI actions can refer to rows by key |
+| `lastColorRootIds` / `lastTextRootIds` | `string[]` | Frames last scanned by each tab, reused by Re-Scan after Focus |
 
 ### Client-side state (UI globals)
 
@@ -499,16 +550,15 @@ The plugin follows the standard Figma plugin two-process model:
 ## File Structure
 
 ```
-figma-wordpress-optimizer-v18/
+figma-wordpress-optimizer/
 ├── manifest.json     — Figma plugin manifest (name, entry points, permissions)
-├── code.js           — Plugin sandbox: audit engine, typography/color analysis, fix actions, message handler
-├── ui.html           — Plugin UI: HTML + CSS + inline JS (Audit, Spelling & Grammar, Typography & Colors tabs)
+├── code.js           — Plugin sandbox: audit engine, color/text style scans and actions, fix actions, message handler
+├── ui.html           — Plugin UI: HTML + CSS + inline JS (Audit, Spelling & Grammar, Colors, Typography tabs)
 ├── assets/           — Icon and branding assets (icon-512.png, icon-256.png, icon-128.png)
 ├── README.md         — This file
 ├── CHANGELOG.md      — Version history
 ├── CONTRIBUTING.md   — Contribution guidelines
-├── LICENSE           — MIT license
-└── SESSION_NOTES.md  — Development session notes / handoff context
+└── LICENSE           — MIT license
 ```
 
 ---
@@ -518,7 +568,10 @@ figma-wordpress-optimizer-v18/
 - **Instance edits are blocked.** Figma's API does not allow editing nodes inside instances without first detaching them. Most structural fixes (rename, remove, convert, add export settings, auto layout) will be skipped for nodes inside instances.
 - **Mixed fills/styles.** Nodes with `figma.mixed` fills or style IDs are treated conservatively and do not raise false positives for missing-style checks.
 - **No persistence.** Ignored issues are session-only and reset when the plugin is closed.
-- **No undo grouping.** Each action is a series of individual node mutations. Figma's undo stack will show multiple steps rather than a single grouped undo. This also applies to Typography & Colors merges.
+- **Undo grouping (Audit tab).** Audit fix actions are a series of individual node mutations, so Figma's undo stack shows multiple steps. Colors and Typography actions are committed as a single undo step each.
+- **Multi-paint layers.** A style replaces every fill or stroke on a layer, so layers with more than one paint are skipped by Colors actions and must be styled manually.
+- **Mixed text.** Text layers that mix fonts/sizes inside one layer are skipped by Typography actions.
+- **Font preview.** The type-scale preview renders only fonts installed on this computer; others use a fallback (the created styles are unaffected). The Google Fonts list is a bundled snapshot.
 - **Auto layout padding is not inferred.** The "Make Auto Layout" action sets `itemSpacing` from child positions but applies zero padding. Padding must be set manually after conversion.
 - **Button group conversion is lossy.** When converting a GROUP-based button, only the visual style of a detected background rectangle is transferred to the new frame. Other styling on the group itself is not preserved.
 - **Export settings conflict detection.** The plugin skips nodes that already have any export settings, even if those settings are incomplete or incorrect.
@@ -541,8 +594,11 @@ The node is either locked, inside a component instance, or no longer exists. See
 **Can I run this on just part of my page?**
 Yes — select one or more frames/layers before running the audit, and the scope automatically narrows to the selection and its descendants.
 
-**Does merging colors in the Typography & Colors tab affect components/instances?**
-The merge re-points layers with matching unlinked fill values to the new/updated Color Style. As with other actions, nodes inside instances may be skipped — re-run the scan afterward to confirm.
+**Does merging styles affect components and instances?**
+Merging re-links every layer in the file that uses the removed style, then deletes it. Layers inside instances can't be edited directly; they follow their main component, which is re-linked like any other layer.
+
+**What is a "style from other file"?**
+When you copy layers from another Figma file, they keep a link to that file's style. Figma shows the style name, but it isn't one of this file's styles. **Create & Apply** makes a local copy with the same name and values and re-links the layers to it.
 
 **Why does `missing-font` flag a font I have installed?**
 Figma loads fonts asynchronously per-document; if the font failed to load at scan time (e.g. it's a custom/team font not yet synced), it will be flagged. Re-run the audit after the font finishes loading.
@@ -558,8 +614,9 @@ Figma loads fonts asynchronously per-document; if the font failed to load at sca
 | Audit seems to hang on large files | Very large pages can take longer; progress updates fire every 120 nodes. If it truly stalls, close and reopen the plugin and try auditing a selection instead of the whole page. |
 | An automated fix skipped some nodes | Check the message bar — it reports skipped counts. Common reasons: node is locked or inside an instance (see [Known Limitations](#known-limitations)). |
 | Ignored issues reappear after reopening the plugin | Expected — the ignore list is session-only by design (see [Known Limitations](#known-limitations)). |
-| Typography & Colors tab shows no data | Click **Scan File** — this tab does not run automatically with the main audit. |
-| Colors/fonts look different after a merge | The merge updates the Color Style and re-points matching layers; re-run **Scan File** to refresh the report with the new state. |
+| Colors / Typography tab shows no results | Select a frame and click **Scan** — these tabs don't run with the main audit. |
+| "Create & Apply" skipped some layers | Check the toast — locked layers, layers inside instances, and layers with more than one fill/stroke are skipped. |
+| A font is missing from the Generate Text Styles list | The list comes from Figma's available fonts. Install the font and restart Figma. |
 
 ---
 
@@ -567,20 +624,17 @@ Figma loads fonts asynchronously per-document; if the font failed to load at sca
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.
 
-**Latest: v1.0.0**
-- New **Accuracy & performance** category with 8 new audit checks (text overflow, auto line-height, missing fonts, section overlaps, near-duplicate spacing, no mobile frame, multiple fonts, interactive components without states)
-- New **Typography & Colors** tab: color/text style audit, WCAG contrast, near-duplicate color merging, and prioritized recommendations
-- Fixed the "Ignore" button to ignore only the selected issue (previously cleared all issues)
-- Added per-category **Ignore all** button
-- Redesigned stats grid (6 columns, left-aligned) and accordion with consistent category color-coding
-- Removed the header close button and the "No mobile frame" stat card from the grid (the check itself remains active)
+**Latest: v1.2.0 (V19)**
+- Typography & Colors split into separate **Colors** and **Typography** tabs
+- Scan: create & apply styles for unlinked colors/text, apply matching styles, copy styles from other files, delete and merge styles
+- Generate: color styles from an image or a hand-built palette (with color picker); text styles from a modular type scale
 
 ---
 
 ## Roadmap
 
 - **Auto layout padding inference** — Detect inner spacing from child bounds and apply it automatically during section/button conversion.
-- **Undo grouping** — Wrap multi-step fix operations (including Typography & Colors merges) so the entire action appears as a single undo step.
+- **Undo grouping** — Wrap Audit fix operations so each appears as a single undo step (Colors and Typography already do).
 - **Persistent ignore list** — Store ignored keys in `figma.clientStorage` so they survive plugin close/reopen.
 - **Component and variable coverage** — Flag components that do not use variable bindings for spacing and color tokens.
 - **Batch fix by category** — Extend "Ignore all" with "Fix all in category" where an automated action exists.

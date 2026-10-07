@@ -17,7 +17,7 @@ When filing a bug report, please include:
 Open an issue describing:
 
 - The problem you're trying to solve (not just the feature)
-- How it fits into the existing audit categories (Accuracy & performance, Structure & hierarchy, Styles & variables, Buttons & sections, Assets & vectors, Cleanup & separators) — or whether it needs a new category
+- How it fits into the existing tabs (Audit, Spelling & Grammar, Colors, Typography) or audit categories (Accuracy & performance, Structure & hierarchy, Styles & variables, Buttons & sections, Assets & vectors, Cleanup & separators) — or whether it needs a new category
 - Whether it should be a new audit check, an automated fix, or both
 
 ## Development setup
@@ -25,7 +25,7 @@ Open an issue describing:
 1. Clone the repo.
 2. Open Figma Desktop → **Plugins → Development → Import plugin from manifest…** and select `manifest.json`.
 3. Edit `code.js` (plugin sandbox) and/or `ui.html` (plugin UI).
-4. Reload the plugin in Figma to pick up changes (**Plugins → Development → Figma WordPress Optimizer v18**, or use the "Reload" option from the right-click menu while the plugin is running).
+4. Reload the plugin in Figma to pick up changes (**Plugins → Development → Figma WordPress Optimizer v19**, or use the "Reload" option from the right-click menu while the plugin is running).
 
 ## Code guidelines
 
