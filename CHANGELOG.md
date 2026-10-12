@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Colors → Create Color Palette: "+ Add New Color" always added the same purple** (`#7C3AED` was hardcoded), so every added row looked identical. New rows now take the next unused color from a set of 12 distinct hues, then continue around the hue circle at a fixed saturation/brightness, staying distinct and vivid indefinitely
+- **Typography → Generate Text Styles stopped working after the first use.** A per-row weight override (set via the pencil editor) was never re-checked against the row's font family, so changing the Heading or Body font left rows asking for a weight that family doesn't have — e.g. Inter's "Semi Bold" against Abhaya Libre's "SemiBold". Generate then hard-failed on a validation toast and created nothing. Overrides are now resolved through `closestStyle()` against the row's actual family
+- `closestStyle()` collapsed every weight to Regular when Figma's font list hadn't arrived yet; it now keeps the requested weight until the real list is known
+- The preview-fallback note was styled as an amber warning and read like a failure. It is now a neutral "Preview only" note that says explicitly that Generate is unaffected
+- The unavailable-weight message now names the style row it refers to, instead of only the font and weight
+
 ### Documentation
 - README **Plugin Window** rewritten for the current UI: the header's rules-reference **i** button, the toast system, the Audit tab's three-panel flow (empty / ready / results), the 10-button toolbar, the collapsible stats grid, Developer Handoff Notes, and the resize handles
 - README **Automated Actions**: documented **Duplicate & Run Audit** (clone placement and `v1`/`v2`/`v3` naming), corrected "Run audit" which still claimed a whole-page fallback that V18 removed, and corrected the button count from 8 to 10

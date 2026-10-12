@@ -942,7 +942,8 @@
     .sm-preview-size { font-size: 11px; font-family: monospace; color: var(--text-secondary); }
     .sm-preview-row.edited .sm-preview-name::after { content: '•'; color: var(--blue-600); margin-left: 3px; }
     .sm-preview-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-primary); line-height: 1.25; }
-    .sm-font-note { padding: 7px 12px; font-size: 11px; color: var(--amber-700); background: var(--amber-50); border-top: 1px solid var(--amber-100); line-height: 1.4; }
+    .sm-font-note { padding: 7px 12px; font-size: 11px; color: var(--text-secondary); background: var(--gray-50); border-top: 1px solid var(--border); line-height: 1.4; }
+    .sm-font-note strong { color: var(--text-primary); font-weight: 600; }
 
     /* Dropdowns */
     .sm-dd { position: relative; }
@@ -2998,6 +2999,24 @@
   const PAL_GRID = '14px 44px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 40px';
   let palSeq = 0;
   function newPalItem(hex, opacity, name) { return { id: 'p' + (++palSeq), hex: hex, opacity: opacity, name: name }; }
+  // Distinct starting colors for "+ Add New Color", so each added row is
+  // visually different instead of repeating one hue.
+  const PAL_SUGGEST = ['#2563EB', '#7C3AED', '#DB2777', '#DC2626', '#EA580C', '#D97706',
+                       '#16A34A', '#0D9488', '#0EA5E9', '#4F46E5', '#9333EA', '#475569'];
+  function nextPaletteHex(list) {
+    const used = {};
+    for (const it of list) used[String(it.hex).toUpperCase()] = true;
+    for (const hex of PAL_SUGGEST) if (!used[hex]) return hex;
+    // Every suggestion is taken — walk the hue circle by the golden angle at a
+    // fixed saturation/brightness, so later colors stay as vivid as the first.
+    const start = hexToHsv(PAL_SUGGEST[0]).h;
+    let n = list.length - PAL_SUGGEST.length + 1;
+    for (let i = 0; i < 360; i++, n++) {
+      const hex = hsvToHex((start + 137.508 * n) % 360, 0.72, 0.88);
+      if (!used[hex]) return hex;
+    }
+    return hsvToHex(Math.random() * 360, 0.72, 0.88);
+  }
   function palList(listName) { return listName === 'ex' ? (CS.extract ? CS.extract.rows : []) : CS.palette; }
 
   function palCell(col, listName, it) {
@@ -3454,7 +3473,7 @@
     }
     if (act === 'pal-add') {
       const list = palList(el.dataset.list);
-      list.push(newPalItem('#7C3AED', 100, 'Color ' + (list.length + 1)));
+      list.push(newPalItem(nextPaletteHex(list), 100, 'Color ' + (list.length + 1)));
       renderColors();
       const last = $('colorsScreen').querySelector(`.sm-pal-row[data-row-id="${list[list.length - 1].id}"] [data-pal-field="${el.dataset.list === 'ex' ? 'name' : 'hex'}"]`);
       if (last) { last.focus(); last.select(); }
@@ -3594,6 +3613,9 @@
     return (TS.fontMap && TS.fontMap[family]) || ['Regular'];
   }
   function closestStyle(family, wanted) {
+    // Figma's font list hasn't arrived (or doesn't know this family) — keep the
+    // requested weight rather than silently collapsing everything to Regular.
+    if (!TS.fontMap || !TS.fontMap[family]) return wanted;
     const styles = stylesOf(family);
     if (styles.indexOf(wanted) !== -1) return wanted;
     const w = weightNum(wanted), it = isItalic(wanted);
@@ -3639,7 +3661,7 @@
         id: r.id, group: r.group, step: r.step,
         name: o.name || r.name,
         family: family,
-        style: o.style || closestStyle(family, r.style || grp.style),
+        style: closestStyle(family, o.style || r.style || grp.style),
         size: o.size != null ? o.size : scaleSize(g.base, g.ratio, r.step),
         lh: o.lh != null ? o.lh : (r.lh != null ? r.lh : grp.lh),
         ls: o.ls != null ? o.ls : (r.ls != null ? r.ls : grp.ls),
@@ -3905,7 +3927,7 @@
         <span>Line Height</span><input class="sm-input" data-gen="heading.lh" value="${trimNum(g.heading.lh)}%"><input class="sm-input" data-gen="body.lh" value="${trimNum(g.body.lh)}%">
         <span>Letter Spacing</span><input class="sm-input" data-gen="heading.ls" value="${trimNum(g.heading.ls)}%"><input class="sm-input" data-gen="body.ls" value="${trimNum(g.body.ls)}%">
       </div>
-      ${missing.length ? `<div class="sm-font-note">Preview uses a fallback font — ${missing.map(f => '“' + escHtml(f) + '”').join(' and ')} ${missing.length === 1 ? 'isn’t' : 'aren’t'} installed on this computer. The generated styles still use the selected font in Figma.</div>` : ''}
+      ${missing.length ? `<div class="sm-font-note"><strong>Preview only.</strong> ${missing.map(f => '“' + escHtml(f) + '”').join(' and ')} ${missing.length === 1 ? 'isn’t' : 'aren’t'} installed on this computer, so the sample lines below use a stand-in typeface. This doesn’t affect Generate — the styles Figma creates use the font you picked.</div>` : ''}
       <div class="sm-preview-head"><span>Name</span><span>Size</span><span>Preview</span><span style="text-align:right">Actions</span></div>
       <div id="tsPreview">${previewRowsHtml()}</div>
       <div class="sm-card-foot" style="justify-content:flex-start;border-top:1px solid var(--border)">
@@ -3966,7 +3988,7 @@
     }
     if (TS.fontMap) {
       const missing = rows.filter(r => !TS.fontMap[r.family] || TS.fontMap[r.family].indexOf(r.style) === -1);
-      if (missing.length) { showToast('“' + missing[0].family + ' ' + missing[0].style + '” isn’t available in Figma — pick another weight.', 'error'); return; }
+      if (missing.length) { showToast('“' + missing[0].name + '” wants ' + missing[0].family + ' ' + missing[0].style + ', which Figma doesn’t have — open that row and pick another weight.', 'error'); return; }
     }
     sendStyle(TS, { type: 'style-create', label: 'Generate text styles', placeOnCanvas: TS.placeGuide, items: rows.map(r => ({
       name: r.name, family: r.family, style: r.style, fontSize: r.size,
