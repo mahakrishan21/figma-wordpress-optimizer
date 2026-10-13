@@ -926,7 +926,9 @@
     .sm-input-suffix span { font-size: 11px; color: var(--text-muted); padding-right: 8px; }
     .sm-preview-head, .sm-preview-row { display: grid; grid-template-columns: 92px 64px minmax(0,1fr) 56px; align-items: center; column-gap: 8px; padding: 0 12px; }
     .sm-preview-actions { display: flex; justify-content: flex-end; gap: 2px; }
-    .sm-dd-menu-wide { right: auto; width: 340px; bottom: calc(100% + 4px); top: auto; max-height: 340px; }
+    /* Specificity must beat .sm-dd-menu below: equal-specificity rules would lose on
+       source order, leaving both top and bottom set and collapsing the menu to 0px. */
+    .sm-dd-menu.sm-dd-menu-wide { right: auto; width: 340px; bottom: calc(100% + 4px); top: auto; max-height: 340px; }
     .sm-dd-group { position: sticky; top: 0; background: var(--gray-50); padding: 5px 10px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); border-bottom: 1px solid var(--border); border-top: 1px solid var(--border); z-index: 1; }
     .sm-dd-group:first-child { border-top: none; }
     .sm-dd-rich { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
