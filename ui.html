@@ -888,6 +888,7 @@
     .sm-upload-box { height: 170px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-raised); display: flex; align-items: center; justify-content: center; overflow: hidden; margin: 8px 0; }
     .sm-upload-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
     .sm-upload-box.drag { border-color: var(--blue-400); background: var(--blue-50); }
+    .sm-option-alt { width: 100%; justify-content: center; margin-top: 6px; }
     .sm-target { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-left: auto; }
     .sm-target .sm-input { width: auto; padding-right: 22px; }
     .sm-ex-count { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
@@ -2680,6 +2681,21 @@
       showToast(msg.message, 'error');
       return true;
     }
+    if (msg.type === 'selection-image') {
+      setScopeBusy(CS, false);
+      try {
+        const file = new File([new Uint8Array(msg.bytes)], (msg.name || 'selection') + '.png', { type: 'image/png' });
+        loadImageFile(file);
+      } catch (e) {
+        showToast('Could not read the exported selection.', 'error');
+      }
+      return true;
+    }
+    if (msg.type === 'selection-image-error') {
+      setScopeBusy(CS, false);
+      showToast(msg.message || 'Could not export that selection.', 'error');
+      return true;
+    }
     if (msg.type === 'fonts-list') {
       TS.fonts = msg.fonts || [];
       TS.fontMap = {};
@@ -2721,7 +2737,8 @@
   }
 
   function onStyleSelectionChanged() {
-    if (CS.screen === 'entry') renderColors();
+    // 'brand' re-renders too: its "Use Figma selection" button follows the canvas.
+    if (CS.screen === 'entry' || CS.screen === 'brand') renderColors();
     if (TS.screen === 'entry') renderText();
   }
 
@@ -3026,7 +3043,8 @@
           <div class="sm-option-title">Extract from image</div>
           <div class="sm-option-desc">Upload a logo, screenshot, or any image to extract colors</div>
           <button class="btn btn-primary" data-act="ex-upload">${SI.upload} Upload Image</button>
-          <div class="sm-option-foot">Supports JPG, PNG, WebP — or drop an image here, or paste with ${navigator.platform.indexOf('Mac') === 0 ? '⌘V' : 'Ctrl+V'}</div>
+          <button class="btn sm-option-alt" data-act="ex-selection"${hasSelection ? '' : ' disabled'} title="${hasSelection ? 'Extract colors from “' + escHtml(selectionLabel) + '”' : 'Select a frame or image on the canvas first'}">${SI.image} ${hasSelection ? 'Use “' + escHtml(selectionLabel) + '”' : 'Use Figma selection'}</button>
+          <div class="sm-option-foot">From your computer: drop an image here, paste with ${navigator.platform.indexOf('Mac') === 0 ? '⌘V' : 'Ctrl+V'}, or browse. From Figma: select a layer on the canvas and use the button above. JPG, PNG, WebP.</div>
         </div>
         <div class="sm-option">
           <div class="sm-option-icon violet">${SI.palette}</div>
@@ -3427,7 +3445,18 @@
   // to it. Registered last, so the Colors handlers above see the event first.
   document.addEventListener('dragover', e => { if (dragHasFiles(e.dataTransfer)) e.preventDefault(); });
   document.addEventListener('drop', e => {
-    if (!dragHasFiles(e.dataTransfer)) return;
+    const dt = e.dataTransfer;
+    if (!dragHasFiles(dt)) {
+      // A drag from a browser tab carries a URL, not a file. The plugin is
+      // offline by design, so there's nothing to fetch — explain rather than
+      // fail silently.
+      if (canAcceptImage() && dt && Array.from(dt.types || []).some(t => /^text\/(uri-list|html)$/.test(t))) {
+        e.preventDefault();
+        hideDropZone();
+        showToast('That dragged item is a link, not a file. Save the image first, or select it on the Figma canvas and use “Use Figma selection”.', 'warning');
+      }
+      return;
+    }
     e.preventDefault();
     if (!e.defaultPrevented || !canAcceptImage()) hideDropZone();
   });
@@ -3634,6 +3663,12 @@
     if (act === 'gen-colors') { CS.screen = 'brand'; renderColors(); return; }
     if (act === 'back') { closePicker(); CS.screen = CS.screen === 'brand' ? (CS.data ? 'results' : 'entry') : 'brand'; renderColors(); return; }
     if (act === 'ex-upload') { $('colorImageInput').click(); return; }
+    if (act === 'ex-selection') {
+      if (!hasSelection) { showToast('Select a frame or image on the Figma canvas first.', 'warning'); return; }
+      setScopeBusy(CS, true, 'Exporting selection…');
+      parent.postMessage({ pluginMessage: { type: 'export-selection' } }, '*');
+      return;
+    }
     if (act === 'pal-open') {
       if (!CS.palette.length) CS.palette = [newPalItem('#FFFFFF', 100, 'White'), newPalItem('#000000', 100, 'Black'), newPalItem('#2563EB', 100, 'Primary')];
       CS.screen = 'palette'; renderColors(); return;

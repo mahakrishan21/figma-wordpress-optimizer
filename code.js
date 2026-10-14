@@ -3218,6 +3218,34 @@ async function postFontList() {
   figma.ui.postMessage({ type: 'fonts-list', fonts: list });
 }
 
+// Export what's selected on the canvas as a PNG, so colors can be extracted
+// from artwork that's already in Figma. Dragging a layer out of the canvas
+// into the plugin isn't possible — plugin UI runs in a null-origin iframe —
+// so the selection is the route in.
+async function exportSelectionImage() {
+  var sel = figma.currentPage.selection;
+  if (!sel.length) throw new Error('Select a frame, image or layer on the canvas first.');
+
+  var node = null;
+  for (var i = 0; i < sel.length; i++) {
+    if (typeof sel[i].exportAsync === 'function') { node = sel[i]; break; }
+  }
+  if (!node) throw new Error('That selection can\'t be exported as an image — pick a frame, shape or image layer.');
+
+  var w = typeof node.width === 'number' ? node.width : 0;
+  var h = typeof node.height === 'number' ? node.height : 0;
+  if (!w || !h) throw new Error('“' + node.name + '” has no size to export.');
+
+  // Cap the long edge: colour extraction samples small anyway, and a huge
+  // frame would make a needlessly large transfer.
+  var longest = Math.max(w, h);
+  var settings = { format: 'PNG' };
+  if (longest > 512) settings.constraint = { type: 'SCALE', value: 512 / longest };
+
+  var bytes = await node.exportAsync(settings);
+  return { bytes: bytes, name: node.name };
+}
+
 async function focusNodes(ids) {
   const nodes = [];
   for (const id of ids || []) {
@@ -3363,6 +3391,15 @@ figma.ui.onmessage = async (msg) => {
     }
     if (msg.type === 'list-fonts') {
       await postFontList();
+      return;
+    }
+    if (msg.type === 'export-selection') {
+      try {
+        const shot = await exportSelectionImage();
+        figma.ui.postMessage({ type: 'selection-image', bytes: shot.bytes, name: shot.name });
+      } catch (e) {
+        figma.ui.postMessage({ type: 'selection-image-error', message: e instanceof Error ? e.message : String(e) });
+      }
       return;
     }
     if (msg.type === 'focus-nodes') {

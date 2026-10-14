@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Extract colors from a Figma layer, not just a file.** The Extract from image card gained a **Use "<layer>"** button that exports whatever is selected on the canvas (`exportAsync`, PNG, long edge capped at 512px) and runs it through the same extraction. It names the selected layer and is disabled until something is selected. Dragging a layer off the canvas into the plugin is not possible — plugin UI runs in a null-origin iframe, so Figma can't hand it drag data — and this is the supported route in
+- Dragging something that carries a **link rather than a file** (e.g. an image dragged from a browser tab) now explains itself instead of failing silently: the plugin is offline by design and has nothing to fetch, so it points at saving the file or using the Figma selection
 - **Create Styles or Variables** — both the Colors and Typography Generate screens now carry their own **Create** dropdown (Styles / Variables). The two are independent, so Colors can produce variables while Typography produces styles. Everything else about the screens is unchanged
 - **Variables are reused instead of duplicated.** Before anything is created, the file's existing local styles *and* variables are indexed by value:
   - *Creating variables* — an existing variable of the same value is reused; failing that, an existing **style** of the same value supplies both the value and its name, so the two stay recognisably one token
