@@ -244,7 +244,13 @@ Opens **Generate Color Styles from your brand assets** with two options:
 
   **Frames are read, not sampled.** The plugin walks the frame's node tree and takes the actual design values — every visible solid fill and stroke, plus the stops of any gradient — so a yellow frame with black text gives exactly two colors. Hidden layers, invisible paints and fully transparent paints contribute nothing. The exported PNG is only the thumbnail.
 
-  **Uploaded images** have no design properties to read, so they are sampled — but a color lying on the line between two far more prominent colors is treated as an antialiased or blended edge and dropped. Because that test requires the color to fall strictly *between* two anchors, genuinely distinct colors are never removed: an image of 200 distinct swatches still returns ~195.
+  **Uploaded images** have no design properties to read, so they are sampled. Three rules keep that honest:
+
+  - **Exact values only.** Each color group keeps its most frequent exact pixel, so every hex reported genuinely occurs in the image — nothing is averaged into existence.
+  - **Grouping scales with prominence.** A color covering ≥1% of the image is treated as a design color and merges only when nearly identical (ΔE 4). Rarer colors — where antialiasing and compression noise live — merge into their nearest neighbour at up to ΔE 22. Rare colors are folded into the color they are a variation of, never discarded to shrink the palette.
+  - **Blends are recognised.** A color sitting on the line between two far more prominent colors is an antialiased or blended edge. Since the test requires it to fall strictly *between* two anchors, a genuinely distinct color is never removed.
+
+  In practice: a yellow background with antialiased black text gives **2** colors, a flat three-color image gives **3**, a six-color illustration gives **8** (shapes, background and outline), while a gradient keeps ~19 and a photograph ~26. A lossy JPEG of a flat design may add one extra color, because the compression really did put it there — scan the frame, or use a PNG, for exact values.
 - **Create Color Palette** — build the palette by hand. Click a swatch for the color picker (saturation/brightness square, hue and opacity sliders, hex/% inputs, and an eyedropper where the browser supports it), or type hex codes directly.
 
 Both screens share the same editable list: edit name, hex, and opacity; drag rows to reorder; delete rows; **+ Add New Color**; then **Create Color Styles**.

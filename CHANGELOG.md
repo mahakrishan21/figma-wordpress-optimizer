@@ -18,6 +18,20 @@ All notable changes to this project are documented in this file.
   - **Frames are no longer rasterised for color.** `collectFrameColors()` walks the node tree and reads the actual design properties — every visible solid fill and stroke, and the *stops* of any gradient rather than the pixels between them. The exported PNG is now only the thumbnail
   - Hidden layers, paints with `visible: false`, and fully transparent paints contribute nothing. Colors are ranked by the area they cover, so the dominant color leads
   - The extraction screen says when values came from the design rather than from sampling
+- **Image extraction rebuilt for accuracy.** Measured on a corpus of flat art, real antialiased text, JPEGs, a gradient, an illustration and photographs:
+
+  | image | before | after |
+  |---|---|---|
+  | yellow bg + antialiased black text | 6 | **2** |
+  | the same as a JPEG | 44 | **3** |
+  | flat 3-color image | 3 | 3 |
+  | multicolor illustration | 41 | **8** (6 shapes + background + outline) |
+  | gradient | 20 | 19 |
+  | photograph | 500 | 26 |
+
+  - **Every color returned is now an exact value from the source.** Clusters keep their most frequent exact pixel rather than an average of their members, so a reported hex always exists in the image
+  - **Grouping is share-adaptive**: a color covering ≥1% of the image is a design color and merges only when nearly identical (ΔE 4), while progressively rarer colors — the territory of antialiasing and compression noise — merge into their nearest neighbour at up to ΔE 22. Nothing is discarded to reach a smaller palette; rare colors are folded into the color they are a variation of
+  - A color below **0.01% of the image** (about one pixel in ten thousand) cannot be a design color and is dropped. The most common color is always kept regardless
 - **Uploaded images no longer report antialiasing as colors.** `suppressBlendArtifacts()` drops any color that sits on the line between two far more prominent colors in Lab space — which is exactly what a blended edge pixel is. The projection must fall strictly between the two anchors, so neither anchor can ever be removed, and a color is only dropped when both anchors are at least 4× more common
   - Verified both ways: the yellow/black design rendered as a PNG with blended edges now yields 2 colors, while an image of 200 genuinely distinct swatches still yields 195 — unchanged by the new filter
 - **Color variables defined in this file were invisible in Scan results.** The scan recognised a variable-bound fill as "linked" and then dropped it — so variables the plugin had just created never appeared on a re-scan. They're now collected and listed

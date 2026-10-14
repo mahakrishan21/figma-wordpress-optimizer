@@ -3244,23 +3244,50 @@
   function labDist(a, b) { return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2); }
 
   // ── Extract colors from an image (offline k-means in Lab space) ──────────
-  // Distance from a Lab point to the segment between two others, with the
-  // projection kept strictly BETWEEN the endpoints — an antialiased pixel is a
-  // mix of two real colors, so it sits on the line between them.
+  // Distance from a Lab point to the segment between two others. An
+  // antialiased or blended pixel is a mixture of two real colors, so it sits
+  // on the line between them — including very close to one end.
   function labSegDistance(p, a, b) {
     const ax = b[0] - a[0], ay = b[1] - a[1], az = b[2] - a[2];
     const len2 = ax * ax + ay * ay + az * az;
     if (len2 < 1e-6) return Infinity;
     let t = ((p[0] - a[0]) * ax + (p[1] - a[1]) * ay + (p[2] - a[2]) * az) / len2;
-    if (t <= 0.12 || t >= 0.88) return Infinity;   // too near an endpoint to be a blend
+    if (t <= 0.01 || t >= 0.99) return Infinity;   // that's an endpoint, not a blend
     const qx = a[0] + ax * t, qy = a[1] + ay * t, qz = a[2] + az * t;
     return Math.sqrt((p[0] - qx) ** 2 + (p[1] - qy) ** 2 + (p[2] - qz) ** 2);
   }
 
-  // Drops colors that are mixtures of two far more prominent ones — the
-  // antialiasing, shadow and blend pixels a rasterised design produces. It
-  // only ever removes a color that lies between two colors it keeps, so
-  // genuinely distinct colors are never merged away.
+  // How much more common an anchor must be for a color between two of them to
+  // be a blend rather than a design color in its own right. Tuned on a corpus
+  // of flat art, antialiased text, JPEGs, gradients, illustrations and photos:
+  // lowering it further starts eroding real colors in photographs.
+  const EX_ANCHOR_RATIO = 3;
+  // How close to the line between two anchors a color must sit to be a blend.
+  const EX_BLEND_DELTA = 10;
+  // A color covering less of the image than this can't be a design color —
+  // roughly one pixel in ten thousand. It's compression ringing or stray
+  // noise. The most common color is always kept, whatever its share.
+  const EX_MIN_SHARE = 0.0001;
+  // Opacity difference below which two samples count as the same opacity.
+  const EX_ALPHA_TOL = 0.02;
+  // Long edge the image is sampled at. Bigger = small accents are more likely
+  // to be caught; it does not cap how many colors come back.
+  const EX_SAMPLE_EDGE = 900;
+
+  // How close two colors must be to be treated as one, as a function of how
+  // much of the image the candidate covers. A color holding real estate is a
+  // design color and is kept unless it is almost identical to another; a color
+  // present in a handful of pixels is an artifact of antialiasing or
+  // compression and is folded into its nearest neighbour.
+  function mergeRadiusFor(share) {
+    if (share >= 0.010) return 4;     // ≥1% of the image — a design color
+    if (share >= 0.002) return 11;    // 0.2–1%  — probably an edge or a tint
+    return 22;                        // <0.2%   — artifact territory
+  }
+
+  // Drops colors that are mixtures of two far more prominent ones.
+  // It only ever removes a color lying BETWEEN two colors it keeps, so a
+  // genuinely distinct color is never removed.
   function suppressBlendArtifacts(list) {
     const keep = [];
     for (const c of list) {
@@ -3278,24 +3305,9 @@
     return keep;
   }
 
-  // How much more common an anchor colour must be for a point between two of
-  // them to count as a blend rather than a design colour of its own.
-  const EX_ANCHOR_RATIO = 4;
-  // How close to the line between two anchors a colour must sit to be a blend.
-  const EX_BLEND_DELTA = 7;
-
-  // Perceptual distance below which two colors are treated as the same one.
-  // This is the ONLY thing that collapses colors — there is no count limit.
-  const EX_MERGE_DELTA = 4;
-  // Opacity difference below which two samples count as the same opacity.
-  const EX_ALPHA_TOL = 0.02;
-  // Long edge the image is sampled at. Bigger = small accents are more likely
-  // to be caught; it does not cap how many colors come back.
-  const EX_SAMPLE_EDGE = 900;
-
-  // Extracts EVERY distinct color in the image. Colors are merged only when
-  // they're perceptually indistinguishable (and at the same opacity), never
-  // to satisfy a count.
+  // Extracts the genuine colors of an image. Colors are grouped only to filter
+  // out insignificant pixel variation — antialiasing, compression noise — and
+  // every color returned is an EXACT value that occurs in the source.
   function extractPalette(img) {
     const scale = Math.min(1, EX_SAMPLE_EDGE / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
     const w = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
@@ -3303,63 +3315,62 @@
     const canvas = document.createElement('canvas');
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    // Point-sample rather than interpolate: smoothed downscaling blends adjacent
-    // pixels and invents colors the image never contained.
+    // Point-sample rather than interpolate: smoothed downscaling blends
+    // adjacent pixels and invents colors the image never contained.
     ctx.imageSmoothingEnabled = false;
     ctx.mozImageSmoothingEnabled = false;
     ctx.webkitImageSmoothingEnabled = false;
     ctx.drawImage(img, 0, 0, w, h);
     const px = ctx.getImageData(0, 0, w, h).data;
 
-    // Bucket at 5 bits per channel + 4 bits of alpha, so opacity variants stay
-    // separate colors. The representative value is the bucket's average, so
-    // bucketing costs no precision in the output.
-    const buckets = new Map();
+    // Count EXACT source colors, so what we report back is a real pixel value
+    // rather than an average of several.
+    const exact = new Map();
     let total = 0;
     for (let i = 0; i < px.length; i += 4) {
       const a = px[i + 3];
-      if (a < 8) continue;                      // fully transparent
-      const key = ((px[i] >> 3) << 15) | ((px[i + 1] >> 3) << 10) | ((px[i + 2] >> 3) << 5) | (a >> 4);
-      let b = buckets.get(key);
-      if (!b) { b = { r: 0, g: 0, b: 0, a: 0, n: 0 }; buckets.set(key, b); }
-      b.r += px[i]; b.g += px[i + 1]; b.b += px[i + 2]; b.a += a; b.n++;
+      if (a < 8) continue;                                   // fully transparent
+      const key = (px[i] << 20) | (px[i + 1] << 12) | (px[i + 2] << 4) | (a >> 4);
+      const e = exact.get(key);
+      if (e) e.n++;
+      else exact.set(key, { r: px[i], g: px[i + 1], b: px[i + 2], a: a / 255, n: 1 });
       total++;
     }
     if (!total) return [];
 
-    const pts = [];
-    buckets.forEach(b => {
-      const r = b.r / b.n, g = b.g / b.n, bl = b.b / b.n, a = b.a / b.n / 255;
-      pts.push({ r: r, g: g, b: bl, a: a, n: b.n, lab: rgbToLab(r, g, bl) });
+    // Group near-identical exact values so clustering runs on a manageable set,
+    // keeping each group's most common exact value as its representative.
+    const buckets = new Map();
+    exact.forEach(e => {
+      const k = ((e.r >> 3) << 15) | ((e.g >> 3) << 10) | ((e.b >> 3) << 5) | Math.round(e.a * 15);
+      const b = buckets.get(k);
+      if (!b) buckets.set(k, { rep: e, n: e.n });
+      else { b.n += e.n; if (e.n > b.rep.n) b.rep = e; }
     });
+
+    const pts = [];
+    buckets.forEach(b => pts.push({ rep: b.rep, a: b.rep.a, n: b.n, lab: rgbToLab(b.rep.r, b.rep.g, b.rep.b) }));
     pts.sort((x, y) => y.n - x.n);
 
-    // A single sampled pixel in a large image is compression noise, not a
-    // color in the design. Small images keep everything.
-    const floor = total > 5000 ? 2 : 1;
-
-    // Greedy merge, most common first, so each kept color is the dominant
-    // member of its perceptual neighbourhood.
+    // Greedy merge, most common first, with a radius that widens as a color
+    // becomes rarer. Each kept cluster keeps its own exact representative.
     const kept = [];
     for (const p of pts) {
-      if (p.n < floor) continue;
+      const radius = mergeRadiusFor(p.n / total);
       let hit = null;
       for (const k of kept) {
         if (Math.abs(k.a - p.a) > EX_ALPHA_TOL) continue;
-        if (labDist(k.lab, p.lab) < EX_MERGE_DELTA) { hit = k; break; }
+        if (labDist(k.lab, p.lab) < radius) { hit = k; break; }
       }
-      if (hit) {
-        // Keep the dominant member's colour; just add the weight.
-        hit.n += p.n;
-      } else {
-        kept.push({ lab: p.lab, r: p.r, g: p.g, b: p.b, a: p.a, n: p.n });
-      }
+      if (hit) hit.n += p.n;
+      else kept.push({ rep: p.rep, a: p.a, n: p.n, lab: p.lab });
     }
 
     kept.sort((x, y) => y.n - x.n);
-    const real = suppressBlendArtifacts(kept);
+    const real = suppressBlendArtifacts(kept)
+      .filter((c, i) => i === 0 || c.n / total >= EX_MIN_SHARE);
     return real.map(c => ({
-      hex: rgbToHex255(c.r, c.g, c.b),
+      hex: rgbToHex255(c.rep.r, c.rep.g, c.rep.b),
       opacity: Math.round(c.a * 100),
       share: c.n / total
     }));
