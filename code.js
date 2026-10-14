@@ -3327,6 +3327,59 @@ async function postFontList() {
   figma.ui.postMessage({ type: 'fonts-list', fonts: list });
 }
 
+// The genuine colors of a frame, read from the DESIGN PROPERTIES — every
+// visible solid fill and stroke on the node tree, plus the stops of any
+// gradient. No rasterising, so antialiased text edges, shadows and blended
+// pixels can't invent colors that aren't in the design.
+function collectFrameColors(roots) {
+  var nodes = styleScanNodes(roots);
+  var byKey = new Map();
+  var add = function (color, opacity, weight) {
+    if (!color || typeof color.r !== 'number') return;
+    var hex = rgbToHexStr(color);
+    var op = typeof opacity === 'number' ? opacity : 1;
+    if (op <= 0.001) return;                       // fully transparent
+    var k = colorKey(hex, op);
+    var e = byKey.get(k);
+    if (!e) { e = { hex: hex, opacity: op, n: 0 }; byKey.set(k, e); }
+    e.n += weight || 1;
+  };
+
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    // Bigger elements carry more of the design's colour, so they rank higher.
+    var area = (typeof node.width === 'number' && typeof node.height === 'number')
+      ? Math.max(1, Math.round(node.width * node.height)) : 1;
+    for (var pi = 0; pi < 2; pi++) {
+      var prop = pi === 0 ? 'fills' : 'strokes';
+      if (!(prop in node)) continue;
+      var paints = node[prop];
+      if (paints === figma.mixed || !Array.isArray(paints)) continue;
+      for (var j = 0; j < paints.length; j++) {
+        var paint = paints[j];
+        if (!paint || paint.visible === false) continue;
+        var alpha = typeof paint.opacity === 'number' ? paint.opacity : 1;
+        if (paint.type === 'SOLID') {
+          add(paint.color, alpha, prop === 'fills' ? area : Math.max(1, Math.round(area / 10)));
+        } else if (paint.gradientStops && paint.gradientStops.length) {
+          // A gradient's stops ARE design colours; the pixels between them are not.
+          for (var g = 0; g < paint.gradientStops.length; g++) {
+            var stop = paint.gradientStops[g];
+            if (!stop || !stop.color) continue;
+            var sa = (typeof stop.color.a === 'number' ? stop.color.a : 1) * alpha;
+            add(stop.color, sa, Math.max(1, Math.round(area / paint.gradientStops.length)));
+          }
+        }
+      }
+    }
+  }
+
+  var out = [];
+  byKey.forEach(function (e) { out.push(e); });
+  out.sort(function (a, b) { return b.n - a.n; });
+  return out.map(function (e) { return { hex: e.hex, opacity: e.opacity }; });
+}
+
 // Export what's selected on the canvas as a PNG, so colors can be extracted
 // from artwork that's already in Figma. Dragging a layer out of the canvas
 // into the plugin isn't possible — plugin UI runs in a null-origin iframe —
@@ -3505,7 +3558,10 @@ figma.ui.onmessage = async (msg) => {
     if (msg.type === 'export-selection') {
       try {
         const shot = await exportSelectionImage();
-        figma.ui.postMessage({ type: 'selection-image', bytes: shot.bytes, name: shot.name });
+        // The PNG is only ever the thumbnail. Colors come from the design
+        // properties, so nothing is invented by rasterising.
+        const colors = collectFrameColors(figma.currentPage.selection);
+        figma.ui.postMessage({ type: 'selection-image', bytes: shot.bytes, name: shot.name, colors: colors });
       } catch (e) {
         figma.ui.postMessage({ type: 'selection-image-error', message: e instanceof Error ? e.message : String(e) });
       }

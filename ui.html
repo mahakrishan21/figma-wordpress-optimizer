@@ -2686,7 +2686,10 @@
       setScopeBusy(CS, false);
       try {
         const file = new File([new Uint8Array(msg.bytes)], (msg.name || 'selection') + '.png', { type: 'image/png' });
-        loadImageFile(file, true);
+        // The frame's real colors came from its design properties. The PNG is
+        // only the thumbnail — resampling it would reintroduce antialiasing
+        // artifacts the properties don't have.
+        loadImageFile(file, true, msg.colors);
       } catch (e) {
         showToast('Could not read the exported selection.', 'error');
       }
@@ -3147,7 +3150,9 @@
           </div>
           <div class="sm-ex-swatches">${ex.summary.map(c => `<div class="sm-ex-sw">${swatchHtml(c.hex, 1, 'lg')}<span class="mono">${escHtml(c.hex)}</span></div>`).join('')}</div>
           <ul class="sm-ex-notes">
-            <li>Every distinct color in the ${ex.fromFrame ? 'frame' : 'image'} — nothing is capped or dropped.</li>
+            <li>${ex.exact
+              ? `Read from the frame's own fills and strokes — exact design values, nothing sampled or guessed.`
+              : `Every distinct color in the image — nothing is capped or dropped.`}</li>
             ${ex.summary.length > 60 ? `<li><strong>${ex.summary.length} colors</strong> is a lot to create at once — delete any you don't need below first.</li>` : ''}
             <li>Review and customize before creating styles.</li>
           </ul>
@@ -3239,6 +3244,46 @@
   function labDist(a, b) { return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2); }
 
   // ── Extract colors from an image (offline k-means in Lab space) ──────────
+  // Distance from a Lab point to the segment between two others, with the
+  // projection kept strictly BETWEEN the endpoints — an antialiased pixel is a
+  // mix of two real colors, so it sits on the line between them.
+  function labSegDistance(p, a, b) {
+    const ax = b[0] - a[0], ay = b[1] - a[1], az = b[2] - a[2];
+    const len2 = ax * ax + ay * ay + az * az;
+    if (len2 < 1e-6) return Infinity;
+    let t = ((p[0] - a[0]) * ax + (p[1] - a[1]) * ay + (p[2] - a[2]) * az) / len2;
+    if (t <= 0.12 || t >= 0.88) return Infinity;   // too near an endpoint to be a blend
+    const qx = a[0] + ax * t, qy = a[1] + ay * t, qz = a[2] + az * t;
+    return Math.sqrt((p[0] - qx) ** 2 + (p[1] - qy) ** 2 + (p[2] - qz) ** 2);
+  }
+
+  // Drops colors that are mixtures of two far more prominent ones — the
+  // antialiasing, shadow and blend pixels a rasterised design produces. It
+  // only ever removes a color that lies between two colors it keeps, so
+  // genuinely distinct colors are never merged away.
+  function suppressBlendArtifacts(list) {
+    const keep = [];
+    for (const c of list) {
+      let blend = false;
+      for (let x = 0; x < keep.length && !blend; x++) {
+        for (let y = x + 1; y < keep.length; y++) {
+          const A = keep[x], B = keep[y];
+          if (A.n < c.n * EX_ANCHOR_RATIO || B.n < c.n * EX_ANCHOR_RATIO) continue;
+          if (Math.abs(A.a - c.a) > EX_ALPHA_TOL || Math.abs(B.a - c.a) > EX_ALPHA_TOL) continue;
+          if (labSegDistance(c.lab, A.lab, B.lab) < EX_BLEND_DELTA) { blend = true; break; }
+        }
+      }
+      if (!blend) keep.push(c);
+    }
+    return keep;
+  }
+
+  // How much more common an anchor colour must be for a point between two of
+  // them to count as a blend rather than a design colour of its own.
+  const EX_ANCHOR_RATIO = 4;
+  // How close to the line between two anchors a colour must sit to be a blend.
+  const EX_BLEND_DELTA = 7;
+
   // Perceptual distance below which two colors are treated as the same one.
   // This is the ONLY thing that collapses colors — there is no count limit.
   const EX_MERGE_DELTA = 4;
@@ -3312,7 +3357,8 @@
     }
 
     kept.sort((x, y) => y.n - x.n);
-    return kept.map(c => ({
+    const real = suppressBlendArtifacts(kept);
+    return real.map(c => ({
       hex: rgbToHex255(c.r, c.g, c.b),
       opacity: Math.round(c.a * 100),
       share: c.n / total
@@ -3339,7 +3385,7 @@
     });
   }
 
-  function loadImageFile(file, fromFrame) {
+  function loadImageFile(file, fromFrame, knownColors) {
     if (!file) return;
     if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) { showToast('Unsupported file — use a JPG, PNG or WebP image.', 'error'); return; }
     const reader = new FileReader();
@@ -3347,11 +3393,16 @@
       const img = new Image();
       img.onload = () => {
         let colors = [];
-        try { colors = extractPalette(img); } catch (e) { showToast('Could not read colors from this image.', 'error'); return; }
-        if (!colors.length) { showToast('No solid colors found — is the image fully transparent?', 'warning'); return; }
+        if (knownColors && knownColors.length) {
+          // Exact values straight from the Figma document.
+          colors = knownColors.map(c => ({ hex: c.hex, opacity: Math.round((c.opacity == null ? 1 : c.opacity) * 100) }));
+        } else {
+          try { colors = extractPalette(img); } catch (e) { showToast('Could not read colors from this image.', 'error'); return; }
+        }
+        if (!colors.length) { showToast('No solid colors found — is the ' + (fromFrame ? 'frame empty' : 'image fully transparent') + '?', 'warning'); return; }
         const names = nameExtractedColors(colors);
         CS.extract = {
-          src: reader.result, summary: colors, fromFrame: !!fromFrame,
+          src: reader.result, summary: colors, fromFrame: !!fromFrame, exact: !!(knownColors && knownColors.length),
           rows: colors.map((c, i) => newPalItem(c.hex, c.opacity, names[i]))
         };
         CS.screen = 'extract';

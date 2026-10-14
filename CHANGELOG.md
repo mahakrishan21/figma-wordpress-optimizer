@@ -14,6 +14,12 @@ All notable changes to this project are documented in this file.
   - The extraction screen shows the total as read-only text ("195 colors found") and warns above 60 colors, but never limits
 
 ### Fixed
+- **Extraction from a Figma frame invented colors that weren't in the design.** A yellow frame with black text produced 9 colors instead of 2. The frame was being rendered to a PNG and sampled, so every antialiased text edge became a "color"
+  - **Frames are no longer rasterised for color.** `collectFrameColors()` walks the node tree and reads the actual design properties — every visible solid fill and stroke, and the *stops* of any gradient rather than the pixels between them. The exported PNG is now only the thumbnail
+  - Hidden layers, paints with `visible: false`, and fully transparent paints contribute nothing. Colors are ranked by the area they cover, so the dominant color leads
+  - The extraction screen says when values came from the design rather than from sampling
+- **Uploaded images no longer report antialiasing as colors.** `suppressBlendArtifacts()` drops any color that sits on the line between two far more prominent colors in Lab space — which is exactly what a blended edge pixel is. The projection must fall strictly between the two anchors, so neither anchor can ever be removed, and a color is only dropped when both anchors are at least 4× more common
+  - Verified both ways: the yellow/black design rendered as a PNG with blended edges now yields 2 colors, while an image of 200 genuinely distinct swatches still yields 195 — unchanged by the new filter
 - **Color variables defined in this file were invisible in Scan results.** The scan recognised a variable-bound fill as "linked" and then dropped it — so variables the plugin had just created never appeared on a re-scan. They're now collected and listed
 
 ### Added
