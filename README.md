@@ -222,8 +222,9 @@ Scans every visible fill **and stroke** in the selected frame, **including layer
 
 | Section | What it lists | Actions |
 |---|---|---|
-| Stat cards | Color styles in this file · styles from another file · detached colors (and layer count) · near-duplicate styles | Click a card to jump to its section |
+| Stat cards | Color styles in this file · **color variables in this file** · styles from another file · detached colors (and layer count) · near-duplicate styles | Click a card to jump to its section |
 | **Color Styles** | Local color styles used in the frame, with hex, opacity, and use count. Expand a row to see each layer (5 per page). | **Focus All**, **Delete** (asks first) |
+| **Color Variables** | Color variables defined in this file and used in the frame, listed the same way — name, hex, opacity, use count, expandable layer list. A frame using both styles and variables shows both sections, and a variable-bound color is not re-reported as unlinked. | **Focus All**, **Delete** (asks first) |
 | **Unlinked Colors → New Color** | Solid colors with no style and no matching style anywhere. Each gets an editable suggested name (e.g. `Brand / Blue`, `Text / Dark Gray`, `Neutral / White / 6%`). | **Create & Apply**, **Create & Apply All** |
 | **Unlinked Colors → Matches Existing → Styles from this file** | Unlinked colors whose hex **and** opacity exactly match a local style. | **Apply Style**, **Apply All** |
 | **Unlinked Colors → Matches Existing → Style from other file** | Colors that come from another Figma file — typical after copy-pasting between files. Figma keeps the link and shows the name in the fill panel, but the color isn't defined in this file. Covers both **color styles** and **color variables** from the other file (aliases are resolved to their final color), plus unlinked colors that match them. | **Create & Apply** (makes a local color style with the same name and color, then re-links the layers), **Create & Apply All** |

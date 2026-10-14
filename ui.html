@@ -2726,7 +2726,7 @@
 
   function defaultCollapsed(S, d) {
     if (S === CS) return {
-      styles: !d.colorStyles.length, unlinked: !(d.newColors.length + d.matchLocal.length + d.matchRemote.length),
+      styles: !d.colorStyles.length, variables: !(d.colorVariables || []).length, unlinked: !(d.newColors.length + d.matchLocal.length + d.matchRemote.length),
       'new': !d.newColors.length, match: !(d.matchLocal.length + d.matchRemote.length),
       matchLocal: !d.matchLocal.length, matchRemote: !d.matchRemote.length, dupes: !(d.nearDupes.length || (d.opacityVariants || []).length), manual: false
     };
@@ -2927,11 +2927,12 @@
   function colorResultsHtml() {
     const d = CS.data, s = d.summary;
     CS.rows = {};
-    [d.colorStyles, d.newColors, d.matchLocal, d.matchRemote].forEach(list => list.forEach(r => { CS.rows[r.key] = r; }));
+    [d.colorStyles, d.colorVariables || [], d.newColors, d.matchLocal, d.matchRemote].forEach(list => list.forEach(r => { CS.rows[r.key] = r; }));
     const unlinkedCount = d.newColors.length + d.matchLocal.length + d.matchRemote.length;
 
     const stats = statCards([
       { v: s.localStyles, l: 'Color Styles', sub: 'In this file', jump: 'styles' },
+      { v: s.localVariables || 0, l: 'Color Variables', sub: 'In this file', jump: 'variables' },
       { v: s.remoteStyles, l: 'Color Styles', sub: 'Not in this file', jump: 'matchRemote', issue: true },
       { v: s.detached, l: 'Detached Colors', sub: plural(s.detachedLayers, 'layer') + (s.manualLayers ? ' · ' + s.manualLayers + ' manual' : ''), jump: 'unlinked', issue: true },
       { v: s.dupes, l: 'Dup. Styles', sub: 'near-identical', jump: 'dupes', issue: true }
@@ -2945,6 +2946,16 @@
           <div class="sm-actions"><button class="btn btn-sm btn-danger-soft" data-act="c-delete" data-key="${escHtml(r.key)}">Delete</button><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button></div>
         </div>`, r.uses, 'style')).join('')
       : '<div class="sm-empty">No color styles are used in this frame yet.</div>';
+
+    const vars = d.colorVariables || [];
+    const varsBody = vars.length
+      ? theadHtml(G_CSTYLE, ['', 'Variable Name', 'Hex', 'Opacity', 'Uses', 'Actions']) + vars.map(r => rowWrap(CS, r.key,
+        `<div class="sm-row" style="grid-template-columns:${G_CSTYLE}">%CHEV%
+          <div class="sm-cell-color">${swatchHtml(r.hex, r.opacity)}<span class="sm-ellipsis sm-strong" title="${escHtml(r.name)}">${escHtml(r.name)}</span></div>
+          <span class="mono">${r.hex ? escHtml(r.hex) : '—'}</span><span>${pctStr(r.opacity)}</span>${usesCell(r.uses.length)}
+          <div class="sm-actions"><button class="btn btn-sm btn-danger-soft" data-act="c-var-delete" data-key="${escHtml(r.key)}">Delete</button><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button></div>
+        </div>`, r.uses, 'variable')).join('')
+      : '<div class="sm-empty">No color variables from this file are used in this frame.</div>';
 
     const newBody = d.newColors.length
       ? theadHtml(G_CROW, ['', 'Hex Value', 'Opacity', 'Suggestion', 'Uses', 'Actions']) + d.newColors.map(r => rowWrap(CS, r.key,
@@ -3024,6 +3035,7 @@
 
     return resultsTopHtml(CS, 'gen-colors', targetLabel(CS, 'Color'), 'Color Summary', stats, targetPickerHtml(CS, 'color')) + '<div class="sm-blocks">' +
       blockHtml(CS, { id: 'styles', title: 'Color Styles', sub: plural(d.colorStyles.length, 'style') + ' used in this frame', count: d.colorStyles.length, body: stylesBody }) +
+      blockHtml(CS, { id: 'variables', title: 'Color Variables', sub: plural(vars.length, 'variable') + ' used in this frame', count: vars.length, body: varsBody }) +
       blockHtml(CS, { id: 'unlinked', tone: 'red', title: 'Unlinked Colors', sub: 'Fills and strokes without a Color Style', count: unlinkedCount, countTone: 'issue',
         body: unlinkedBody + instNote }) +
       (manual.length ? blockHtml(CS, { id: 'manual', tone: 'amber', title: 'Needs manual fix', sub: 'Layers with several fills or strokes', count: manual.length, countTone: 'issue', body: manualBody }) : '') +
@@ -3673,8 +3685,19 @@
     if (act === 'c-copy') { sendStyle(CS, { type: 'style-rows', action: 'copy', target: CS.target, label: 'Create & Apply', rows: rowsPayload(CS, [CS.rows[key]], 'name') }); return; }
     if (act === 'c-copy-all') { sendStyle(CS, { type: 'style-rows', action: 'copy', target: CS.target, label: 'Create & Apply All', rows: rowsPayload(CS, d.matchRemote, 'name') }); return; }
     if (act === 'c-delete') { confirmDeleteStyle(CS, CS.rows[key], 'color'); return; }
+    if (act === 'c-var-delete') { confirmDeleteVariable(CS, CS.rows[key]); return; }
     if (act === 'c-merge') { confirmMerge(CS, d.nearDupes[+el.dataset.idx], dupeItemColor); return; }
     if (act === 'c-merge-all') { confirmMergeAll(CS, d.nearDupes); return; }
+  }
+
+  async function confirmDeleteVariable(S, row) {
+    if (!row) return;
+    const res = await smDialog({
+      title: 'Delete “' + row.name + '”?',
+      body: `This removes the variable from the file. The ${plural(row.uses.length, 'layer')} using it in this frame — and any layers on other pages — keep their current color but lose the link to the variable.<br><br>You can undo this with ⌘Z.`,
+      buttons: [{ label: 'Cancel', value: null }, { label: 'Delete variable', value: 'del', danger: true }]
+    });
+    if (res.value) sendStyle(S, { type: 'variable-delete', variableId: row.variableId, label: 'Delete variable' });
   }
 
   async function confirmDeleteStyle(S, row, what) {

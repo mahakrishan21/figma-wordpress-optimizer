@@ -1978,6 +1978,7 @@ async function scanColors(roots) {
   const localUse = new Map();   // local styleId -> uses
   const remoteUse = new Map();  // remote styleId -> { style, uses }
   const remoteVarUse = new Map(); // remote variableId -> { name, hex, opacity, uses }
+  const localVarUse = new Map();  // local  variableId -> { name, hex, opacity, uses }
   const unlinked = new Map();   // colorKey -> { hex, opacity, uses }
 
   for (let i = 0; i < nodes.length; i++) {
@@ -2008,13 +2009,18 @@ async function scanColors(roots) {
       const paintInfo = multi ? describePaints(paints, prop) : null;
       for (const p of solids) {
         if (p.boundVariables && p.boundVariables.color) {
-          // Local variables count as linked; variables from another file don't.
-          const rv = await resolveColorVariable(varCache, p.boundVariables.color.id);
+          const vid = p.boundVariables.color.id;
+          const rv = await resolveColorVariable(varCache, vid);
+          const op = rv ? (typeof rv.color.a === 'number' ? rv.color.a : 1) * (typeof p.opacity === 'number' ? p.opacity : 1) : 1;
           if (rv && rv.remote) {
-            const vid = p.boundVariables.color.id;
-            const op = (typeof rv.color.a === 'number' ? rv.color.a : 1) * (typeof p.opacity === 'number' ? p.opacity : 1);
+            // From another file — offer to make a local copy.
             if (!remoteVarUse.has(vid)) remoteVarUse.set(vid, { name: rv.name, hex: rgbToHexStr(rv.color), opacity: op, uses: [] });
             remoteVarUse.get(vid).uses.push(useRef(node, prop, multi, paintInfo));
+          } else if (rv) {
+            // Defined in this file — already linked, and listed in its own
+            // section alongside Color Styles.
+            if (!localVarUse.has(vid)) localVarUse.set(vid, { name: rv.name, hex: rgbToHexStr(rv.color), opacity: op, uses: [] });
+            localVarUse.get(vid).uses.push(useRef(node, prop, multi, paintInfo));
           }
           continue;
         }
@@ -2110,6 +2116,14 @@ async function scanColors(roots) {
     colorStyles.push({ key: 's:' + s.id, styleId: s.id, name: s.name, hex: sp ? sp.hex : null, opacity: sp ? sp.opacity : 1, uses: uses });
   }
 
+  // Colour variables defined in this file and used in the scanned frame —
+  // the same shape as colorStyles so the UI renders them with one component.
+  const colorVariables = [];
+  for (const [vid, v] of localVarUse) {
+    colorVariables.push({ key: 'lv:' + vid, variableId: vid, name: v.name, hex: v.hex, opacity: v.opacity, uses: v.uses });
+  }
+  colorVariables.sort((a, b) => b.uses.length - a.uses.length || a.name.localeCompare(b.name));
+
   // Near-duplicates across ALL local styles: same opacity and practically the
   // same color (CIE Lab ΔE < 3). Same color at a different opacity is usually
   // a deliberate overlay, so it's only flagged, never offered for merging.
@@ -2151,6 +2165,7 @@ async function scanColors(roots) {
 
   return {
     colorStyles: colorStyles,
+    colorVariables: colorVariables,
     newColors: newColorsFixable,
     matchLocal: matchLocal,
     matchRemote: matchRemoteFixable,
@@ -2159,6 +2174,7 @@ async function scanColors(roots) {
     manual: manual,
     summary: {
       localStyles: colorStyles.length,
+      localVariables: colorVariables.length,
       remoteStyles: matchRemoteFixable.length,
       detached: newColorsFixable.length + matchLocal.length + matchRemoteFixable.length,
       detachedLayers: detachedLayers.size,
@@ -3218,7 +3234,7 @@ function describeResult(label, r) {
   if (r.reused) parts.push(r.reused + ' reused');
   if (r.fromStyles) parts.push(r.fromStyles + ' taken from existing styles');
   if (r.bound) parts.push(r.bound + ' bound to variables');
-  if (r.removed) parts.push(r.removed + ' style' + (r.removed !== 1 ? 's' : '') + ' removed');
+  if (r.removed) parts.push(r.removed + ' ' + noun + (r.removed !== 1 ? 's' : '') + ' removed');
   if (r.applied) parts.push(r.applied + ' layer' + (r.applied !== 1 ? 's' : '') + ' updated');
   if (r.skipped) parts.push(r.skipped + ' skipped');
   if (r.overrides) parts.push(r.overrides + ' as instance override' + (r.overrides !== 1 ? 's' : ''));
@@ -3267,6 +3283,12 @@ async function handleStyleMessage(msg) {
         : await createStylesFromList(kind, msg);
     }
     else if (msg.type === 'style-merge') result = await mergeStyles(kind, msg.groups || []);
+    else if (msg.type === 'variable-delete') {
+      result = { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0, unit: 'variable' };
+      const v = await figma.variables.getVariableByIdAsync(msg.variableId);
+      if (v && !v.remote) { v.remove(); result.removed = 1; }
+      else pushReason(result, 'That variable belongs to another file and cannot be deleted here.');
+    }
     else if (msg.type === 'style-delete') {
       result = { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0 };
       const style = await figma.getStyleByIdAsync(msg.styleId);
@@ -3472,7 +3494,7 @@ figma.ui.onmessage = async (msg) => {
       figma.notify('Click on a frame or component in the canvas to select it', { timeout: 3000 });
       return;
     }
-    if (msg.type === 'style-scan' || msg.type === 'style-rows' || msg.type === 'style-create' || msg.type === 'style-merge' || msg.type === 'style-delete') {
+    if (msg.type === 'style-scan' || msg.type === 'style-rows' || msg.type === 'style-create' || msg.type === 'style-merge' || msg.type === 'style-delete' || msg.type === 'variable-delete') {
       await handleStyleMessage(msg);
       return;
     }

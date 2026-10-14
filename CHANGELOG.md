@@ -13,7 +13,13 @@ All notable changes to this project are documented in this file.
   - In a large image, a color present in a single sampled pixel is treated as compression noise; small images keep everything
   - The extraction screen shows the total as read-only text ("195 colors found") and warns above 60 colors, but never limits
 
+### Fixed
+- **Color variables defined in this file were invisible in Scan results.** The scan recognised a variable-bound fill as "linked" and then dropped it — so variables the plugin had just created never appeared on a re-scan. They're now collected and listed
+
 ### Added
+- **Color Variables block in the Colors scan results**, built from the same components as Color Styles: name, hex, opacity, use count, an expandable layer list, **Focus All**, and **Delete**. A matching stat card sits beside Color Styles, and the block collapses by default when empty
+- A frame holding **both** styles and variables lists both, in their own sections; a variable-bound color is not re-reported as unlinked
+- **Delete** on a variable row removes the local variable (`variable-delete`), leaving layers their color but unlinked — the same contract and wording as deleting a style, and undoable with ⌘Z
 - **The Create Styles / Variables dropdown is now on the Colors Scan screen too**, in the scan toolbar beside Re-Scan. It's the same control and the same per-tab state as the Generate screen — one picker, not a second one — so the choice carries across both halves of the tab
   - **Create & Apply** and **Create & Apply All** honour it: in Variables mode they create (or reuse) a COLOR variable and **bind it to the scanned layers** via `setBoundVariableForPaint`, on fills or strokes as the row requires, instead of creating a paint style
   - Any existing variable of the same value is reused rather than duplicated, matching the Generate flow
