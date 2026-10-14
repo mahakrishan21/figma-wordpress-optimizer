@@ -24,6 +24,7 @@ A Figma plugin that audits designs against a WordPress conversion SOP (Standard 
 - [Audit Checks](#audit-checks)
 - [Colors](#colors)
 - [Typography](#typography)
+- [Styles or variables](#styles-or-variables)
 - [Spelling & Grammar](#spelling--grammar)
 - [Automated Actions](#automated-actions)
 - [Issue Categories](#issue-categories)
@@ -279,6 +280,30 @@ Builds a modular type scale and creates it as text styles:
 With **Add style guide to canvas** checked (the default), a **Style Guide / Typography** frame is placed on the canvas with a sample line for every style (linked to the style) and its font, size and line height.
 
 The preview can only render fonts installed on this computer. Other fonts preview in a fallback with a note — the generated styles still use the chosen font.
+
+### Styles or variables
+
+Both Generate screens have their own **Create** dropdown — **Styles** or **Variables** — set independently for Colors and Typography.
+
+Whichever you pick, the plugin indexes the file's existing local styles **and** variables by value first, and reuses what it finds:
+
+| You chose | What already exists | What happens |
+|---|---|---|
+| Variables | A variable with that value | It's reused — nothing is created |
+| Variables | A *style* with that value | The variable is created from the style's value **and takes its name**, so the pair stays recognisably one token |
+| Styles | A variable with that value | The style is created and **bound** to that variable, so it references the token instead of copying it |
+| Styles | A style with that value under another name | That style is reused rather than duplicated |
+| Either | Nothing matching | A new one is created |
+
+Colors are matched on hex **and** opacity. Typography is matched on font family, style, size, line height and letter spacing.
+
+Figma has no single "text style variable", so **Typography → Variables** creates a group per style — `H1/fontFamily` and `H1/fontStyle` as STRING variables, `H1/fontSize`, `H1/lineHeight` and `H1/letterSpacing` as FLOAT variables, each scoped so it only offers itself in the right picker. AUTO line height has no number to store and is skipped.
+
+Each text style keeps its **own** group: a variable belonging to another style's group is never handed over just because the value matches, so changing H1's font can't silently move Body. A free-standing variable of your own (say `Brand/Heading Size` scoped to `FONT_SIZE`) *is* reused. Re-running Generate matches on name, so it creates nothing the second time.
+
+New variables land in a **Design Tokens** collection, created once and reused afterwards; matching searches every local collection.
+
+Binding is best-effort — if a particular Figma build rejects a field, the style is still created correctly and the toast reports how many bindings took.
 
 ### How styles are applied
 

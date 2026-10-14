@@ -2634,6 +2634,30 @@ async function runRowAction(kind, msg) {
   return result;
 }
 
+// Generate items already carry {family, style, fontSize, lineHeight,
+// letterSpacing} — exactly the shape textSpecKey() reads.
+function specOfItem(item) { return item; }
+
+// Existing local styles indexed by VALUE, so a token that already exists under
+// a different name is reused instead of duplicated.
+async function stylesByValue(kind) {
+  const map = new Map();
+  if (kind === 'paint') {
+    const list = await figma.getLocalPaintStylesAsync();
+    for (const st of list) {
+      const sv = solidOfStyle(st);
+      if (sv) { const k = colorKey(sv.hex, sv.opacity); if (!map.has(k)) map.set(k, st); }
+    }
+  } else {
+    const list = await figma.getLocalTextStylesAsync();
+    for (const st of list) {
+      const spec = textSpecOfStyle(st);
+      if (spec) { const k = textSpecKey(spec); if (!map.has(k)) map.set(k, st); }
+    }
+  }
+  return map;
+}
+
 // Generate flows: create styles from a palette / type scale (no layers).
 async function createStylesFromList(kind, msg) {
   const items = msg.items || [];
@@ -2644,11 +2668,28 @@ async function createStylesFromList(kind, msg) {
   }
   const existing = await findLocalStylesByName(kind);
   const made = [];
+  // Reuse pools: an existing style with the same VALUE is the same token under
+  // another name, and an existing variable with the same value is what the new
+  // style should point at rather than duplicate.
+  const sameValueStyles = await stylesByValue(kind);
+  const colorVars = kind === 'paint' ? await localVariablesWithValues('COLOR') : [];
+  const floatVars = kind === 'text' ? await localVariablesWithValues('FLOAT') : [];
+  const stringVars = kind === 'text' ? await localVariablesWithValues('STRING') : [];
   for (const item of items) {
     try {
+      const dupe = sameValueStyles.get(kind === 'paint' ? colorKey(String(item.hex).toUpperCase(), item.opacity) : textSpecKey(specOfItem(item)));
+      if (dupe && dupe.name !== item.name && msg.reuse !== false) {
+        made.push(dupe);
+        result.reused = (result.reused || 0) + 1;
+        continue;
+      }
       const style = kind === 'paint'
         ? await createOrUpdatePaintStyle(item.name, [{ type: 'SOLID', color: hexToRgb01(item.hex), opacity: item.opacity }], msg.conflict, existing)
         : await createOrUpdateTextStyle(item.name, item, msg.conflict, existing);
+      const bound = kind === 'paint'
+        ? await bindPaintStyleToVariable(style, colorVars, String(item.hex).toUpperCase(), item.opacity)
+        : await bindTextStyleToVariables(style, floatVars, stringVars, item);
+      if (bound) result.bound = (result.bound || 0) + (bound === true ? 1 : bound);
       made.push(style);
       result.created++;
     } catch (e) {
@@ -2665,6 +2706,248 @@ async function createStylesFromList(kind, msg) {
     }
   }
   return result;
+}
+
+
+// ── Variables: creation and reuse ───────────────────────────────────────────
+// Figma has no "text style variable": typography tokens are a GROUP of
+// per-property variables (STRING for the font family/style, FLOAT for the
+// numbers). A colour token is a single COLOR variable.
+var TOKEN_COLLECTION = 'Design Tokens';
+
+var TEXT_VAR_FIELDS = [
+  { field: 'fontFamily',    prop: 'family', type: 'STRING', scope: 'FONT_FAMILY' },
+  { field: 'fontStyle',     prop: 'style',  type: 'STRING', scope: 'FONT_STYLE' },
+  { field: 'fontSize',      prop: 'size',   type: 'FLOAT',  scope: 'FONT_SIZE' },
+  { field: 'lineHeight',    prop: 'lh',     type: 'FLOAT',  scope: 'LINE_HEIGHT' },
+  { field: 'letterSpacing', prop: 'ls',     type: 'FLOAT',  scope: 'LETTER_SPACING' }
+];
+
+async function getTokenCollection(create) {
+  var cols = await figma.variables.getLocalVariableCollectionsAsync();
+  for (var i = 0; i < cols.length; i++) if (cols[i].name === TOKEN_COLLECTION) return cols[i];
+  if (!create) return cols.length ? cols[0] : null;
+  return figma.variables.createVariableCollection(TOKEN_COLLECTION);
+}
+
+function modeOf(collection) {
+  if (!collection) return null;
+  if (collection.defaultModeId) return collection.defaultModeId;
+  return collection.modes && collection.modes.length ? collection.modes[0].modeId : null;
+}
+
+// Resolved value of a variable in its collection's default mode, following
+// one level of alias.
+async function variableValue(v) {
+  try {
+    var col = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
+    var modeId = modeOf(col);
+    var val = (modeId && v.valuesByMode[modeId] !== undefined)
+      ? v.valuesByMode[modeId]
+      : v.valuesByMode[Object.keys(v.valuesByMode)[0]];
+    if (val && val.type === 'VARIABLE_ALIAS') {
+      var target = await figma.variables.getVariableByIdAsync(val.id);
+      if (!target) return null;
+      return await variableValue(target);
+    }
+    return val;
+  } catch (e) { return null; }
+}
+
+// Local variables of a type, each with its resolved value. Remote (library)
+// variables can't be edited, so they're read-only matches.
+async function localVariablesWithValues(type) {
+  var list = [];
+  var vars = await figma.variables.getLocalVariablesAsync(type);
+  for (var i = 0; i < vars.length; i++) {
+    if (vars[i].remote) continue;
+    var val = await variableValue(vars[i]);
+    if (val !== null && val !== undefined) list.push({ variable: vars[i], value: val });
+  }
+  return list;
+}
+
+function sameColorValue(val, hex, opacity) {
+  if (!val || typeof val.r !== 'number') return false;
+  if (rgbToHexStr(val) !== String(hex).toUpperCase()) return false;
+  var a = typeof val.a === 'number' ? val.a : 1;
+  return Math.abs(a - (typeof opacity === 'number' ? opacity : 1)) < 0.004;
+}
+
+function hasScope(v, scope) {
+  var sc = v.scopes || [];
+  return sc.length === 0 || sc.indexOf('ALL_SCOPES') !== -1 || sc.indexOf(scope) !== -1;
+}
+
+async function setVarValue(variable, collection, value) {
+  var modeId = modeOf(collection);
+  if (!modeId) throw new Error('That variable collection has no mode to write to.');
+  variable.setValueForMode(modeId, value);
+}
+
+// Find a local COLOR variable already holding this value.
+function findColorVariable(pool, hex, opacity) {
+  for (var i = 0; i < pool.length; i++) if (sameColorValue(pool[i].value, hex, opacity)) return pool[i].variable;
+  return null;
+}
+
+// A variable this plugin created as part of some style's group, e.g.
+// "H1/fontSize". Those belong to that style and must not be handed to a
+// different style just because the value happens to match.
+function isGroupMemberName(name) {
+  var slash = String(name).lastIndexOf('/');
+  if (slash === -1) return false;
+  var tail = String(name).slice(slash + 1);
+  for (var i = 0; i < TEXT_VAR_FIELDS.length; i++) if (TEXT_VAR_FIELDS[i].field === tail) return true;
+  return false;
+}
+
+// Matching order:
+//   1. the exact name this style would use — makes re-running idempotent;
+//   2. a free-standing variable of the same value and scope (the designer's
+//      own token, e.g. "Brand/Heading Size"), so existing work is reused.
+// Another style's group member is never matched by value, so each text style
+// stays independently editable.
+function findTextVariable(pool, spec, wantName) {
+  var exact = null, byValue = null;
+  for (var i = 0; i < pool.length; i++) {
+    var v = pool[i].variable, val = pool[i].value;
+    if (v.name === wantName) exact = v;
+    if (byValue || isGroupMemberName(v.name)) continue;
+    var same = spec.type === 'STRING'
+      ? String(val) === String(spec.value)
+      : (typeof val === 'number' && Math.abs(val - spec.value) < 0.01);
+    if (same && hasScope(v, spec.scope)) byValue = v;
+  }
+  return exact || byValue;
+}
+
+
+// Create (or reuse) VARIABLES for a palette / type scale.
+// Reuse order: an existing variable of the same value wins; failing that, an
+// existing STYLE of the same value supplies the value so nothing is invented.
+async function createVariablesFromList(kind, msg) {
+  var items = msg.items || [];
+  var result = { created: 0, applied: 0, skipped: 0, reused: 0, fromStyles: 0, reasons: [], unit: 'variable' };
+  var collection = await getTokenCollection(true);
+  if (!collection) throw new Error('Could not open a variable collection in this file.');
+
+  if (kind === 'paint') {
+    var pool = await localVariablesWithValues('COLOR');
+    var styles = await figma.getLocalPaintStylesAsync();
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      try {
+        var rgba = hexToRgb01(item.hex);
+        rgba.a = typeof item.opacity === 'number' ? item.opacity : 1;
+
+        var found = findColorVariable(pool, item.hex, rgba.a);
+        if (found) { result.reused++; continue; }
+
+        // A local style already carries this value — reuse its name so the
+        // variable and the style stay recognisably the same token.
+        var name = item.name;
+        for (var si = 0; si < styles.length; si++) {
+          var sv = solidOfStyle(styles[si]);
+          if (sv && sv.hex === String(item.hex).toUpperCase() && Math.abs(sv.opacity - rgba.a) < 0.004) {
+            name = styles[si].name; result.fromStyles++; break;
+          }
+        }
+
+        var v = figma.variables.createVariable(name, collection, 'COLOR');
+        await setVarValue(v, collection, rgba);
+        pool.push({ variable: v, value: rgba });
+        result.created++;
+      } catch (e) {
+        result.skipped++;
+        pushReason(result, item.name + ': ' + (e && e.message ? e.message : 'could not create variable'));
+      }
+    }
+    return result;
+  }
+
+  // Typography: one variable per property, grouped under the style's name.
+  var floatPool = await localVariablesWithValues('FLOAT');
+  var stringPool = await localVariablesWithValues('STRING');
+  var textStyles = await figma.getLocalTextStylesAsync();
+  for (var t = 0; t < items.length; t++) {
+    var it = items[t];
+    try {
+      // If a text style of this name already exists, its values are the truth.
+      var src = { family: it.family, style: it.style, size: it.fontSize,
+                  lh: lineHeightNumber(it.lineHeight), ls: letterSpacingNumber(it.letterSpacing) };
+      for (var ti = 0; ti < textStyles.length; ti++) {
+        if (textStyles[ti].name !== it.name) continue;
+        var ts = textStyles[ti];
+        src = { family: ts.fontName.family, style: ts.fontName.style, size: ts.fontSize,
+                lh: lineHeightNumber(ts.lineHeight), ls: letterSpacingNumber(ts.letterSpacing) };
+        result.fromStyles++;
+        break;
+      }
+
+      for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) {
+        var def = TEXT_VAR_FIELDS[f];
+        var value = src[def.prop];
+        if (value === null || value === undefined) continue;
+        var pool2 = def.type === 'STRING' ? stringPool : floatPool;
+        var wantName = it.name + '/' + def.field;
+        var hit = findTextVariable(pool2, { type: def.type, value: value, scope: def.scope }, wantName);
+        if (hit) { result.reused++; continue; }
+        var nv = figma.variables.createVariable(wantName, collection, def.type);
+        try { nv.scopes = [def.scope]; } catch (e) {}
+        await setVarValue(nv, collection, value);
+        // Deliberately NOT added to the pool: every text style keeps its own
+        // group, so changing H1's font can't silently move Body too. Only
+        // variables that existed before this run are reused by value — and a
+        // re-run matches on the name, so it stays idempotent.
+        result.created++;
+      }
+    } catch (e) {
+      result.skipped++;
+      pushReason(result, it.name + ': ' + (e && e.message ? e.message : 'could not create variables'));
+    }
+  }
+  return result;
+}
+
+// AUTO line height has no number to store; percent/pixel values keep their number.
+function lineHeightNumber(lh) {
+  if (!lh || lh.unit === 'AUTO' || typeof lh.value !== 'number') return null;
+  return lh.value;
+}
+function letterSpacingNumber(ls) {
+  if (!ls || typeof ls.value !== 'number') return null;
+  return ls.value;
+}
+
+// When creating STYLES, bind them to variables that already hold the same
+// values, so the style becomes a reference rather than a second copy.
+// Every binding is best-effort: Figma rejects some fields on some versions,
+// and a style that isn't bound is still a correct style.
+async function bindPaintStyleToVariable(style, pool, hex, opacity) {
+  var v = findColorVariable(pool, hex, opacity);
+  if (!v) return false;
+  try {
+    var bound = figma.variables.setBoundVariableForPaint(style.paints[0], 'color', v);
+    style.paints = [bound];
+    return true;
+  } catch (e) { return false; }
+}
+
+async function bindTextStyleToVariables(style, floatPool, stringPool, spec) {
+  var n = 0;
+  var src = { family: spec.family, style: spec.style, size: spec.fontSize,
+              lh: lineHeightNumber(spec.lineHeight), ls: letterSpacingNumber(spec.letterSpacing) };
+  for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) {
+    var def = TEXT_VAR_FIELDS[f];
+    var value = src[def.prop];
+    if (value === null || value === undefined) continue;
+    var pool = def.type === 'STRING' ? stringPool : floatPool;
+    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, spec.name + '/' + def.field);
+    if (!hit) continue;
+    try { style.setBoundVariable(def.field, hit); n++; } catch (e) {}
+  }
+  return n;
 }
 
 // ── Style guide frame (placed on the canvas after Generate) ─────────────────
@@ -2843,7 +3126,11 @@ async function mergeStyles(kind, groups) {
 
 function describeResult(label, r) {
   const parts = [];
-  if (r.created) parts.push(r.created + ' style' + (r.created !== 1 ? 's' : '') + ' created');
+  const noun = r.unit || 'style';
+  if (r.created) parts.push(r.created + ' ' + noun + (r.created !== 1 ? 's' : '') + ' created');
+  if (r.reused) parts.push(r.reused + ' reused');
+  if (r.fromStyles) parts.push(r.fromStyles + ' taken from existing styles');
+  if (r.bound) parts.push(r.bound + ' bound to variables');
   if (r.removed) parts.push(r.removed + ' style' + (r.removed !== 1 ? 's' : '') + ' removed');
   if (r.applied) parts.push(r.applied + ' layer' + (r.applied !== 1 ? 's' : '') + ' updated');
   if (r.skipped) parts.push(r.skipped + ' skipped');
@@ -2887,7 +3174,11 @@ async function handleStyleMessage(msg) {
     }
     let result;
     if (msg.type === 'style-rows') result = await runRowAction(kind, msg);
-    else if (msg.type === 'style-create') result = await createStylesFromList(kind, msg);
+    else if (msg.type === 'style-create') {
+      result = msg.target === 'variables'
+        ? await createVariablesFromList(kind, msg)
+        : await createStylesFromList(kind, msg);
+    }
     else if (msg.type === 'style-merge') result = await mergeStyles(kind, msg.groups || []);
     else if (msg.type === 'style-delete') {
       result = { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0 };
@@ -2900,11 +3191,12 @@ async function handleStyleMessage(msg) {
       return;
     }
     figma.commitUndo();
-    const ok = (result.created || result.applied || result.removed) && !result.skipped;
+    const did = result.created || result.applied || result.removed || result.reused;
+    const ok = did && !result.skipped;
     figma.ui.postMessage({
       type: 'style-action-done', scope: scope, requestId: msg.requestId,
       message: describeResult(label, result),
-      tone: ok ? 'success' : (result.created || result.applied || result.removed) ? 'warning' : 'error'
+      tone: ok ? 'success' : did ? 'warning' : 'error'
     });
     // Generate flows have no scan to refresh.
     if (msg.type !== 'style-create') await postStyleScan(kind);

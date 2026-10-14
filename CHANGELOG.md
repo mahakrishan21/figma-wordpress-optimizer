@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Create Styles or Variables** — both the Colors and Typography Generate screens now carry their own **Create** dropdown (Styles / Variables). The two are independent, so Colors can produce variables while Typography produces styles. Everything else about the screens is unchanged
+- **Variables are reused instead of duplicated.** Before anything is created, the file's existing local styles *and* variables are indexed by value:
+  - *Creating variables* — an existing variable of the same value is reused; failing that, an existing **style** of the same value supplies both the value and its name, so the two stay recognisably one token
+  - *Creating styles* — a new style is **bound** to any existing variable that already holds its value (`setBoundVariableForPaint` for colour, `setBoundVariable` for each text property), so the style references the token rather than copying it
+  - *Creating styles* — an existing style with the same value under a different name is reused outright rather than duplicated
+  - Colour matching compares hex **and** opacity; typography matching compares font family, style, size, line height and letter spacing
+- Typography variables are created as a **group per text style** (`H1/fontFamily`, `H1/fontSize`, `H1/fontStyle`, `H1/lineHeight`, `H1/letterSpacing`), since Figma has no single "text style variable". Number properties become FLOAT variables and font family/style become STRING variables, each scoped (`FONT_SIZE`, `LINE_HEIGHT`, …) so they only appear in the right pickers
+- New variables go to a **Design Tokens** collection, created once and reused on later runs. Matching, however, searches every local collection
 - **Colors → Extract from image: the number of colors is now yours to choose.** A **Colors** box on the extraction screen takes any value from **2 to 24** (default 12, was a hardcoded 8) and re-runs extraction on the loaded image without re-uploading it
 - **Paste an image with ⌘V / Ctrl+V** anywhere on the Colors tab to extract colors from it
 - **Drag and drop an image anywhere in the plugin window**, not just onto the small upload card. While a file is dragged, a full-window overlay fades in and states whether that file can be dropped — a different, amber state appears for unsupported file types. Files dropped on other tabs are swallowed so the webview can't navigate away from the plugin

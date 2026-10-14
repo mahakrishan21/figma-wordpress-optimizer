@@ -888,6 +888,8 @@
     .sm-upload-box { height: 170px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-raised); display: flex; align-items: center; justify-content: center; overflow: hidden; margin: 8px 0; }
     .sm-upload-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
     .sm-upload-box.drag { border-color: var(--blue-400); background: var(--blue-50); }
+    .sm-target { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-left: auto; }
+    .sm-target .sm-input { width: auto; padding-right: 22px; }
     .sm-ex-count { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
     .sm-ex-count .sm-input { width: 62px; text-align: center; }
     /* Drop overlay — covers the whole Colors panel while a file is dragged in. */
@@ -2509,6 +2511,9 @@
   CS.extract = null;
   CS.placeGuide = true;
   TS.placeGuide = true;
+  // What Generate creates. Chosen independently per tab.
+  CS.target = 'styles';
+  TS.target = 'styles';
   TS.fonts = null;       // [{ family, styles }]
   TS.fontMap = null;     // family -> styles
   TS.fontsRequested = false;
@@ -2837,6 +2842,20 @@
     focusEditingInput(CS);
   }
 
+  // Creation-type picker, used by both Generate screens.
+  function targetPickerHtml(S, what) {
+    const t = S.target === 'variables' ? 'variables' : 'styles';
+    return `<label class="sm-target" title="Create ${what} styles, or ${what} variables">Create
+      <select class="sm-input" data-target aria-label="What to create">
+        <option value="styles"${t === 'styles' ? ' selected' : ''}>Styles</option>
+        <option value="variables"${t === 'variables' ? ' selected' : ''}>Variables</option>
+      </select>
+    </label>`;
+  }
+  function targetLabel(S, what) {
+    return 'Create ' + what + ' ' + (S.target === 'variables' ? 'Variables' : 'Styles');
+  }
+
   function entryHtml(o) {
     if (hasSelection) {
       return `<div class="audit-ready">
@@ -3052,7 +3071,7 @@
   }
 
   function paletteTableHtml(listName, cols) {
-    const labels = { preview: 'Preview', hex: 'Hex Code', opacity: 'Opacity', name: 'Style Name' };
+    const labels = { preview: 'Preview', hex: 'Hex Code', opacity: 'Opacity', name: CS.target === 'variables' ? 'Variable Name' : 'Style Name' };
     const list = palList(listName);
     return `<div class="sm-pal" data-pal="${listName}">
       ${theadHtml(PAL_GRID, [''].concat(cols.map(c => labels[c])).concat(['Action']))}
@@ -3069,8 +3088,9 @@
   function paletteScreenHtml() {
     return `<div class="sm-card">
       <div class="sm-card-head"><button class="btn" data-act="back">${SI.back} Back</button><div class="sm-card-title">Create your palette</div>
-        <label class="sm-guide-opt" title="Also place a frame showing the new styles on the canvas"><input type="checkbox" data-guide ${CS.placeGuide ? 'checked' : ''}> Add style guide to canvas</label>
-        <button class="btn btn-primary" data-act="pal-create" data-list="pal">${SI.wand} Create Color Styles</button></div>
+        ${targetPickerHtml(CS, 'color')}
+        ${CS.target === 'variables' ? '' : `<label class="sm-guide-opt" title="Also place a frame showing the new styles on the canvas"><input type="checkbox" data-guide ${CS.placeGuide ? 'checked' : ''}> Add style guide to canvas</label>`}
+        <button class="btn btn-primary" data-act="pal-create" data-list="pal">${SI.wand} ${targetLabel(CS, 'Color')}</button></div>
       ${paletteTableHtml('pal', ['preview', 'hex', 'opacity', 'name'])}
     </div>`;
   }
@@ -3102,9 +3122,10 @@
         </div>
       </div>
       <div class="sm-divider"></div>
-      <div class="sm-card-head"><div class="sm-card-title">Color Styles</div>
-        <label class="sm-guide-opt" title="Also place a frame showing the new styles on the canvas"><input type="checkbox" data-guide ${CS.placeGuide ? 'checked' : ''}> Add style guide to canvas</label>
-        <button class="btn btn-primary" data-act="pal-create" data-list="ex">${SI.wand} Create Color Styles</button></div>
+      <div class="sm-card-head"><div class="sm-card-title">Color ${CS.target === 'variables' ? 'Variables' : 'Styles'}</div>
+        ${targetPickerHtml(CS, 'color')}
+        ${CS.target === 'variables' ? '' : `<label class="sm-guide-opt" title="Also place a frame showing the new styles on the canvas"><input type="checkbox" data-guide ${CS.placeGuide ? 'checked' : ''}> Add style guide to canvas</label>`}
+        <button class="btn btn-primary" data-act="pal-create" data-list="ex">${SI.wand} ${targetLabel(CS, 'Color')}</button></div>
       ${paletteTableHtml('ex', ['preview', 'name', 'opacity', 'hex'])}
     </div>`;
   }
@@ -3142,7 +3163,10 @@
       if (seen.has(n)) { showToast('Two colors are both named “' + n + '” — give each style a unique name.', 'error'); return; }
       seen.add(n);
     }
-    sendStyle(CS, { type: 'style-create', label: 'Create color styles', placeOnCanvas: CS.placeGuide,
+    const toVars = CS.target === 'variables';
+    sendStyle(CS, { type: 'style-create', target: CS.target,
+      label: toVars ? 'Create color variables' : 'Create color styles',
+      placeOnCanvas: !toVars && CS.placeGuide,
       items: list.map(it => ({ name: it.name.trim(), hex: it.hex, opacity: it.opacity / 100 })) });
   }
 
@@ -4055,9 +4079,10 @@
     const g = TS.gen;
     const missing = [g.heading.family, g.body.family].filter((f, i, a) => a.indexOf(f) === i && !fontAvailable(f));
     return `<div class="sm-card">
-      <div class="sm-card-head"><button class="btn" data-act="back">${SI.back} Back</button><div class="sm-card-title">Create Text Styles</div>
-        <label class="sm-guide-opt" title="Also place a frame showing the new styles on the canvas"><input type="checkbox" data-guide ${TS.placeGuide ? 'checked' : ''}> Add style guide to canvas</label>
-        <button class="btn btn-primary" data-act="ts-generate">${SI.wand} Generate Text Styles</button></div>
+      <div class="sm-card-head"><button class="btn" data-act="back">${SI.back} Back</button><div class="sm-card-title">Create Text ${TS.target === 'variables' ? 'Variables' : 'Styles'}</div>
+        ${targetPickerHtml(TS, 'text')}
+        ${TS.target === 'variables' ? '' : `<label class="sm-guide-opt" title="Also place a frame showing the new styles on the canvas"><input type="checkbox" data-guide ${TS.placeGuide ? 'checked' : ''}> Add style guide to canvas</label>`}
+        <button class="btn btn-primary" data-act="ts-generate">${SI.wand} ${targetLabel(TS, 'Text')}</button></div>
       <div class="sm-gen-row">
         <span>Scale</span><div style="width:200px">${ddHtml('scale', scaleLabel(), scaleMenuHtml)}</div>
         <span style="margin-left:auto">Base Size</span>
@@ -4133,7 +4158,10 @@
       const missing = rows.filter(r => !TS.fontMap[r.family] || TS.fontMap[r.family].indexOf(r.style) === -1);
       if (missing.length) { showToast('“' + missing[0].name + '” wants ' + missing[0].family + ' ' + missing[0].style + ', which Figma doesn’t have — open that row and pick another weight.', 'error'); return; }
     }
-    sendStyle(TS, { type: 'style-create', label: 'Generate text styles', placeOnCanvas: TS.placeGuide, items: rows.map(r => ({
+    const toVars = TS.target === 'variables';
+    sendStyle(TS, { type: 'style-create', target: TS.target,
+      label: toVars ? 'Create text variables' : 'Generate text styles',
+      placeOnCanvas: !toVars && TS.placeGuide, items: rows.map(r => ({
       name: r.name, family: r.family, style: r.style, fontSize: r.size,
       lineHeight: { unit: 'PERCENT', value: r.lh }, letterSpacing: { unit: 'PERCENT', value: r.ls },
       textCase: r.textCase !== 'ORIGINAL' ? r.textCase : undefined,
@@ -4308,6 +4336,8 @@
     panel.addEventListener('change', e => {
       const box = e.target.closest('[data-guide]');
       if (box) S.placeGuide = box.checked;
+      const tgt = e.target.closest('[data-target]');
+      if (tgt) { S.target = tgt.value === 'variables' ? 'variables' : 'styles'; (S === CS ? renderColors : renderText)(); return; }
       const cnt = e.target.closest('[data-ex-count]');
       if (cnt && S === CS) {
         const n = parseInt(cnt.value, 10);
