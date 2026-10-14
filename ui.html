@@ -888,6 +888,20 @@
     .sm-upload-box { height: 170px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-raised); display: flex; align-items: center; justify-content: center; overflow: hidden; margin: 8px 0; }
     .sm-upload-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
     .sm-upload-box.drag { border-color: var(--blue-400); background: var(--blue-50); }
+    .sm-ex-count { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+    .sm-ex-count .sm-input { width: 62px; text-align: center; }
+    /* Drop overlay — covers the whole Colors panel while a file is dragged in. */
+    .sm-dropzone { position: fixed; inset: 8px; z-index: 300; display: none; align-items: center; justify-content: center;
+      border-radius: var(--radius-xl); border: 2px dashed var(--blue-400); background: rgba(239, 246, 255, .92);
+      backdrop-filter: blur(1px); opacity: 0; transition: opacity .12s ease; pointer-events: none; }
+    .sm-dropzone.show { display: flex; opacity: 1; }
+    .sm-dropzone.invalid { border-color: var(--amber-500); background: rgba(255, 251, 235, .94); }
+    .sm-dropzone-inner { text-align: center; padding: 0 20px; }
+    .sm-dropzone-icon { width: 44px; height: 44px; margin: 0 auto 10px; border-radius: var(--radius-lg);
+      background: var(--blue-100); color: var(--blue-600); display: flex; align-items: center; justify-content: center; }
+    .sm-dropzone.invalid .sm-dropzone-icon { background: var(--amber-100); color: var(--amber-700); }
+    .sm-dropzone-title { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+    .sm-dropzone-sub { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
     .sm-ex-swatches { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 10px; }
     .sm-ex-sw { display: flex; flex-direction: column; gap: 4px; align-items: center; }
     .sm-ex-notes { font-size: 11px; color: var(--text-secondary); padding-left: 16px; line-height: 1.6; }
@@ -985,6 +999,15 @@
 <body>
 
 <div id="toastContainer" aria-live="polite" aria-atomic="false"></div>
+  <div id="colorsDropZone" class="sm-dropzone" aria-hidden="true">
+    <div class="sm-dropzone-inner">
+      <div class="sm-dropzone-icon">
+        <svg width="22" height="22" viewBox="0 0 16 16" fill="currentColor"><path d="M.002 3a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-12a2 2 0 0 1-2-2V3zm1 9v1a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5l-3.777-1.947a.5.5 0 0 0-.577.093l-3.71 3.71-2.66-1.772a.5.5 0 0 0-.63.062L1.002 12zm5-6.5a1.5 1.5 0 1 0-3 0 1.5 1.5 0 0 0 3 0z"/></svg>
+      </div>
+      <div class="sm-dropzone-title" id="dropZoneTitle">Drop image to extract colors</div>
+      <div class="sm-dropzone-sub" id="dropZoneSub">JPG, PNG or WebP</div>
+    </div>
+  </div>
 
 <!-- ═══════════════════ HEADER + TABS ═══════════════════════════════════════ -->
 <div class="header">
@@ -2984,7 +3007,7 @@
           <div class="sm-option-title">Extract from image</div>
           <div class="sm-option-desc">Upload a logo, screenshot, or any image to extract colors</div>
           <button class="btn btn-primary" data-act="ex-upload">${SI.upload} Upload Image</button>
-          <div class="sm-option-foot">Supports JPG, PNG, WebP</div>
+          <div class="sm-option-foot">Supports JPG, PNG, WebP — or drop an image here, or paste with ${navigator.platform.indexOf('Mac') === 0 ? '⌘V' : 'Ctrl+V'}</div>
         </div>
         <div class="sm-option">
           <div class="sm-option-icon violet">${SI.palette}</div>
@@ -3063,10 +3086,17 @@
           <button class="btn" style="width:100%;justify-content:center" data-act="ex-upload">${SI.upload} Change Image</button>
         </div>
         <div>
-          <div class="sm-h">Extraction Summary</div>
+          <div class="sm-card-head" style="padding:0 0 8px;border:0">
+            <div class="sm-h" style="margin:0">Extraction Summary</div>
+            <label class="sm-ex-count">Colors
+              <input class="sm-input" type="number" min="${EX_MIN}" max="${EX_MAX}" step="1"
+                     data-ex-count value="${ex.want || CS.exCount || EX_DEFAULT}" aria-label="Number of colors to extract">
+            </label>
+          </div>
           <div class="sm-ex-swatches">${ex.summary.map(c => `<div class="sm-ex-sw">${swatchHtml(c.hex, 1, 'lg')}<span class="mono">${escHtml(c.hex)}</span></div>`).join('')}</div>
           <ul class="sm-ex-notes">
             <li>Found ${plural(ex.summary.length, 'color')} in image.</li>
+            ${ex.want && ex.summary.length < ex.want ? `<li>That's every distinct color this image has — raising the count won't add more.</li>` : `<li>Change <strong>Colors</strong> above to extract more or fewer (${EX_MIN}–${EX_MAX}).</li>`}
             <li>Review and customize before creating styles.</li>
           </ul>
         </div>
@@ -3153,12 +3183,23 @@
   function labDist(a, b) { return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2); }
 
   // ── Extract colors from an image (offline k-means in Lab space) ──────────
+  const EX_MIN = 2, EX_MAX = 24, EX_DEFAULT = 12;
   function extractPalette(img, max) {
-    const scale = Math.min(1, 140 / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+    // How many colors the caller wants drives the sampling resolution, the
+    // number of k-means clusters, and how aggressively near-neighbours merge.
+    const want = Math.max(EX_MIN, Math.min(EX_MAX, max || EX_DEFAULT));
+    const sampleAt = want > 10 ? 200 : 140;
+    const scale = Math.min(1, sampleAt / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
     const w = Math.max(1, Math.round(img.naturalWidth * scale)), h = Math.max(1, Math.round(img.naturalHeight * scale));
     const canvas = document.createElement('canvas');
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    // Point-sample rather than interpolate: smoothed downscaling blends adjacent
+    // pixels and invents colors at every edge, which then show up as extracted
+    // "colors" the image never actually contained.
+    ctx.imageSmoothingEnabled = false;
+    ctx.mozImageSmoothingEnabled = false;
+    ctx.webkitImageSmoothingEnabled = false;
     ctx.drawImage(img, 0, 0, w, h);
     const px = ctx.getImageData(0, 0, w, h).data;
 
@@ -3179,7 +3220,9 @@
     if (!pts.length) return [];
     const total = pts.reduce((s, p) => s + p.n, 0);
 
-    const k = Math.min(14, pts.length);
+    // Over-cluster, then merge back down — asking for exactly `want` clusters
+    // loses distinct-but-small colors to whichever large cluster is nearest.
+    const k = Math.min(Math.max(want * 2, 16), 40, pts.length);
     pts.sort((a, b) => b.n - a.n);
     const centers = [{ lab: pts[0].lab.slice() }];
     while (centers.length < k) {
@@ -3210,12 +3253,18 @@
       });
     }
     const clusters = centers.filter(c => c.n).sort((a, b) => b.n - a.n);
+    // `want` controls how many candidates we look for, NOT how similar two
+    // colors may be. The merge threshold stays at a fixed perceptual distance
+    // so a high count can't split anti-aliased edges into colors that aren't
+    // really in the image — it just returns fewer than asked for.
+    const mergeAt = 9;
+    const minShare = want > 10 ? 0.0025 : 0.004;
     const merged = [];
     for (const c of clusters) {
-      const near = merged.find(m => labDist(m.lab, c.lab) < 11);
+      const near = merged.find(m => labDist(m.lab, c.lab) < mergeAt);
       if (near) near.n += c.n; else merged.push({ lab: c.lab, rgb: c.rgb, n: c.n });
     }
-    return merged.filter(c => c.n / total >= 0.004).slice(0, max || 8)
+    return merged.filter(c => c.n / total >= minShare).slice(0, want)
       .map(c => ({ hex: rgbToHex255(c.rgb[0], c.rgb[1], c.rgb[2]), share: c.n / total }));
   }
 
@@ -3246,11 +3295,12 @@
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
+        const want = CS.exCount || EX_DEFAULT;
         let colors = [];
-        try { colors = extractPalette(img, 8); } catch (e) { showToast('Could not read colors from this image.', 'error'); return; }
+        try { colors = extractPalette(img, want); } catch (e) { showToast('Could not read colors from this image.', 'error'); return; }
         if (!colors.length) { showToast('No solid colors found — is the image fully transparent?', 'warning'); return; }
         const names = nameExtractedColors(colors);
-        CS.extract = { src: reader.result, summary: colors, rows: colors.map((c, i) => newPalItem(c.hex, 100, names[i])) };
+        CS.extract = { src: reader.result, summary: colors, rows: colors.map((c, i) => newPalItem(c.hex, 100, names[i])), want: want };
         CS.screen = 'extract';
         renderColors();
         showToast('Found ' + plural(colors.length, 'color') + ' in the image.', 'success');
@@ -3261,26 +3311,117 @@
     reader.readAsDataURL(file);
   }
 
+  // Re-run extraction on the image already loaded, at a different color count.
+  function reExtractColors(n) {
+    const ex = CS.extract;
+    if (!ex || !ex.src) return;
+    const want = Math.max(EX_MIN, Math.min(EX_MAX, n));
+    CS.exCount = want;
+    const img = new Image();
+    img.onload = () => {
+      let colors = [];
+      try { colors = extractPalette(img, want); } catch (e) { showToast('Could not read colors from this image.', 'error'); return; }
+      if (!colors.length) { showToast('No solid colors found in this image.', 'warning'); return; }
+      const names = nameExtractedColors(colors);
+      ex.summary = colors;
+      ex.rows = colors.map((c, i) => newPalItem(c.hex, 100, names[i]));
+      ex.want = want;
+      renderColors();
+      showToast(colors.length < want
+        ? 'This image only has ' + plural(colors.length, 'distinct color') + '.'
+        : 'Extracted ' + plural(colors.length, 'color') + '.',
+        colors.length < want ? 'warning' : 'success');
+    };
+    img.onerror = () => showToast('Could not re-read this image.', 'error');
+    img.src = ex.src;
+  }
+
   $('colorImageInput').addEventListener('change', e => {
     loadImageFile(e.target.files && e.target.files[0]);
     e.target.value = '';
   });
-  $('tab-colors').addEventListener('dragover', e => {
-    const t = e.target.closest('.sm-drop-target');
-    if (!t || !e.dataTransfer || Array.from(e.dataTransfer.types || []).indexOf('Files') === -1) return;
+  // ── Image drop + paste ───────────────────────────────────────────────────
+  // The whole Colors panel is the drop target, not just the upload card, and
+  // the overlay says up-front whether what's being dragged can be dropped.
+  const IMG_RE = /^image\/(png|jpe?g|webp)$/i;
+
+  function canAcceptImage() {
+    return activeTabName() === 'colors' && !CS.busy &&
+      (CS.screen === 'entry' || CS.screen === 'brand' || CS.screen === 'extract');
+  }
+  function dragHasFiles(dt) {
+    return !!dt && Array.from(dt.types || []).indexOf('Files') !== -1;
+  }
+  // During dragover the file name is hidden, but the MIME type is readable —
+  // enough to tell the user whether this file will be accepted.
+  function draggedImageOk(dt) {
+    const items = dt && dt.items ? Array.from(dt.items) : [];
+    const files = items.filter(i => i.kind === 'file');
+    if (!files.length) return true;            // type unavailable — stay optimistic
+    return files.some(i => IMG_RE.test(i.type));
+  }
+
+  let dragDepth = 0;
+  function showDropZone(ok) {
+    const z = $('colorsDropZone');
+    z.classList.toggle('invalid', !ok);
+    $('dropZoneTitle').textContent = ok ? 'Drop image to extract colors' : 'That file type isn’t supported';
+    $('dropZoneSub').textContent = ok ? 'JPG, PNG or WebP' : 'Use a JPG, PNG or WebP image';
+    z.classList.add('show');
+  }
+  function hideDropZone() {
+    dragDepth = 0;
+    $('colorsDropZone').classList.remove('show', 'invalid');
+  }
+
+  document.addEventListener('dragenter', e => {
+    if (!canAcceptImage() || !dragHasFiles(e.dataTransfer)) return;
     e.preventDefault();
-    t.classList.add('drag');
+    dragDepth++;
+    showDropZone(draggedImageOk(e.dataTransfer));
   });
-  $('tab-colors').addEventListener('dragleave', e => {
-    const t = e.target.closest('.sm-drop-target');
-    if (t) t.classList.remove('drag');
+  document.addEventListener('dragover', e => {
+    if (!canAcceptImage() || !dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();                                  // required for drop to fire
+    e.dataTransfer.dropEffect = draggedImageOk(e.dataTransfer) ? 'copy' : 'none';
   });
-  $('tab-colors').addEventListener('drop', e => {
-    const t = e.target.closest('.sm-drop-target');
-    if (!t || !e.dataTransfer || !e.dataTransfer.files.length) return;
+  // dragleave fires when crossing between child elements too, so count depth
+  // rather than hiding on the first one.
+  document.addEventListener('dragleave', () => {
+    if (--dragDepth <= 0) hideDropZone();
+  });
+  document.addEventListener('drop', e => {
+    if (!canAcceptImage() || !dragHasFiles(e.dataTransfer)) return;
     e.preventDefault();
-    t.classList.remove('drag');
-    loadImageFile(e.dataTransfer.files[0]);
+    hideDropZone();
+    const file = Array.from(e.dataTransfer.files || []).filter(f => IMG_RE.test(f.type))[0];
+    if (file) loadImageFile(file);
+    else showToast('Unsupported file — use a JPG, PNG or WebP image.', 'error');
+  });
+
+  // A file dropped on any other tab would otherwise make the webview navigate
+  // to it. Registered last, so the Colors handlers above see the event first.
+  document.addEventListener('dragover', e => { if (dragHasFiles(e.dataTransfer)) e.preventDefault(); });
+  document.addEventListener('drop', e => {
+    if (!dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    if (!e.defaultPrevented || !canAcceptImage()) hideDropZone();
+  });
+  window.addEventListener('blur', hideDropZone);
+
+  // Ctrl/Cmd+V with an image on the clipboard.
+  document.addEventListener('paste', e => {
+    if (!canAcceptImage()) return;
+    const items = (e.clipboardData && e.clipboardData.items) ? Array.from(e.clipboardData.items) : [];
+    for (const it of items) {
+      if (it.kind !== 'file') continue;
+      const file = it.getAsFile();
+      if (!file) continue;
+      if (!IMG_RE.test(file.type)) { showToast('Pasted file isn’t a JPG, PNG or WebP image.', 'error'); e.preventDefault(); return; }
+      e.preventDefault();
+      loadImageFile(file);
+      return;
+    }
   });
 
   // ── Color picker popover ─────────────────────────────────────────────────
@@ -4167,6 +4308,14 @@
     panel.addEventListener('change', e => {
       const box = e.target.closest('[data-guide]');
       if (box) S.placeGuide = box.checked;
+      const cnt = e.target.closest('[data-ex-count]');
+      if (cnt && S === CS) {
+        const n = parseInt(cnt.value, 10);
+        if (isNaN(n)) { cnt.value = CS.exCount || EX_DEFAULT; return; }
+        const want = Math.max(EX_MIN, Math.min(EX_MAX, n));
+        cnt.value = want;
+        if (want !== (CS.extract && CS.extract.want)) reExtractColors(want);
+      }
     });
     panel.addEventListener('input', e => {
       const inp = e.target.closest('.sm-name-input');

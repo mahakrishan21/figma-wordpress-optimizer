@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Colors → Extract from image: the number of colors is now yours to choose.** A **Colors** box on the extraction screen takes any value from **2 to 24** (default 12, was a hardcoded 8) and re-runs extraction on the loaded image without re-uploading it
+- **Paste an image with ⌘V / Ctrl+V** anywhere on the Colors tab to extract colors from it
+- **Drag and drop an image anywhere in the plugin window**, not just onto the small upload card. While a file is dragged, a full-window overlay fades in and states whether that file can be dropped — a different, amber state appears for unsupported file types. Files dropped on other tabs are swallowed so the webview can't navigate away from the plugin
+
+### Changed
+- Image sampling no longer smooths when downscaling. Interpolated downscaling blended adjacent pixels and invented colors at every edge, which then surfaced as extracted "colors" the image never contained; sampling is now nearest-neighbour
+- Extraction clusters are merged at a fixed perceptual distance (ΔE 9) regardless of the requested count, so a high count returns fewer honest colors instead of splitting one color into near-duplicates. Requesting more colors raises the sampling resolution and the cluster count instead
+
 ### Fixed
 - **Typography → Generate Text Styles: the "+ Add Text Style" button did nothing.** `.sm-dd-menu-wide` was declared *before* `.sm-dd-menu` with equal specificity, so the base rule's `top` won on source order and the wide menu ended up with both `top` and `bottom` set — collapsing it to 2px of border. The menu was opening with all 14 presets in the DOM, just with no height. Scoped the rule as `.sm-dd-menu.sm-dd-menu-wide` so it wins regardless of source order; it now renders 340px tall above the button. Only this one menu used the `-wide` variant, which is why the other dropdowns were unaffected
 - **Colors → Create Color Palette: "+ Add New Color" always added the same purple** (`#7C3AED` was hardcoded), so every added row looked identical. New rows now take the next unused color from a set of 12 distinct hues, then continue around the hue circle at a fixed saturation/brightness, staying distinct and vivid indefinitely

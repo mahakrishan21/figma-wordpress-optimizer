@@ -235,7 +235,9 @@ If a pasted style or variable has the same value as a local color style (same na
 
 Opens **Generate Color Styles from your brand assets** with two options:
 
-- **Extract from image** — upload or drag in a JPG, PNG, or WebP. Colors are extracted offline (k-means clustering in Lab color space, up to 8 colors) and named by prominence: `Primary`, `Secondary`, `Accent`, `Tertiary`, with neutrals as `White` / `Light Gray` / `Gray` / `Dark Gray` / `Black` and a strong red as `Error`.
+- **Extract from image** — get the image in three ways: click **Upload Image**, **drag and drop** it anywhere in the plugin window, or **paste** it with ⌘V / Ctrl+V. JPG, PNG and WebP are accepted; while you drag, the window dims and shows whether the file can be dropped.
+  Colors are extracted offline (k-means clustering in Lab color space) and named by prominence: `Primary`, `Secondary`, `Accent`, `Tertiary`, with neutrals as `White` / `Light Gray` / `Gray` / `Dark Gray` / `Black` and a strong red as `Error`.
+  The **Colors** box on the results screen sets how many to extract — **2 to 24**, default 12 — and re-runs extraction on the same image when you change it. Colors nearer than ΔE 9 are treated as the same color, so if an image genuinely holds fewer distinct colors than you asked for you get the smaller honest number, with a note saying so, rather than near-duplicates.
 - **Create Color Palette** — build the palette by hand. Click a swatch for the color picker (saturation/brightness square, hue and opacity sliders, hex/% inputs, and an eyedropper where the browser supports it), or type hex codes directly.
 
 Both screens share the same editable list: edit name, hex, and opacity; drag rows to reorder; delete rows; **+ Add New Color**; then **Create Color Styles**.
