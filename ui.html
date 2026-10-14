@@ -891,8 +891,9 @@
     .sm-option-alt { width: 100%; justify-content: center; margin-top: 6px; }
     .sm-target { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-left: auto; }
     .sm-target .sm-input { width: auto; padding-right: 22px; }
-    .sm-ex-count { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
-    .sm-ex-count .sm-input { width: 62px; text-align: center; }
+    .sm-ex-total { font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-left: auto; }
+    .sm-ex-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .sm-ex-actions .btn { width: 100%; justify-content: center; }
     /* Drop overlay — covers the whole Colors panel while a file is dragged in. */
     .sm-dropzone { position: fixed; inset: 8px; z-index: 300; display: none; align-items: center; justify-content: center;
       border-radius: var(--radius-xl); border: 2px dashed var(--blue-400); background: rgba(239, 246, 255, .92);
@@ -2685,7 +2686,7 @@
       setScopeBusy(CS, false);
       try {
         const file = new File([new Uint8Array(msg.bytes)], (msg.name || 'selection') + '.png', { type: 'image/png' });
-        loadImageFile(file);
+        loadImageFile(file, true);
       } catch (e) {
         showToast('Could not read the exported selection.', 'error');
       }
@@ -2738,7 +2739,7 @@
 
   function onStyleSelectionChanged() {
     // 'brand' re-renders too: its "Use Figma selection" button follows the canvas.
-    if (CS.screen === 'entry' || CS.screen === 'brand') renderColors();
+    if (CS.screen === 'entry' || CS.screen === 'brand' || CS.screen === 'extract') renderColors();
     if (TS.screen === 'entry') renderText();
   }
 
@@ -2862,7 +2863,7 @@
   // Creation-type picker, used by both Generate screens.
   function targetPickerHtml(S, what) {
     const t = S.target === 'variables' ? 'variables' : 'styles';
-    return `<label class="sm-target" title="Create ${what} styles, or ${what} variables">Create
+    return `<label class="sm-target" title="Create ${what} styles, or ${what} variables. Rows that apply an existing style are unaffected.">Create
       <select class="sm-input" data-target aria-label="What to create">
         <option value="styles"${t === 'styles' ? ' selected' : ''}>Styles</option>
         <option value="variables"${t === 'variables' ? ' selected' : ''}>Variables</option>
@@ -2902,10 +2903,11 @@
   }
 
   // Results header: toolbar-card + collapsible summary, as in the Spelling tab.
-  function resultsTopHtml(S, genAct, genLabel, summaryTitle, statsHtml) {
+  function resultsTopHtml(S, genAct, genLabel, summaryTitle, statsHtml, picker) {
     const collapsed = !!S.collapsed.__stats;
     return `<div class="toolbar-card"><div class="sm-toolbar">
         <button class="btn" data-act="${genAct}">${SI.wand} ${genLabel}</button>
+        ${picker || ''}
         <button class="btn btn-primary" data-act="rescan" ${S.busy ? 'disabled' : ''}>${SI.refresh} Re-Scan</button>
       </div></div>
       <div>
@@ -3020,7 +3022,7 @@
       </div>` : ''}</div>` : '';
     const instNote = s.instanceLayers ? `<div class="sm-note">${plural(s.instanceLayers, 'layer')} ${s.instanceLayers === 1 ? 'is' : 'are'} inside component instances (tagged “in component”). Styles are applied to the main component when it's in this file, otherwise as instance overrides.</div>` : '';
 
-    return resultsTopHtml(CS, 'gen-colors', 'Generate Color Styles', 'Color Summary', stats) + '<div class="sm-blocks">' +
+    return resultsTopHtml(CS, 'gen-colors', targetLabel(CS, 'Color'), 'Color Summary', stats, targetPickerHtml(CS, 'color')) + '<div class="sm-blocks">' +
       blockHtml(CS, { id: 'styles', title: 'Color Styles', sub: plural(d.colorStyles.length, 'style') + ' used in this frame', count: d.colorStyles.length, body: stylesBody }) +
       blockHtml(CS, { id: 'unlinked', tone: 'red', title: 'Unlinked Colors', sub: 'Fills and strokes without a Color Style', count: unlinkedCount, countTone: 'issue',
         body: unlinkedBody + instNote }) +
@@ -3120,21 +3122,21 @@
       <div class="sm-extract-top">
         <div>
           <span class="sm-h">Uploaded image</span>
-          <div class="sm-upload-box sm-drop-target"><img src="${ex.src}" alt="Uploaded brand image"></div>
-          <button class="btn" style="width:100%;justify-content:center" data-act="ex-upload">${SI.upload} Change Image</button>
+          <div class="sm-upload-box sm-drop-target"><img src="${ex.src}" alt="${ex.fromFrame ? 'Selected Figma frame' : 'Uploaded brand image'}"></div>
+          <div class="sm-ex-actions">
+            <button class="btn" data-act="ex-selection"${hasSelection ? '' : ' disabled'} title="${hasSelection ? 'Use “' + escHtml(selectionLabel) + '” from the canvas' : 'Select a frame on the Figma canvas first'}">${SI.image} Change Frame</button>
+            <button class="btn" data-act="ex-upload">${SI.upload} Change Image</button>
+          </div>
         </div>
         <div>
           <div class="sm-card-head" style="padding:0 0 8px;border:0">
             <div class="sm-h" style="margin:0">Extraction Summary</div>
-            <label class="sm-ex-count">Colors
-              <input class="sm-input" type="number" min="${EX_MIN}" max="${EX_MAX}" step="1"
-                     data-ex-count value="${ex.want || CS.exCount || EX_DEFAULT}" aria-label="Number of colors to extract">
-            </label>
+            <span class="sm-ex-total">${plural(ex.summary.length, 'color')} found</span>
           </div>
           <div class="sm-ex-swatches">${ex.summary.map(c => `<div class="sm-ex-sw">${swatchHtml(c.hex, 1, 'lg')}<span class="mono">${escHtml(c.hex)}</span></div>`).join('')}</div>
           <ul class="sm-ex-notes">
-            <li>Found ${plural(ex.summary.length, 'color')} in image.</li>
-            ${ex.want && ex.summary.length < ex.want ? `<li>That's every distinct color this image has — raising the count won't add more.</li>` : `<li>Change <strong>Colors</strong> above to extract more or fewer (${EX_MIN}–${EX_MAX}).</li>`}
+            <li>Every distinct color in the ${ex.fromFrame ? 'frame' : 'image'} — nothing is capped or dropped.</li>
+            ${ex.summary.length > 60 ? `<li><strong>${ex.summary.length} colors</strong> is a lot to create at once — delete any you don't need below first.</li>` : ''}
             <li>Review and customize before creating styles.</li>
           </ul>
         </div>
@@ -3225,89 +3227,84 @@
   function labDist(a, b) { return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2); }
 
   // ── Extract colors from an image (offline k-means in Lab space) ──────────
-  const EX_MIN = 2, EX_MAX = 24, EX_DEFAULT = 12;
-  function extractPalette(img, max) {
-    // How many colors the caller wants drives the sampling resolution, the
-    // number of k-means clusters, and how aggressively near-neighbours merge.
-    const want = Math.max(EX_MIN, Math.min(EX_MAX, max || EX_DEFAULT));
-    const sampleAt = want > 10 ? 200 : 140;
-    const scale = Math.min(1, sampleAt / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
-    const w = Math.max(1, Math.round(img.naturalWidth * scale)), h = Math.max(1, Math.round(img.naturalHeight * scale));
+  // Perceptual distance below which two colors are treated as the same one.
+  // This is the ONLY thing that collapses colors — there is no count limit.
+  const EX_MERGE_DELTA = 4;
+  // Opacity difference below which two samples count as the same opacity.
+  const EX_ALPHA_TOL = 0.02;
+  // Long edge the image is sampled at. Bigger = small accents are more likely
+  // to be caught; it does not cap how many colors come back.
+  const EX_SAMPLE_EDGE = 900;
+
+  // Extracts EVERY distinct color in the image. Colors are merged only when
+  // they're perceptually indistinguishable (and at the same opacity), never
+  // to satisfy a count.
+  function extractPalette(img) {
+    const scale = Math.min(1, EX_SAMPLE_EDGE / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+    const w = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+    const h = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
     const canvas = document.createElement('canvas');
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     // Point-sample rather than interpolate: smoothed downscaling blends adjacent
-    // pixels and invents colors at every edge, which then show up as extracted
-    // "colors" the image never actually contained.
+    // pixels and invents colors the image never contained.
     ctx.imageSmoothingEnabled = false;
     ctx.mozImageSmoothingEnabled = false;
     ctx.webkitImageSmoothingEnabled = false;
     ctx.drawImage(img, 0, 0, w, h);
     const px = ctx.getImageData(0, 0, w, h).data;
 
-    // Bucket to 5 bits per channel first so k-means runs on a few hundred points.
+    // Bucket at 5 bits per channel + 4 bits of alpha, so opacity variants stay
+    // separate colors. The representative value is the bucket's average, so
+    // bucketing costs no precision in the output.
     const buckets = new Map();
+    let total = 0;
     for (let i = 0; i < px.length; i += 4) {
-      if (px[i + 3] < 128) continue;
-      const key = (px[i] >> 3) << 10 | (px[i + 1] >> 3) << 5 | (px[i + 2] >> 3);
+      const a = px[i + 3];
+      if (a < 8) continue;                      // fully transparent
+      const key = ((px[i] >> 3) << 15) | ((px[i + 1] >> 3) << 10) | ((px[i + 2] >> 3) << 5) | (a >> 4);
       let b = buckets.get(key);
-      if (!b) { b = { r: 0, g: 0, b: 0, n: 0 }; buckets.set(key, b); }
-      b.r += px[i]; b.g += px[i + 1]; b.b += px[i + 2]; b.n++;
+      if (!b) { b = { r: 0, g: 0, b: 0, a: 0, n: 0 }; buckets.set(key, b); }
+      b.r += px[i]; b.g += px[i + 1]; b.b += px[i + 2]; b.a += a; b.n++;
+      total++;
     }
+    if (!total) return [];
+
     const pts = [];
     buckets.forEach(b => {
-      const r = b.r / b.n, g = b.g / b.n, bl = b.b / b.n;
-      pts.push({ r: r, g: g, b: bl, n: b.n, lab: rgbToLab(r, g, bl) });
+      const r = b.r / b.n, g = b.g / b.n, bl = b.b / b.n, a = b.a / b.n / 255;
+      pts.push({ r: r, g: g, b: bl, a: a, n: b.n, lab: rgbToLab(r, g, bl) });
     });
-    if (!pts.length) return [];
-    const total = pts.reduce((s, p) => s + p.n, 0);
+    pts.sort((x, y) => y.n - x.n);
 
-    // Over-cluster, then merge back down — asking for exactly `want` clusters
-    // loses distinct-but-small colors to whichever large cluster is nearest.
-    const k = Math.min(Math.max(want * 2, 16), 40, pts.length);
-    pts.sort((a, b) => b.n - a.n);
-    const centers = [{ lab: pts[0].lab.slice() }];
-    while (centers.length < k) {
-      let best = null, bestScore = -1;
-      for (const p of pts) {
-        const d = Math.min.apply(null, centers.map(c => labDist(c.lab, p.lab)));
-        const score = d * Math.sqrt(p.n);
-        if (score > bestScore) { bestScore = score; best = p; }
+    // A single sampled pixel in a large image is compression noise, not a
+    // color in the design. Small images keep everything.
+    const floor = total > 5000 ? 2 : 1;
+
+    // Greedy merge, most common first, so each kept color is the dominant
+    // member of its perceptual neighbourhood.
+    const kept = [];
+    for (const p of pts) {
+      if (p.n < floor) continue;
+      let hit = null;
+      for (const k of kept) {
+        if (Math.abs(k.a - p.a) > EX_ALPHA_TOL) continue;
+        if (labDist(k.lab, p.lab) < EX_MERGE_DELTA) { hit = k; break; }
       }
-      centers.push({ lab: best.lab.slice() });
+      if (hit) {
+        // Keep the dominant member's colour; just add the weight.
+        hit.n += p.n;
+      } else {
+        kept.push({ lab: p.lab, r: p.r, g: p.g, b: p.b, a: p.a, n: p.n });
+      }
     }
-    let assign = [];
-    for (let iter = 0; iter < 12; iter++) {
-      assign = pts.map(p => {
-        let bi = 0, bd = Infinity;
-        centers.forEach((c, ci) => { const d = labDist(c.lab, p.lab); if (d < bd) { bd = d; bi = ci; } });
-        return bi;
-      });
-      centers.forEach((c, ci) => {
-        let n = 0, L = 0, A = 0, B = 0, r = 0, g = 0, b = 0;
-        pts.forEach((p, pi) => {
-          if (assign[pi] !== ci) return;
-          n += p.n; L += p.lab[0] * p.n; A += p.lab[1] * p.n; B += p.lab[2] * p.n;
-          r += p.r * p.n; g += p.g * p.n; b += p.b * p.n;
-        });
-        c.n = n;
-        if (n) { c.lab = [L / n, A / n, B / n]; c.rgb = [r / n, g / n, b / n]; }
-      });
-    }
-    const clusters = centers.filter(c => c.n).sort((a, b) => b.n - a.n);
-    // `want` controls how many candidates we look for, NOT how similar two
-    // colors may be. The merge threshold stays at a fixed perceptual distance
-    // so a high count can't split anti-aliased edges into colors that aren't
-    // really in the image — it just returns fewer than asked for.
-    const mergeAt = 9;
-    const minShare = want > 10 ? 0.0025 : 0.004;
-    const merged = [];
-    for (const c of clusters) {
-      const near = merged.find(m => labDist(m.lab, c.lab) < mergeAt);
-      if (near) near.n += c.n; else merged.push({ lab: c.lab, rgb: c.rgb, n: c.n });
-    }
-    return merged.filter(c => c.n / total >= minShare).slice(0, want)
-      .map(c => ({ hex: rgbToHex255(c.rgb[0], c.rgb[1], c.rgb[2]), share: c.n / total }));
+
+    kept.sort((x, y) => y.n - x.n);
+    return kept.map(c => ({
+      hex: rgbToHex255(c.r, c.g, c.b),
+      opacity: Math.round(c.a * 100),
+      share: c.n / total
+    }));
   }
 
   const UI_HUES = [[12, 'Red'], [40, 'Orange'], [65, 'Yellow'], [85, 'Lime'], [150, 'Green'], [175, 'Teal'], [195, 'Cyan'], [235, 'Blue'], [255, 'Indigo'], [275, 'Violet'], [300, 'Purple'], [340, 'Pink'], [361, 'Red']];
@@ -3330,22 +3327,24 @@
     });
   }
 
-  function loadImageFile(file) {
+  function loadImageFile(file, fromFrame) {
     if (!file) return;
     if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) { showToast('Unsupported file — use a JPG, PNG or WebP image.', 'error'); return; }
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        const want = CS.exCount || EX_DEFAULT;
         let colors = [];
-        try { colors = extractPalette(img, want); } catch (e) { showToast('Could not read colors from this image.', 'error'); return; }
+        try { colors = extractPalette(img); } catch (e) { showToast('Could not read colors from this image.', 'error'); return; }
         if (!colors.length) { showToast('No solid colors found — is the image fully transparent?', 'warning'); return; }
         const names = nameExtractedColors(colors);
-        CS.extract = { src: reader.result, summary: colors, rows: colors.map((c, i) => newPalItem(c.hex, 100, names[i])), want: want };
+        CS.extract = {
+          src: reader.result, summary: colors, fromFrame: !!fromFrame,
+          rows: colors.map((c, i) => newPalItem(c.hex, c.opacity, names[i]))
+        };
         CS.screen = 'extract';
         renderColors();
-        showToast('Found ' + plural(colors.length, 'color') + ' in the image.', 'success');
+        showToast('Found ' + plural(colors.length, 'color') + ' in the ' + (fromFrame ? 'frame' : 'image') + '.', 'success');
       };
       img.onerror = () => showToast('Could not open this image.', 'error');
       img.src = reader.result;
@@ -3353,30 +3352,6 @@
     reader.readAsDataURL(file);
   }
 
-  // Re-run extraction on the image already loaded, at a different color count.
-  function reExtractColors(n) {
-    const ex = CS.extract;
-    if (!ex || !ex.src) return;
-    const want = Math.max(EX_MIN, Math.min(EX_MAX, n));
-    CS.exCount = want;
-    const img = new Image();
-    img.onload = () => {
-      let colors = [];
-      try { colors = extractPalette(img, want); } catch (e) { showToast('Could not read colors from this image.', 'error'); return; }
-      if (!colors.length) { showToast('No solid colors found in this image.', 'warning'); return; }
-      const names = nameExtractedColors(colors);
-      ex.summary = colors;
-      ex.rows = colors.map((c, i) => newPalItem(c.hex, 100, names[i]));
-      ex.want = want;
-      renderColors();
-      showToast(colors.length < want
-        ? 'This image only has ' + plural(colors.length, 'distinct color') + '.'
-        : 'Extracted ' + plural(colors.length, 'color') + '.',
-        colors.length < want ? 'warning' : 'success');
-    };
-    img.onerror = () => showToast('Could not re-read this image.', 'error');
-    img.src = ex.src;
-  }
 
   $('colorImageInput').addEventListener('change', e => {
     loadImageFile(e.target.files && e.target.files[0]);
@@ -3691,12 +3666,12 @@
     if (act === 'pal-pick') { openPicker(el, el.dataset.list, el.dataset.id); return; }
     if (act === 'pal-create') { createPaletteStyles(el.dataset.list); return; }
 
-    if (act === 'c-create') { sendStyle(CS, { type: 'style-rows', action: 'create', label: 'Create & Apply', rows: rowsPayload(CS, [CS.rows[key]], 'suggested') }); return; }
-    if (act === 'c-create-all') { sendStyle(CS, { type: 'style-rows', action: 'create', label: 'Create & Apply All', rows: rowsPayload(CS, d.newColors, 'suggested') }); return; }
+    if (act === 'c-create') { sendStyle(CS, { type: 'style-rows', action: 'create', target: CS.target, label: 'Create & Apply', rows: rowsPayload(CS, [CS.rows[key]], 'suggested') }); return; }
+    if (act === 'c-create-all') { sendStyle(CS, { type: 'style-rows', action: 'create', target: CS.target, label: 'Create & Apply All', rows: rowsPayload(CS, d.newColors, 'suggested') }); return; }
     if (act === 'c-apply') { sendStyle(CS, { type: 'style-rows', action: 'apply', label: 'Apply Style', rows: [{ key: key }] }); return; }
     if (act === 'c-apply-all') { sendStyle(CS, { type: 'style-rows', action: 'apply', label: 'Apply All', rows: d.matchLocal.map(r => ({ key: r.key })) }); return; }
-    if (act === 'c-copy') { sendStyle(CS, { type: 'style-rows', action: 'copy', label: 'Create & Apply', rows: rowsPayload(CS, [CS.rows[key]], 'name') }); return; }
-    if (act === 'c-copy-all') { sendStyle(CS, { type: 'style-rows', action: 'copy', label: 'Create & Apply All', rows: rowsPayload(CS, d.matchRemote, 'name') }); return; }
+    if (act === 'c-copy') { sendStyle(CS, { type: 'style-rows', action: 'copy', target: CS.target, label: 'Create & Apply', rows: rowsPayload(CS, [CS.rows[key]], 'name') }); return; }
+    if (act === 'c-copy-all') { sendStyle(CS, { type: 'style-rows', action: 'copy', target: CS.target, label: 'Create & Apply All', rows: rowsPayload(CS, d.matchRemote, 'name') }); return; }
     if (act === 'c-delete') { confirmDeleteStyle(CS, CS.rows[key], 'color'); return; }
     if (act === 'c-merge') { confirmMerge(CS, d.nearDupes[+el.dataset.idx], dupeItemColor); return; }
     if (act === 'c-merge-all') { confirmMergeAll(CS, d.nearDupes); return; }
@@ -4373,14 +4348,6 @@
       if (box) S.placeGuide = box.checked;
       const tgt = e.target.closest('[data-target]');
       if (tgt) { S.target = tgt.value === 'variables' ? 'variables' : 'styles'; (S === CS ? renderColors : renderText)(); return; }
-      const cnt = e.target.closest('[data-ex-count]');
-      if (cnt && S === CS) {
-        const n = parseInt(cnt.value, 10);
-        if (isNaN(n)) { cnt.value = CS.exCount || EX_DEFAULT; return; }
-        const want = Math.max(EX_MIN, Math.min(EX_MAX, n));
-        cnt.value = want;
-        if (want !== (CS.extract && CS.extract.want)) reExtractColors(want);
-      }
     });
     panel.addEventListener('input', e => {
       const inp = e.target.closest('.sm-name-input');

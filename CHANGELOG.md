@@ -4,7 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Color extraction now returns every distinct color, with no limit.** The Colors box, its 2–24 range, the 12-color default and the old hardcoded 8 are all gone. A 200-swatch image now yields ~200 colors instead of 12
+  - The algorithm changed to suit: k-means with a fixed cluster count can't express "all colors", so extraction now counts colors directly (5 bits per channel plus 4 bits of alpha, averaged back to full precision) and merges greedily, most-common first
+  - The **only** thing that collapses colors is perceptual distance — ΔE < 4 at the same opacity. Nothing is truncated or dropped to satisfy a count
+  - **Opacity is preserved**: the same color at 100% and at 25% stays two entries, each carrying its own opacity, instead of everything being forced to 100%
+  - Sampling resolution raised to a 900px long edge so small accents are caught
+  - In a large image, a color present in a single sampled pixel is treated as compression noise; small images keep everything
+  - The extraction screen shows the total as read-only text ("195 colors found") and warns above 60 colors, but never limits
+
 ### Added
+- **The Create Styles / Variables dropdown is now on the Colors Scan screen too**, in the scan toolbar beside Re-Scan. It's the same control and the same per-tab state as the Generate screen — one picker, not a second one — so the choice carries across both halves of the tab
+  - **Create & Apply** and **Create & Apply All** honour it: in Variables mode they create (or reuse) a COLOR variable and **bind it to the scanned layers** via `setBoundVariableForPaint`, on fills or strokes as the row requires, instead of creating a paint style
+  - Any existing variable of the same value is reused rather than duplicated, matching the Generate flow
+  - A layer's conflicting fill/stroke style is cleared first, since a style and a variable can't both drive one paint
+  - Layers with more than one fill or stroke are skipped with a reason, exactly as the styles path does
+  - **Apply Style** rows are unaffected — they point at an existing style by design — and the style-name conflict prompt is skipped in Variables mode, since variables don't collide with style names
+- **Change Frame** button on the extraction screen, beside **Change Image** — pick any frame on the canvas and extract from its rendered content. It reuses the same `export-selection` path as the landing panel rather than a separate mechanism, so images and frames run through identical extraction
 - **Extract colors from a Figma layer, not just a file.** The Extract from image card gained a **Use "<layer>"** button that exports whatever is selected on the canvas (`exportAsync`, PNG, long edge capped at 512px) and runs it through the same extraction. It names the selected layer and is disabled until something is selected. Dragging a layer off the canvas into the plugin is not possible — plugin UI runs in a null-origin iframe, so Figma can't hand it drag data — and this is the supported route in
 - Dragging something that carries a **link rather than a file** (e.g. an image dragged from a browser tab) now explains itself instead of failing silently: the plugin is offline by design and has nothing to fetch, so it points at saving the file or using the Figma selection
 - **Create Styles or Variables** — both the Colors and Typography Generate screens now carry their own **Create** dropdown (Styles / Variables). The two are independent, so Colors can produce variables while Typography produces styles. Everything else about the screens is unchanged

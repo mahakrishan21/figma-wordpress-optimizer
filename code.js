@@ -2566,6 +2566,86 @@ async function applyStyleToUses(kind, style, uses, result) {
   }
 }
 
+// Bind a COLOR variable to every layer a scan row covers — the variables
+// counterpart of applyStyleToUses().
+async function applyVariableToUses(variable, uses, result) {
+  for (var i = 0; i < uses.length; i++) {
+    var u = uses[i];
+    if (u.multi) {
+      result.skipped++;
+      pushReason(result, 'Layers with more than one fill/stroke were skipped — a variable binds a single paint.');
+      continue;
+    }
+    var found = null;
+    try { found = await figma.getNodeByIdAsync(u.id); } catch (e) {}
+    if (!found) { result.skipped++; continue; }
+    var target = await styleTargetFor(found);
+    var node = target.node;
+    var blocked = styleBlockedReason(node);
+    if (blocked) { result.skipped++; pushReason(result, blocked); continue; }
+    var doneKey = node.id + '|' + u.prop;
+    if (result.done && result.done.has(doneKey)) { result.applied++; continue; }
+    try {
+      var prop = u.prop === 'strokes' ? 'strokes' : 'fills';
+      var paints = node[prop];
+      if (!Array.isArray(paints) || paints.length !== 1 || paints[0].type !== 'SOLID') {
+        result.skipped++;
+        pushReason(result, 'Only a single solid ' + (prop === 'strokes' ? 'stroke' : 'fill') + ' can be bound to a variable.');
+        continue;
+      }
+      // A style and a variable can't both drive the same paint.
+      try {
+        if (prop === 'strokes') await node.setStrokeStyleIdAsync('');
+        else await node.setFillStyleIdAsync('');
+      } catch (e) {}
+      var bound = figma.variables.setBoundVariableForPaint(node[prop][0], 'color', variable);
+      node[prop] = [bound];
+      result.applied++;
+      if (!result.done) result.done = new Set();
+      result.done.add(doneKey);
+      if (target.via === 'override') result.overrides = (result.overrides || 0) + 1;
+      if (target.via === 'component') result.components = (result.components || 0) + 1;
+    } catch (e) {
+      result.skipped++;
+      pushReason(result, e && e.message ? e.message : 'Could not bind the variable.');
+    }
+  }
+}
+
+// Scan rows -> colour variables. Same reuse rule as the Generate flow: an
+// existing variable of the same value is used rather than a second one made.
+async function runRowVariableAction(msg, rows, names) {
+  var result = { created: 0, applied: 0, skipped: 0, reused: 0, reasons: [], unit: 'variable' };
+  var collection = await getTokenCollection(true);
+  if (!collection) throw new Error('Could not open a variable collection in this file.');
+  var pool = await localVariablesWithValues('COLOR');
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i].row;
+    var hex = String(row.hex || '').toUpperCase();
+    var opacity = typeof row.opacity === 'number' ? row.opacity : 1;
+    if (!hex) { result.skipped += row.uses.length; continue; }
+    try {
+      var variable = findColorVariable(pool, hex, opacity);
+      if (variable) {
+        result.reused++;
+      } else {
+        var rgba = hexToRgb01(hex);
+        rgba.a = opacity;
+        variable = figma.variables.createVariable(names[i], collection, 'COLOR');
+        await setVarValue(variable, collection, rgba);
+        pool.push({ variable: variable, value: rgba });
+        result.created++;
+      }
+      await applyVariableToUses(variable, row.uses, result);
+    } catch (e) {
+      result.skipped += row.uses.length;
+      pushReason(result, names[i] + ': ' + (e && e.message ? e.message : 'could not create variable'));
+    }
+  }
+  return result;
+}
+
 function cloneJson(v) {
   return JSON.parse(JSON.stringify(v));
 }
@@ -2609,6 +2689,13 @@ async function runRowAction(kind, msg) {
   }
 
   const names = rows.map(x => (x.ref.name || '').trim() || x.row.suggested || x.row.name);
+
+  // "Create & Apply" can produce variables instead of styles. Variables carry
+  // no style-name conflict, so that prompt is skipped.
+  if (kind === 'paint' && msg.target === 'variables') {
+    return await runRowVariableAction(msg, rows, names);
+  }
+
   if (msg.conflict !== 'update' && msg.conflict !== 'keep') {
     const conflicts = await styleNameConflicts(kind, names);
     if (conflicts.length) return { conflict: conflicts };

@@ -237,8 +237,9 @@ If a pasted style or variable has the same value as a local color style (same na
 Opens **Generate Color Styles from your brand assets** with two options:
 
 - **Extract from image** — get the image four ways: click **Upload Image**, **drag and drop** it anywhere in the plugin window, **paste** it with ⌘V / Ctrl+V, or — for artwork already in Figma — select the layer on the canvas and click **Use "<layer>"**, which exports it as a PNG and extracts from that. (Dragging a layer off the Figma canvas into the plugin isn't possible: plugin UI runs in a null-origin iframe, so Figma can't pass it drag data. The selection button is the route in. An image dragged from a browser tab carries a link, not a file, and the plugin is offline by design — it says so rather than failing quietly.) JPG, PNG and WebP are accepted; while you drag, the window dims and shows whether the file can be dropped.
-  Colors are extracted offline (k-means clustering in Lab color space) and named by prominence: `Primary`, `Secondary`, `Accent`, `Tertiary`, with neutrals as `White` / `Light Gray` / `Gray` / `Dark Gray` / `Black` and a strong red as `Error`.
-  The **Colors** box on the results screen sets how many to extract — **2 to 24**, default 12 — and re-runs extraction on the same image when you change it. Colors nearer than ΔE 9 are treated as the same color, so if an image genuinely holds fewer distinct colors than you asked for you get the smaller honest number, with a note saying so, rather than near-duplicates.
+  Colors are extracted offline and named by prominence: `Primary`, `Secondary`, `Accent`, `Tertiary`, with neutrals as `White` / `Light Gray` / `Gray` / `Dark Gray` / `Black` and a strong red as `Error`.
+  **Every distinct color is returned — there is no limit and no count to set.** A 200-swatch image gives ~200 colors. The only thing that collapses two colors is perceptual distance: they must be within ΔE 4 *and* at the same opacity. Opacity is preserved, so the same color at 100% and 25% stays two separate entries. In a large image a color present in a single sampled pixel is treated as compression noise. The screen reports the total as read-only text.
+  Beside **Change Image** there's **Change Frame**: select any frame on the canvas and extract from its rendered content. Images and frames run through identical extraction.
 - **Create Color Palette** — build the palette by hand. Click a swatch for the color picker (saturation/brightness square, hue and opacity sliders, hex/% inputs, and an eyedropper where the browser supports it), or type hex codes directly.
 
 Both screens share the same editable list: edit name, hex, and opacity; drag rows to reorder; delete rows; **+ Add New Color**; then **Create Color Styles**.
@@ -283,7 +284,9 @@ The preview can only render fonts installed on this computer. Other fonts previe
 
 ### Styles or variables
 
-Both Generate screens have their own **Create** dropdown — **Styles** or **Variables** — set independently for Colors and Typography.
+The **Create** dropdown — **Styles** or **Variables** — is set independently for Colors and Typography. On Colors it appears on both the **Scan** toolbar and the **Generate** screen, sharing one setting; on Typography it's on the Generate screen.
+
+On the Colors scan, **Create & Apply** / **Create & Apply All** follow the choice: in Variables mode they create (or reuse) a color variable and bind it to the scanned layers — fills or strokes, whichever the row covers — rather than creating a paint style. **Apply Style** rows are unaffected, since they point at an existing style by design.
 
 Whichever you pick, the plugin indexes the file's existing local styles **and** variables by value first, and reuses what it finds:
 
