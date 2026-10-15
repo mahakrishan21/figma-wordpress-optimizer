@@ -3050,13 +3050,27 @@
 
   // Rows for a style and a variable that hold the same value. Merging links
   // the style to the variable; neither is deleted.
+  // The action follows the Create choice at the top: with Variables selected
+  // the style is pointed at the variable; with Styles selected the layers
+  // using the variable are pointed at the style instead.
+  function svAction(S) {
+    const toVar = S.target === 'variables';
+    return {
+      toVar: toVar,
+      label: toVar ? 'Link to variable' : 'Link to style',
+      note: toVar
+        ? `<strong>Link to variable</strong> points the style at the variable, so one value drives both.`
+        : `<strong>Link to style</strong> points the layers using the variable at the style instead. (A Figma variable can't reference a style, so the layers move rather than the variable.)`
+    };
+  }
   function styleVarDupeBody(S, list, preview) {
     if (!list.length) return '<div class="sm-empty ok">✓ No style is duplicating a variable.</div>';
-    return `<div class="sm-note" style="border-top:none">These exist twice — once as a style, once as a variable. <strong>Link to variable</strong> points the style at the variable so one value drives both. Nothing is deleted and every layer keeps working.</div>` +
+    const act = svAction(S);
+    return `<div class="sm-note" style="border-top:none">These exist twice — once as a style, once as a variable. ${act.note} Nothing is deleted and every layer keeps working.</div>` +
       list.map(r => `<div class="sm-dupe-row">
         ${preview(r)}<span class="sm-dupe-eq">=</span>
-        <div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.variableName)}</div><div class="sm-meta">variable</div></div>
-        <button class="btn btn-sm btn-outline-blue" data-act="sv-merge" data-key="${escHtml(r.key)}">Link to variable</button>
+        <div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.variableName)}</div><div class="sm-meta">variable${r.uses && r.uses.length ? ' · ' + plural(r.uses.length, 'layer') : ''}</div></div>
+        <button class="btn btn-sm btn-outline-blue" data-act="sv-merge" data-key="${escHtml(r.key)}">${act.label}</button>
       </div>`).join('');
   }
   function svPreviewColor(r) {
@@ -3778,13 +3792,33 @@
 
   async function confirmLinkToVariable(S, row) {
     if (!row) return;
+    const act = svAction(S);
+    const uses = (row.uses || []).length;
     const res = await smDialog({
-      title: 'Link “' + row.styleName + '” to “' + row.variableName + '”?',
-      body: `The style and the variable hold the same value. Linking points the style at the variable, so one value drives both and changing the variable updates the style.<br><br>
-        <strong>Nothing is deleted</strong> — every layer using either one keeps working. You can undo with ⌘Z.`,
-      buttons: [{ label: 'Cancel', value: null }, { label: 'Link to variable', value: 'merge', primary: true }]
+      title: act.toVar
+        ? 'Link “' + row.styleName + '” to “' + row.variableName + '”?'
+        : 'Point “' + row.variableName + '” layers at “' + row.styleName + '”?',
+      body: act.toVar
+        ? `The style and the variable hold the same value. Linking points the style at the variable, so one value drives both and changing the variable updates the style.<br><br>
+           <strong>Nothing is deleted</strong> — every layer using either one keeps working. You can undo with ⌘Z.`
+        : `The style and the variable hold the same value. ${uses ? plural(uses, 'layer') + ' in this frame ' + (uses === 1 ? 'is' : 'are') + ' bound to the variable; they will use the style instead.' : 'No layer in this frame is bound to the variable.'}<br><br>
+           A Figma variable can't reference a style, so the layers move rather than the variable. <strong>Nothing is deleted</strong> — the variable stays for anything else using it. You can undo with ⌘Z.`,
+      buttons: [{ label: 'Cancel', value: null }, { label: act.label, value: 'merge', primary: true }]
     });
-    if (res.value) sendStyle(S, { type: 'merge-style-variable', styleId: row.styleId, label: 'Link style to variable' });
+    if (!res.value) return;
+    sendStyle(S, act.toVar
+      ? { type: 'merge-style-variable', styleId: row.styleId, label: 'Link style to variable' }
+      : { type: 'merge-style-variable', direction: 'style', styleId: row.styleId,
+          uses: cloneUses(row.uses || []), label: 'Link layers to style' });
+  }
+
+  // Only the fields the sandbox needs to re-find each layer.
+  function cloneUses(uses) {
+    return uses.map(u => {
+      const o = { id: u.id, prop: u.prop, multi: !!u.multi };
+      if (typeof u.start === 'number') { o.start = u.start; o.end = u.end; }
+      return o;
+    });
   }
 
   async function confirmDeleteVariable(S, row) {

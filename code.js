@@ -1804,9 +1804,12 @@ function describePaints(paints, prop) {
   return paints.length + ' ' + (prop === 'strokes' ? 'strokes' : 'fills') + ': ' + parts.join(', ');
 }
 
-function useRef(node, prop, multi, paintInfo) {
+function useRef(node, prop, multi, paintInfo, range) {
   const u = { id: node.id, name: node.name, path: shortPath(node), type: node.type, prop: prop, multi: !!multi, inst: isInInstance(node) };
   if (paintInfo) u.paints = paintInfo;
+  // A text layer whose characters differ in colour contributes one use per
+  // coloured run, each carrying the range it covers.
+  if (range) { u.start = range.start; u.end = range.end; u.text = range.text; }
   return u;
 }
 
@@ -1846,6 +1849,28 @@ function styleScanNodes(roots) {
   };
   for (const root of roots) visit(root);
   return out;
+}
+
+// A text layer can hold several colours at once — different words or
+// characters. node.fills is figma.mixed there, so the runs have to be read
+// segment by segment. Returns one entry per coloured run.
+async function textColorRuns(node) {
+  var runs = [];
+  try {
+    var segs = node.getStyledTextSegments(['fills', 'fillStyleId']);
+    for (var i = 0; i < segs.length; i++) {
+      var seg = segs[i];
+      var fills = seg.fills;
+      if (!Array.isArray(fills) || !fills.length) continue;
+      var chars = typeof seg.characters === 'string' ? seg.characters : '';
+      runs.push({
+        fills: fills,
+        styleId: typeof seg.fillStyleId === 'string' ? seg.fillStyleId : '',
+        range: { start: seg.start, end: seg.end, text: chars.length > 24 ? chars.slice(0, 24) + '…' : chars }
+      });
+    }
+  } catch (e) {}
+  return runs;
 }
 
 // Color variables copied in from another file show by name in Figma's fill
@@ -1983,28 +2008,27 @@ async function scanColors(roots) {
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
-    for (const prop of ['fills', 'strokes']) {
-      if (!(prop in node)) continue;
-      const paints = node[prop];
-      if (paints === figma.mixed || !Array.isArray(paints) || !paints.length) continue;
-      const styleProp = prop === 'fills' ? 'fillStyleId' : 'strokeStyleId';
-      const sid = styleProp in node ? node[styleProp] : '';
-      if (sid === figma.mixed) continue;
+
+    // One "source" is a set of paints plus the style that drives them. A
+    // normal layer has one per property; a text layer with several colours
+    // contributes one per coloured run, each carrying its character range.
+    const collectSource = async (prop, paints, sid, range) => {
+      if (!Array.isArray(paints) || !paints.length) return;
       if (typeof sid === 'string' && sid) {
         const style = await getStyleCached(cache, sid);
-        if (!style) continue;
+        if (!style) return;
         if (localIds.has(sid) && !style.remote) {
           if (!localUse.has(sid)) localUse.set(sid, []);
-          localUse.get(sid).push(useRef(node, prop));
+          localUse.get(sid).push(useRef(node, prop, false, null, range));
         } else {
           if (!remoteUse.has(sid)) remoteUse.set(sid, { style: style, uses: [] });
-          remoteUse.get(sid).uses.push(useRef(node, prop));
+          remoteUse.get(sid).uses.push(useRef(node, prop, false, null, range));
         }
-        continue;
+        return;
       }
       const solids = paints.filter(p => p.type === 'SOLID' && p.visible !== false);
-      // A style replaces every paint on the layer, so only single-paint
-      // layers can be linked automatically.
+      // A style replaces every paint, so only single-paint sources can be
+      // linked automatically.
       const multi = !(paints.length === 1 && solids.length === 1);
       const paintInfo = multi ? describePaints(paints, prop) : null;
       for (const p of solids) {
@@ -2015,12 +2039,12 @@ async function scanColors(roots) {
           if (rv && rv.remote) {
             // From another file — offer to make a local copy.
             if (!remoteVarUse.has(vid)) remoteVarUse.set(vid, { name: rv.name, hex: rgbToHexStr(rv.color), opacity: op, uses: [] });
-            remoteVarUse.get(vid).uses.push(useRef(node, prop, multi, paintInfo));
+            remoteVarUse.get(vid).uses.push(useRef(node, prop, multi, paintInfo, range));
           } else if (rv) {
             // Defined in this file — already linked, and listed in its own
             // section alongside Color Styles.
             if (!localVarUse.has(vid)) localVarUse.set(vid, { name: rv.name, hex: rgbToHexStr(rv.color), opacity: op, uses: [] });
-            localVarUse.get(vid).uses.push(useRef(node, prop, multi, paintInfo));
+            localVarUse.get(vid).uses.push(useRef(node, prop, multi, paintInfo, range));
           }
           continue;
         }
@@ -2028,8 +2052,25 @@ async function scanColors(roots) {
         const op = typeof p.opacity === 'number' ? p.opacity : 1;
         const k = colorKey(hex, op);
         if (!unlinked.has(k)) unlinked.set(k, { hex: hex, opacity: op, uses: [] });
-        unlinked.get(k).uses.push(useRef(node, prop, multi, paintInfo));
+        unlinked.get(k).uses.push(useRef(node, prop, multi, paintInfo, range));
       }
+    };
+
+    for (const prop of ['fills', 'strokes']) {
+      if (!(prop in node)) continue;
+      const paints = node[prop];
+      const styleProp = prop === 'fills' ? 'fillStyleId' : 'strokeStyleId';
+      const sid = styleProp in node ? node[styleProp] : '';
+
+      // Text whose characters differ in colour: scan every run rather than
+      // skipping the layer, so none of its colours go unreported.
+      if (node.type === 'TEXT' && prop === 'fills' && (paints === figma.mixed || sid === figma.mixed)) {
+        const runs = await textColorRuns(node);
+        for (const run of runs) await collectSource(prop, run.fills, run.styleId, run.range);
+        continue;
+      }
+      if (paints === figma.mixed || sid === figma.mixed) continue;
+      await collectSource(prop, paints, sid, null);
     }
     if ((i + 1) % 300 === 0) {
       figma.ui.postMessage({ type: 'style-progress', scope: 'colors', completed: i + 1, total: nodes.length });
@@ -2163,7 +2204,8 @@ async function scanColors(roots) {
   let instanceLayers = 0;
   for (const list of [newColorsFixable, matchLocal, matchRemoteFixable]) for (const r of list) for (const u of r.uses) if (u.inst) instanceLayers++;
 
-  const styleVarDupes = await findColorStyleVariableDupes();
+  const styleVarDupes = await findColorStyleVariableDupes(
+    new Map(Array.from(localVarUse.entries()).map(e => [e[0], e[1].uses])));
 
   return {
     colorStyles: colorStyles,
@@ -2615,12 +2657,17 @@ async function applyStyleToUses(kind, style, uses, result) {
     const node = target.node;
     const blocked = styleBlockedReason(node);
     if (blocked) { result.skipped++; pushReason(result, blocked); continue; }
-    const doneKey = node.id + '|' + u.prop;
+    const ranged = typeof u.start === 'number' && typeof u.end === 'number' && u.end > u.start;
+    const doneKey = node.id + '|' + u.prop + (ranged ? '|' + u.start + '-' + u.end : '');
     if (result.done && result.done.has(doneKey)) { result.applied++; continue; }
     try {
       if (kind === 'text') {
         await loadTextNodeFonts(node);
         await node.setTextStyleIdAsync(style.id);
+      } else if (ranged) {
+        // Only the characters this colour actually covers.
+        await loadTextNodeFonts(node);
+        await node.setRangeFillStyleIdAsync(u.start, u.end, style.id);
       } else if (u.prop === 'strokes') {
         await node.setStrokeStyleIdAsync(style.id);
       } else {
@@ -2655,10 +2702,32 @@ async function applyVariableToUses(variable, uses, result) {
     var node = target.node;
     var blocked = styleBlockedReason(node);
     if (blocked) { result.skipped++; pushReason(result, blocked); continue; }
-    var doneKey = node.id + '|' + u.prop;
+    var ranged = typeof u.start === 'number' && typeof u.end === 'number' && u.end > u.start;
+    var doneKey = node.id + '|' + u.prop + (ranged ? '|' + u.start + '-' + u.end : '');
     if (result.done && result.done.has(doneKey)) { result.applied++; continue; }
     try {
       var prop = u.prop === 'strokes' ? 'strokes' : 'fills';
+
+      // One coloured run inside a text layer.
+      if (ranged) {
+        await loadTextNodeFonts(node);
+        var runFills = node.getRangeFills(u.start, u.end);
+        if (!Array.isArray(runFills) || runFills.length !== 1 || runFills[0].type !== 'SOLID') {
+          result.skipped++;
+          pushReason(result, 'Only a single solid fill can be bound to a variable.');
+          continue;
+        }
+        try { await node.setRangeFillStyleIdAsync(u.start, u.end, ''); } catch (e) {}
+        var runBound = figma.variables.setBoundVariableForPaint(node.getRangeFills(u.start, u.end)[0], 'color', variable);
+        node.setRangeFills(u.start, u.end, [runBound]);
+        result.applied++;
+        if (!result.done) result.done = new Set();
+        result.done.add(doneKey);
+        if (target.via === 'override') result.overrides = (result.overrides || 0) + 1;
+        if (target.via === 'component') result.components = (result.components || 0) + 1;
+        continue;
+      }
+
       var paints = node[prop];
       if (!Array.isArray(paints) || paints.length !== 1 || paints[0].type !== 'SOLID') {
         result.skipped++;
@@ -2687,7 +2756,7 @@ async function applyVariableToUses(variable, uses, result) {
 // ── Duplicates ACROSS types: the same value held by both a style and a
 // variable. Merging binds the style to the variable, so one value drives both
 // and every layer keeps working — nothing is deleted.
-async function findColorStyleVariableDupes() {
+async function findColorStyleVariableDupes(varUses) {
   var styles = await figma.getLocalPaintStylesAsync();
   var vars = await localVariablesWithValues('COLOR');
   var out = [];
@@ -2704,7 +2773,10 @@ async function findColorStyleVariableDupes() {
     out.push({
       key: 'sv:' + st.id, styleId: st.id, styleName: st.name,
       variableId: match.id, variableName: match.name,
-      hex: sv.hex, opacity: sv.opacity
+      hex: sv.hex, opacity: sv.opacity,
+      // Layers bound to the variable in this frame — the Styles direction
+      // re-points these at the style.
+      uses: (varUses && varUses.get(match.id)) ? varUses.get(match.id).slice() : []
     });
   }
   return out;
@@ -2786,6 +2858,24 @@ async function mergeStyleIntoVariable(kind, styleId) {
   if (!n) { result.skipped++; pushReason(result, 'Figma rejected the typography bindings on that style.'); return result; }
   result.merged = 1;
   result.bound = n;
+  return result;
+}
+
+// The other direction: when styles are the source of truth, the layers bound
+// to the variable are re-pointed at the style. A Figma variable cannot
+// reference a style, so re-pointing the layers is the only way to resolve the
+// duplicate in favour of the style.
+async function mergeVariableIntoStyle(kind, styleId, uses) {
+  var result = { created: 0, applied: 0, skipped: 0, merged: 0, reasons: [], unit: 'style' };
+  var style = await figma.getStyleByIdAsync(styleId);
+  if (!style || style.remote) { result.skipped++; pushReason(result, 'That style is no longer available.'); return result; }
+  if (!uses || !uses.length) {
+    pushReason(result, 'No layer in this frame uses that variable, so there was nothing to re-point.');
+    result.merged = 1;
+    return result;
+  }
+  await applyStyleToUses(kind, style, uses, result);
+  if (result.applied) result.merged = 1;
   return result;
 }
 
@@ -3525,7 +3615,9 @@ async function handleStyleMessage(msg) {
     }
     else if (msg.type === 'style-merge') result = await mergeStyles(kind, msg.groups || []);
     else if (msg.type === 'merge-style-variable') {
-      result = await mergeStyleIntoVariable(kind, msg.styleId);
+      result = msg.direction === 'style'
+        ? await mergeVariableIntoStyle(kind, msg.styleId, msg.uses || [])
+        : await mergeStyleIntoVariable(kind, msg.styleId);
     }
     else if (msg.type === 'variable-delete') {
       result = { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0, unit: 'variable' };

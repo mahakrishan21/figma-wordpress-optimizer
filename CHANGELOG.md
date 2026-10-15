@@ -36,6 +36,18 @@ All notable changes to this project are documented in this file.
   - Verified both ways: the yellow/black design rendered as a PNG with blended edges now yields 2 colors, while an image of 200 genuinely distinct swatches still yields 195 — unchanged by the new filter
 - **Color variables defined in this file were invisible in Scan results.** The scan recognised a variable-bound fill as "linked" and then dropped it — so variables the plugin had just created never appeared on a re-scan. They're now collected and listed
 
+### Fixed
+- **Text layers with more than one color were skipped entirely.** When different words or characters carry different colors, `node.fills` is `figma.mixed`, and the scan passed over the whole layer — so none of its colors were counted or offered. The scan now reads the layer run by run with `getStyledTextSegments`, and each colored run is reported as its own color
+  - Each use carries the character range it covers, so **Create & Apply** styles or binds **only those characters** (`setRangeFillStyleIdAsync` / `setRangeFills`), leaving the layer's other colors untouched
+  - A run that already uses a style or variable is attributed to it, exactly as a whole layer would be
+  - The layer count still counts such a layer once, however many colors it holds
+
+### Changed
+- **The "same value as a variable" merge action now follows the Create dropdown** instead of always linking one way:
+  - **Variables** selected → *Link to variable*: the style is pointed at the variable, so one value drives both
+  - **Styles** selected → *Link to style*: the layers bound to the variable are pointed at the style instead, and the row shows how many layers that is. A Figma variable cannot reference a style, so in this direction the layers move rather than the variable — the panel and the dialog both say so
+  - Either way nothing is deleted, and ⌘Z undoes it
+
 ### Added
 - **Typography now has the full variable option, matching Colors.** The Create Styles / Variables dropdown is on the Typography **scan** toolbar as well as its Generate screen, sharing one per-tab setting
   - **Create & Apply** / **Create & Apply All** in Variables mode create (or reuse) the five typography variables for a scan row and **bind them to the text layers** via `setBoundVariable`, after loading the fonts and clearing any conflicting text style

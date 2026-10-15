@@ -277,6 +277,8 @@ Text layers are grouped by font family, weight, size, line height, and letter sp
 
 Text layers that mix fonts or styles inside one layer are skipped and counted in a note.
 
+**Text in more than one color** is handled fully: when different words or characters carry different colors, the Colors scan reads the layer run by run and reports each color separately, showing the text each one covers. Create & Apply then styles or binds **only those characters**, leaving the layer's other colors untouched. The layer is still counted once however many colors it holds.
+
 ### Generate Text Styles
 
 Builds a modular type scale and creates it as text styles:
@@ -305,7 +307,12 @@ Each scan also lists the **variables from this file** used in the frame — *Col
 
 When a style and a variable hold the same value, they're the same token stored twice. The scan reports them in the existing merge section — *Same value as a variable* under Near-Duplicate Colors, *Same values as a variable group* under Duplicate Text Styles — rather than only listing them separately.
 
-**Link to variable** points the style at the variable, so one value drives both and editing the variable updates the style. Nothing is deleted and every layer using either one keeps working (⌘Z undoes it). Colors match on hex and opacity; a text style counts only when **every** property it defines is held by a matching variable, so a partial match is left alone.
+The action follows the **Create** dropdown:
+
+- **Variables** selected → **Link to variable**: the style is pointed at the variable, so one value drives both and editing the variable updates the style.
+- **Styles** selected → **Link to style**: the layers bound to the variable are pointed at the style instead, and the row shows how many layers that is. A Figma variable can't reference a style, so in this direction the layers move rather than the variable.
+
+Either way nothing is deleted and every layer keeps working (⌘Z undoes it). Colors match on hex and opacity; a text style counts only when **every** property it defines is held by a matching variable, so a partial match is left alone.
 
 On the Colors scan, **Create & Apply** / **Create & Apply All** follow the choice: in Variables mode they create (or reuse) a color variable and bind it to the scanned layers — fills or strokes, whichever the row covers — rather than creating a paint style. **Apply Style** rows are unaffected, since they point at an existing style by design.
 
