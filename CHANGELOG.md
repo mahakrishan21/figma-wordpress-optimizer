@@ -37,6 +37,13 @@ All notable changes to this project are documented in this file.
 - **Color variables defined in this file were invisible in Scan results.** The scan recognised a variable-bound fill as "linked" and then dropped it — so variables the plugin had just created never appeared on a re-scan. They're now collected and listed
 
 ### Added
+- **Typography now has the full variable option, matching Colors.** The Create Styles / Variables dropdown is on the Typography **scan** toolbar as well as its Generate screen, sharing one per-tab setting
+  - **Create & Apply** / **Create & Apply All** in Variables mode create (or reuse) the five typography variables for a scan row and **bind them to the text layers** via `setBoundVariable`, after loading the fonts and clearing any conflicting text style
+  - A **Text Variables** block lists the typography variables from this file bound to text in the frame — name, property, value, use count, expandable layer list, **Focus All** and **Delete** — with a matching stat card. These were previously treated as "linked" and never shown
+- **A style and a variable holding the same value are reported as duplicates.** They appear in the existing merge section — *Same value as a variable* under Near-Duplicate Colors, *Same values as a variable group* under Duplicate Text Styles — instead of only being listed separately in their own sections
+  - **Link to variable** points the style at the variable, so one value drives both and editing the variable updates the style. **Nothing is deleted** and every layer using either keeps working; undoable with ⌘Z
+  - Colors match on hex and opacity. A text style counts as a duplicate only when **every** property it defines is held by a variable of the right scope and value — a partial match is left alone
+  - A style already bound to a variable is not re-reported
 - **Color Variables block in the Colors scan results**, built from the same components as Color Styles: name, hex, opacity, use count, an expandable layer list, **Focus All**, and **Delete**. A matching stat card sits beside Color Styles, and the block collapses by default when empty
 - A frame holding **both** styles and variables lists both, in their own sections; a variable-bound color is not re-reported as unlinked
 - **Delete** on a variable row removes the local variable (`variable-delete`), leaving layers their color but unlinked — the same contract and wording as deleting a style, and undoable with ⌘Z

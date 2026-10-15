@@ -2163,9 +2163,12 @@ async function scanColors(roots) {
   let instanceLayers = 0;
   for (const list of [newColorsFixable, matchLocal, matchRemoteFixable]) for (const r of list) for (const u of r.uses) if (u.inst) instanceLayers++;
 
+  const styleVarDupes = await findColorStyleVariableDupes();
+
   return {
     colorStyles: colorStyles,
     colorVariables: colorVariables,
+    styleVarDupes: styleVarDupes,
     newColors: newColorsFixable,
     matchLocal: matchLocal,
     matchRemote: matchRemoteFixable,
@@ -2180,7 +2183,7 @@ async function scanColors(roots) {
       detachedLayers: detachedLayers.size,
       manualLayers: manualLayers.size,
       instanceLayers: instanceLayers,
-      dupes: nearDupes.length,
+      dupes: nearDupes.length + styleVarDupes.length,
       scannedNodes: nodes.length
     }
   };
@@ -2243,6 +2246,22 @@ function textSpecOfNode(node) {
   };
 }
 
+function boundTextVariableIds(holder) {
+  var bound = holder.boundVariables || {};
+  var out = [];
+  for (var i = 0; i < TEXT_VAR_FIELDS.length; i++) {
+    var field = TEXT_VAR_FIELDS[i].field;
+    var v = bound[field];
+    if (!v) continue;
+    if (Array.isArray(v)) {
+      for (var j = 0; j < v.length; j++) if (v[j] && v[j].id) out.push({ field: field, id: v[j].id });
+    } else if (v.id) {
+      out.push({ field: field, id: v.id });
+    }
+  }
+  return out;
+}
+
 function hasTextVariableBinding(node) {
   const bound = node.boundVariables || {};
   return !!bound.fontSize || !!bound.fontFamily || !!bound.fontWeight || !!bound.fontStyle || !!bound.letterSpacing || !!bound.lineHeight;
@@ -2295,6 +2314,7 @@ async function scanText(roots) {
   const unlinked = new Map();
   const sizeFreq = new Map();
   const famMap = new Map();
+  const localTextVarUse = new Map(); // local variableId -> { name, field, value, uses } | null
   let mixedSkipped = 0;
 
   for (let i = 0; i < nodes.length; i++) {
@@ -2324,7 +2344,25 @@ async function scanText(roots) {
       }
       continue;
     }
-    if (hasTextVariableBinding(node)) continue;
+    var tvars = boundTextVariableIds(node);
+    if (tvars.length) {
+      for (var tv = 0; tv < tvars.length; tv++) {
+        var tid = tvars[tv].id;
+        var rec = localTextVarUse.get(tid);
+        if (rec === undefined) {
+          rec = null;
+          try {
+            var variable = await figma.variables.getVariableByIdAsync(tid);
+            if (variable && !variable.remote) {
+              rec = { name: variable.name, field: tvars[tv].field, value: await variableValue(variable), uses: [] };
+            }
+          } catch (e) {}
+          localTextVarUse.set(tid, rec);
+        }
+        if (rec) rec.uses.push(useRef(node, 'text'));
+      }
+      continue;
+    }
     const spec = textSpecOfNode(node);
     if (!spec) { mixedSkipped++; continue; }
     const k = textSpecKey(spec);
@@ -2408,8 +2446,25 @@ async function scanText(roots) {
   for (const r of matchLocal) for (const u of r.uses) unlinkedLayers.add(u.id);
   for (const r of matchRemote) for (const u of r.uses) unlinkedLayers.add(u.id);
 
+  // Typography variables defined in this file and bound to text in the frame.
+  // Figma has no single "text style variable", so each bound property is its
+  // own variable and is listed as its own row.
+  const textVariables = [];
+  localTextVarUse.forEach((rec, vid) => {
+    if (!rec || !rec.uses.length) return;
+    textVariables.push({
+      key: 'tv:' + vid, variableId: vid, name: rec.name, field: rec.field,
+      value: rec.value == null ? '' : String(rec.value), uses: rec.uses
+    });
+  });
+  textVariables.sort((a, b) => b.uses.length - a.uses.length || a.name.localeCompare(b.name));
+
+  const styleVarDupes = await findTextStyleVariableDupes();
+
   return {
     textStyles: textStyles,
+    textVariables: textVariables,
+    styleVarDupes: styleVarDupes,
     newText: newText,
     matchLocal: matchLocal,
     matchRemote: matchRemote,
@@ -2418,10 +2473,11 @@ async function scanText(roots) {
     typeSizeInfo: typeSizeInfo,
     summary: {
       localStyles: textStyles.length,
+      localVariables: textVariables.length,
       remoteStyles: matchRemote.length,
       unlinked: newText.length + matchLocal.length + matchRemote.length,
       unlinkedLayers: unlinkedLayers.size,
-      dupes: duplicates.length,
+      dupes: duplicates.length + styleVarDupes.length,
       families: fontFamilies.length,
       sizes: typeSizeInfo.length,
       mixedSkipped: mixedSkipped,
@@ -2628,6 +2684,188 @@ async function applyVariableToUses(variable, uses, result) {
   }
 }
 
+// ── Duplicates ACROSS types: the same value held by both a style and a
+// variable. Merging binds the style to the variable, so one value drives both
+// and every layer keeps working — nothing is deleted.
+async function findColorStyleVariableDupes() {
+  var styles = await figma.getLocalPaintStylesAsync();
+  var vars = await localVariablesWithValues('COLOR');
+  var out = [];
+  for (var i = 0; i < styles.length; i++) {
+    var st = styles[i];
+    if (st.remote) continue;
+    var sv = solidOfStyle(st);
+    if (!sv) continue;
+    // Already pointing at a variable? Then it isn't a duplicate.
+    var paint = st.paints[0];
+    if (paint && paint.boundVariables && paint.boundVariables.color) continue;
+    var match = findColorVariable(vars, sv.hex, sv.opacity);
+    if (!match) continue;
+    out.push({
+      key: 'sv:' + st.id, styleId: st.id, styleName: st.name,
+      variableId: match.id, variableName: match.name,
+      hex: sv.hex, opacity: sv.opacity
+    });
+  }
+  return out;
+}
+
+// A text style duplicates a variable group when EVERY property it defines is
+// already held by a variable of the right scope and value.
+async function findTextStyleVariableDupes() {
+  var styles = await figma.getLocalTextStylesAsync();
+  var floatPool = await localVariablesWithValues('FLOAT');
+  var stringPool = await localVariablesWithValues('STRING');
+  var out = [];
+  for (var i = 0; i < styles.length; i++) {
+    var st = styles[i];
+    if (st.remote) continue;
+    var already = boundTextVariableIds(st);
+    if (already.length) continue;                 // already linked to variables
+    var spec = textSpecOfStyle(st);
+    var src = {
+      family: spec.family, style: spec.style, size: spec.fontSize,
+      lh: lineHeightNumber(spec.lineHeight), ls: letterSpacingNumber(spec.letterSpacing)
+    };
+    var matches = [], wanted = 0;
+    for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) {
+      var def = TEXT_VAR_FIELDS[f];
+      var value = src[def.prop];
+      if (value === null || value === undefined) continue;
+      wanted++;
+      var pool = def.type === 'STRING' ? stringPool : floatPool;
+      var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, st.name + '/' + def.field);
+      if (hit) matches.push({ field: def.field, variable: hit });
+    }
+    if (!wanted || matches.length !== wanted) continue;   // partial match isn't a duplicate
+    out.push({
+      key: 'sv:' + st.id, styleId: st.id, styleName: st.name,
+      variableName: matches[0].variable.name.replace(/\/[^\/]+$/, ''),
+      fields: matches.map(function (m) { return m.field; }),
+      spec: spec
+    });
+  }
+  return out;
+}
+
+// Link a style to the variable(s) holding its value.
+async function mergeStyleIntoVariable(kind, styleId) {
+  var result = { created: 0, applied: 0, skipped: 0, merged: 0, reasons: [], unit: 'style' };
+  var style = await figma.getStyleByIdAsync(styleId);
+  if (!style || style.remote) { result.skipped++; pushReason(result, 'That style is no longer available.'); return result; }
+
+  if (kind === 'paint') {
+    var sv = solidOfStyle(style);
+    if (!sv) { result.skipped++; pushReason(result, 'Only a single solid paint can be linked to a variable.'); return result; }
+    var vars = await localVariablesWithValues('COLOR');
+    var match = findColorVariable(vars, sv.hex, sv.opacity);
+    if (!match) { result.skipped++; pushReason(result, 'No variable holds that color any more.'); return result; }
+    var bound = figma.variables.setBoundVariableForPaint(style.paints[0], 'color', match);
+    style.paints = [bound];
+    result.merged = 1;
+    return result;
+  }
+
+  var floatPool = await localVariablesWithValues('FLOAT');
+  var stringPool = await localVariablesWithValues('STRING');
+  var spec = textSpecOfStyle(style);
+  var src = {
+    family: spec.family, style: spec.style, size: spec.fontSize,
+    lh: lineHeightNumber(spec.lineHeight), ls: letterSpacingNumber(spec.letterSpacing)
+  };
+  var n = 0;
+  for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) {
+    var def = TEXT_VAR_FIELDS[f];
+    var value = src[def.prop];
+    if (value === null || value === undefined) continue;
+    var pool = def.type === 'STRING' ? stringPool : floatPool;
+    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, style.name + '/' + def.field);
+    if (!hit) continue;
+    try { style.setBoundVariable(def.field, hit); n++; } catch (e) {}
+  }
+  if (!n) { result.skipped++; pushReason(result, 'Figma rejected the typography bindings on that style.'); return result; }
+  result.merged = 1;
+  result.bound = n;
+  return result;
+}
+
+// Bind a group of typography variables to every text layer a scan row covers.
+async function applyTextVariablesToUses(vars, uses, result) {
+  for (var i = 0; i < uses.length; i++) {
+    var u = uses[i];
+    var found = null;
+    try { found = await figma.getNodeByIdAsync(u.id); } catch (e) {}
+    if (!found) { result.skipped++; continue; }
+    var target = await styleTargetFor(found);
+    var node = target.node;
+    var blocked = styleBlockedReason(node);
+    if (blocked) { result.skipped++; pushReason(result, blocked); continue; }
+    if (result.done && result.done.has(node.id)) { result.applied++; continue; }
+    try {
+      // Changing type on a text node needs its fonts loaded first.
+      await loadTextNodeFonts(node);
+      // A text style and variables can't both drive the same properties.
+      try { await node.setTextStyleIdAsync(''); } catch (e) {}
+      var bound = 0;
+      for (var v = 0; v < vars.length; v++) {
+        try { node.setBoundVariable(vars[v].field, vars[v].variable); bound++; } catch (e) {}
+      }
+      if (!bound) { result.skipped++; pushReason(result, 'Figma rejected every typography binding on this layer.'); continue; }
+      result.applied++;
+      if (!result.done) result.done = new Set();
+      result.done.add(node.id);
+      if (target.via === 'override') result.overrides = (result.overrides || 0) + 1;
+      if (target.via === 'component') result.components = (result.components || 0) + 1;
+    } catch (e) {
+      result.skipped++;
+      pushReason(result, e && e.message ? e.message : 'Could not bind the variables.');
+    }
+  }
+}
+
+// Scan rows -> typography variables. One variable per property, grouped under
+// the row's name, with the same reuse rule as the Generate flow.
+async function runTextRowVariableAction(msg, rows, names) {
+  var result = { created: 0, applied: 0, skipped: 0, reused: 0, reasons: [], unit: 'variable' };
+  var collection = await getTokenCollection(true);
+  if (!collection) throw new Error('Could not open a variable collection in this file.');
+  var floatPool = await localVariablesWithValues('FLOAT');
+  var stringPool = await localVariablesWithValues('STRING');
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i].row;
+    var spec = row.spec || row.styleSpec;
+    if (!spec) { result.skipped += row.uses.length; continue; }
+    var src = {
+      family: spec.family, style: spec.style, size: spec.fontSize,
+      lh: lineHeightNumber(spec.lineHeight), ls: letterSpacingNumber(spec.letterSpacing)
+    };
+    var made = [];
+    try {
+      for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) {
+        var def = TEXT_VAR_FIELDS[f];
+        var value = src[def.prop];
+        if (value === null || value === undefined) continue;
+        var pool = def.type === 'STRING' ? stringPool : floatPool;
+        var wantName = names[i] + '/' + def.field;
+        var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, wantName);
+        if (hit) { result.reused++; made.push({ field: def.field, variable: hit }); continue; }
+        var nv = figma.variables.createVariable(wantName, collection, def.type);
+        try { nv.scopes = [def.scope]; } catch (e) {}
+        await setVarValue(nv, collection, value);
+        result.created++;
+        made.push({ field: def.field, variable: nv });
+      }
+      if (!made.length) { result.skipped += row.uses.length; continue; }
+      await applyTextVariablesToUses(made, row.uses, result);
+    } catch (e) {
+      result.skipped += row.uses.length;
+      pushReason(result, names[i] + ': ' + (e && e.message ? e.message : 'could not create variables'));
+    }
+  }
+  return result;
+}
+
 // Scan rows -> colour variables. Same reuse rule as the Generate flow: an
 // existing variable of the same value is used rather than a second one made.
 async function runRowVariableAction(msg, rows, names) {
@@ -2708,8 +2946,10 @@ async function runRowAction(kind, msg) {
 
   // "Create & Apply" can produce variables instead of styles. Variables carry
   // no style-name conflict, so that prompt is skipped.
-  if (kind === 'paint' && msg.target === 'variables') {
-    return await runRowVariableAction(msg, rows, names);
+  if (msg.target === 'variables') {
+    return kind === 'paint'
+      ? await runRowVariableAction(msg, rows, names)
+      : await runTextRowVariableAction(msg, rows, names);
   }
 
   if (msg.conflict !== 'update' && msg.conflict !== 'keep') {
@@ -3235,6 +3475,7 @@ function describeResult(label, r) {
   if (r.fromStyles) parts.push(r.fromStyles + ' taken from existing styles');
   if (r.bound) parts.push(r.bound + ' bound to variables');
   if (r.removed) parts.push(r.removed + ' ' + noun + (r.removed !== 1 ? 's' : '') + ' removed');
+  if (r.merged) parts.push(r.merged + ' style' + (r.merged !== 1 ? 's' : '') + ' now linked to its variable');
   if (r.applied) parts.push(r.applied + ' layer' + (r.applied !== 1 ? 's' : '') + ' updated');
   if (r.skipped) parts.push(r.skipped + ' skipped');
   if (r.overrides) parts.push(r.overrides + ' as instance override' + (r.overrides !== 1 ? 's' : ''));
@@ -3283,6 +3524,9 @@ async function handleStyleMessage(msg) {
         : await createStylesFromList(kind, msg);
     }
     else if (msg.type === 'style-merge') result = await mergeStyles(kind, msg.groups || []);
+    else if (msg.type === 'merge-style-variable') {
+      result = await mergeStyleIntoVariable(kind, msg.styleId);
+    }
     else if (msg.type === 'variable-delete') {
       result = { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0, unit: 'variable' };
       const v = await figma.variables.getVariableByIdAsync(msg.variableId);
@@ -3300,7 +3544,7 @@ async function handleStyleMessage(msg) {
       return;
     }
     figma.commitUndo();
-    const did = result.created || result.applied || result.removed || result.reused;
+    const did = result.created || result.applied || result.removed || result.reused || result.merged;
     const ok = did && !result.skipped;
     figma.ui.postMessage({
       type: 'style-action-done', scope: scope, requestId: msg.requestId,
@@ -3547,7 +3791,7 @@ figma.ui.onmessage = async (msg) => {
       figma.notify('Click on a frame or component in the canvas to select it', { timeout: 3000 });
       return;
     }
-    if (msg.type === 'style-scan' || msg.type === 'style-rows' || msg.type === 'style-create' || msg.type === 'style-merge' || msg.type === 'style-delete' || msg.type === 'variable-delete') {
+    if (msg.type === 'style-scan' || msg.type === 'style-rows' || msg.type === 'style-create' || msg.type === 'style-merge' || msg.type === 'style-delete' || msg.type === 'variable-delete' || msg.type === 'merge-style-variable') {
       await handleStyleMessage(msg);
       return;
     }

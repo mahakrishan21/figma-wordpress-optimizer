@@ -295,7 +295,17 @@ The preview can only render fonts installed on this computer. Other fonts previe
 
 ### Styles or variables
 
-The **Create** dropdown — **Styles** or **Variables** — is set independently for Colors and Typography. On Colors it appears on both the **Scan** toolbar and the **Generate** screen, sharing one setting; on Typography it's on the Generate screen.
+The **Create** dropdown — **Styles** or **Variables** — is set independently for Colors and Typography. In each tab it appears on both the **Scan** toolbar and the **Generate** screen, sharing one setting.
+
+On either scan, **Create & Apply** / **Create & Apply All** follow the choice. In Variables mode they create (or reuse) the variable — one COLOR variable, or the five typography variables for a text row — and bind it to the scanned layers rather than creating a style. **Apply Style** rows are unaffected, since they point at an existing style by design.
+
+Each scan also lists the **variables from this file** used in the frame — *Color Variables* and *Text Variables* — alongside the style sections, with the same actions.
+
+### Merging a style with a variable
+
+When a style and a variable hold the same value, they're the same token stored twice. The scan reports them in the existing merge section — *Same value as a variable* under Near-Duplicate Colors, *Same values as a variable group* under Duplicate Text Styles — rather than only listing them separately.
+
+**Link to variable** points the style at the variable, so one value drives both and editing the variable updates the style. Nothing is deleted and every layer using either one keeps working (⌘Z undoes it). Colors match on hex and opacity; a text style counts only when **every** property it defines is held by a matching variable, so a partial match is left alone.
 
 On the Colors scan, **Create & Apply** / **Create & Apply All** follow the choice: in Variables mode they create (or reuse) a color variable and bind it to the scanned layers — fills or strokes, whichever the row covers — rather than creating a paint style. **Apply Style** rows are unaffected, since they point at an existing style by design.
 

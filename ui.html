@@ -2731,12 +2731,12 @@
     if (S === CS) return {
       styles: !d.colorStyles.length, variables: !(d.colorVariables || []).length, unlinked: !(d.newColors.length + d.matchLocal.length + d.matchRemote.length),
       'new': !d.newColors.length, match: !(d.matchLocal.length + d.matchRemote.length),
-      matchLocal: !d.matchLocal.length, matchRemote: !d.matchRemote.length, dupes: !(d.nearDupes.length || (d.opacityVariants || []).length), manual: false
+      matchLocal: !d.matchLocal.length, matchRemote: !d.matchRemote.length, dupes: !(d.nearDupes.length || (d.opacityVariants || []).length || (d.styleVarDupes || []).length), manual: false
     };
     return {
-      styles: !d.textStyles.length, unlinked: !(d.newText.length + d.matchLocal.length + d.matchRemote.length),
+      styles: !d.textStyles.length, variables: !(d.textVariables || []).length, unlinked: !(d.newText.length + d.matchLocal.length + d.matchRemote.length),
       'new': !d.newText.length, match: !(d.matchLocal.length + d.matchRemote.length),
-      matchLocal: !d.matchLocal.length, matchRemote: !d.matchRemote.length, dupes: !d.duplicates.length, fonts: true
+      matchLocal: !d.matchLocal.length, matchRemote: !d.matchRemote.length, dupes: !(d.duplicates.length + (d.styleVarDupes || []).length), fonts: true
     };
   }
 
@@ -2930,7 +2930,7 @@
   function colorResultsHtml() {
     const d = CS.data, s = d.summary;
     CS.rows = {};
-    [d.colorStyles, d.colorVariables || [], d.newColors, d.matchLocal, d.matchRemote].forEach(list => list.forEach(r => { CS.rows[r.key] = r; }));
+    [d.colorStyles, d.colorVariables || [], d.newColors, d.matchLocal, d.matchRemote, d.styleVarDupes || []].forEach(list => list.forEach(r => { CS.rows[r.key] = r; }));
     const unlinkedCount = d.newColors.length + d.matchLocal.length + d.matchRemote.length;
 
     const stats = statCards([
@@ -3005,6 +3005,7 @@
             actions: d.matchRemote.length ? `<button class="btn btn-sm btn-primary" data-act="c-copy-all">Create &amp; Apply All</button>` : '', body: remoteBody })
       });
     const variants = d.opacityVariants || [];
+    const svDupes = d.styleVarDupes || [];
     const dupesBody = (d.nearDupes.length
       ? d.nearDupes.map((g, i) => `<div class="sm-dupe-row">
           ${dupeItemColor(g[0])}<span class="sm-dupe-eq">≈</span>
@@ -3042,8 +3043,30 @@
       blockHtml(CS, { id: 'unlinked', tone: 'red', title: 'Unlinked Colors', sub: 'Fills and strokes without a Color Style', count: unlinkedCount, countTone: 'issue',
         body: unlinkedBody + instNote }) +
       (manual.length ? blockHtml(CS, { id: 'manual', tone: 'amber', title: 'Needs manual fix', sub: 'Layers with several fills or strokes', count: manual.length, countTone: 'issue', body: manualBody }) : '') +
-      blockHtml(CS, { id: 'dupes', tone: 'amber', title: 'Near-Duplicate Colors', sub: 'Same opacity, nearly identical color', count: d.nearDupes.length, countTone: 'issue',
-        actions: d.nearDupes.length > 1 ? `<button class="btn btn-sm btn-primary" data-act="c-merge-all">Merge All</button>` : '', body: dupesBody }) + '</div>';
+      blockHtml(CS, { id: 'dupes', tone: 'amber', title: 'Near-Duplicate Colors', sub: 'Same opacity, nearly identical color', count: d.nearDupes.length + svDupes.length, countTone: 'issue',
+        actions: d.nearDupes.length > 1 ? `<button class="btn btn-sm btn-primary" data-act="c-merge-all">Merge All</button>` : '',
+        body: dupesBody + (svDupes.length ? `<div class="sm-divider-lbl"><span>Same value as a variable</span><span>${svDupes.length}</span></div>` + styleVarDupeBody(CS, svDupes, svPreviewColor) : '') }) + '</div>';
+  }
+
+  // Rows for a style and a variable that hold the same value. Merging links
+  // the style to the variable; neither is deleted.
+  function styleVarDupeBody(S, list, preview) {
+    if (!list.length) return '<div class="sm-empty ok">✓ No style is duplicating a variable.</div>';
+    return `<div class="sm-note" style="border-top:none">These exist twice — once as a style, once as a variable. <strong>Link to variable</strong> points the style at the variable so one value drives both. Nothing is deleted and every layer keeps working.</div>` +
+      list.map(r => `<div class="sm-dupe-row">
+        ${preview(r)}<span class="sm-dupe-eq">=</span>
+        <div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.variableName)}</div><div class="sm-meta">variable</div></div>
+        <button class="btn btn-sm btn-outline-blue" data-act="sv-merge" data-key="${escHtml(r.key)}">Link to variable</button>
+      </div>`).join('');
+  }
+  function svPreviewColor(r) {
+    return `<div style="min-width:0;display:flex;align-items:center;gap:8px">${swatchHtml(r.hex, r.opacity)}
+      <span style="min-width:0"><span class="sm-strong sm-ellipsis" style="display:block">${escHtml(r.styleName)}</span>
+      <span class="sm-meta">style · ${escHtml(r.hex)} · ${pctStr(r.opacity)}</span></span></div>`;
+  }
+  function svPreviewText(r) {
+    return `<div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.styleName)}</div>
+      <div class="sm-meta sm-ellipsis">style · ${escHtml(specMeta(r.spec, true))}</div></div>`;
   }
 
   function dupeItemColor(c) {
@@ -3748,8 +3771,20 @@
     if (act === 'c-copy-all') { sendStyle(CS, { type: 'style-rows', action: 'copy', target: CS.target, label: 'Create & Apply All', rows: rowsPayload(CS, d.matchRemote, 'name') }); return; }
     if (act === 'c-delete') { confirmDeleteStyle(CS, CS.rows[key], 'color'); return; }
     if (act === 'c-var-delete') { confirmDeleteVariable(CS, CS.rows[key]); return; }
+    if (act === 'sv-merge') { confirmLinkToVariable(CS, CS.rows[key]); return; }
     if (act === 'c-merge') { confirmMerge(CS, d.nearDupes[+el.dataset.idx], dupeItemColor); return; }
     if (act === 'c-merge-all') { confirmMergeAll(CS, d.nearDupes); return; }
+  }
+
+  async function confirmLinkToVariable(S, row) {
+    if (!row) return;
+    const res = await smDialog({
+      title: 'Link “' + row.styleName + '” to “' + row.variableName + '”?',
+      body: `The style and the variable hold the same value. Linking points the style at the variable, so one value drives both and changing the variable updates the style.<br><br>
+        <strong>Nothing is deleted</strong> — every layer using either one keeps working. You can undo with ⌘Z.`,
+      buttons: [{ label: 'Cancel', value: null }, { label: 'Link to variable', value: 'merge', primary: true }]
+    });
+    if (res.value) sendStyle(S, { type: 'merge-style-variable', styleId: row.styleId, label: 'Link style to variable' });
   }
 
   async function confirmDeleteVariable(S, row) {
@@ -3977,11 +4012,14 @@
   function textResultsHtml() {
     const d = TS.data, s = d.summary;
     TS.rows = {};
-    [d.textStyles, d.newText, d.matchLocal, d.matchRemote].forEach(list => list.forEach(r => { TS.rows[r.key] = r; }));
+    const tVars = d.textVariables || [];
+    const tSvDupes = d.styleVarDupes || [];
+    [d.textStyles, tVars, d.newText, d.matchLocal, d.matchRemote, tSvDupes].forEach(list => list.forEach(r => { TS.rows[r.key] = r; }));
     const unlinkedCount = d.newText.length + d.matchLocal.length + d.matchRemote.length;
 
     const stats = statCards([
       { v: s.localStyles, l: 'Text Styles', sub: 'In this file', jump: 'styles' },
+      { v: s.localVariables || 0, l: 'Text Variables', sub: 'In this file', jump: 'variables' },
       { v: s.remoteStyles, l: 'Text Styles', sub: 'Not in this file', jump: 'matchRemote', issue: true },
       { v: s.unlinked, l: 'Unlinked Text', sub: plural(s.unlinkedLayers, 'layer'), jump: 'unlinked', issue: true },
       { v: s.dupes, l: 'Dup. Text Styles', sub: 'near-identical', jump: 'dupes', issue: true },
@@ -3996,6 +4034,15 @@
           <div class="sm-actions"><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-danger-soft" data-act="t-delete" data-key="${escHtml(r.key)}">Delete</button></div>
         </div>`, r.uses, 'style')).join('')
       : '<div class="sm-empty">No text styles are used in this frame yet.</div>';
+
+    const tVarsBody = tVars.length
+      ? theadHtml(G_TSTYLE, ['', 'Variable', 'Uses', 'Action']) + tVars.map(r => rowWrap(TS, r.key,
+        `<div class="sm-row" style="grid-template-columns:${G_TSTYLE}">%CHEV%
+          <div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.name)}</div><div class="sm-meta">${escHtml(r.field)}${r.value === '' ? '' : ' · ' + escHtml(r.value)}</div></div>
+          ${usesCell(r.uses.length)}
+          <div class="sm-actions"><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-danger-soft" data-act="t-var-delete" data-key="${escHtml(r.key)}">Delete</button></div>
+        </div>`, r.uses, 'variable')).join('')
+      : '<div class="sm-empty">No text variables from this file are used in this frame.</div>';
 
     const newBody = d.newText.length
       ? theadHtml(G_TROW, ['', 'Font Details', 'Suggestion', 'Uses', 'Action']) + d.newText.map(r => rowWrap(TS, r.key,
@@ -4056,12 +4103,14 @@
           <div class="sm-size-count${r.count === 1 ? ' oneoff' : ''}">${r.count}×${r.count === 1 ? ' ⚠' : ''}</div>
         </div>`).join('')}</div>` : '');
 
-    return resultsTopHtml(TS, 'gen-text', 'Generate Text Styles', 'Text & Font Summary', stats) + '<div class="sm-blocks">' +
+    return resultsTopHtml(TS, 'gen-text', targetLabel(TS, 'Text'), 'Text & Font Summary', stats, targetPickerHtml(TS, 'text')) + '<div class="sm-blocks">' +
       blockHtml(TS, { id: 'styles', title: 'Text Styles', sub: 'in this file', count: d.textStyles.length, body: stylesBody }) +
+      blockHtml(TS, { id: 'variables', title: 'Text Variables', sub: plural(tVars.length, 'variable') + ' used in this frame', count: tVars.length, body: tVarsBody }) +
       blockHtml(TS, { id: 'unlinked', tone: 'red', title: 'Unlinked text', sub: 'Texts without a Text Style', count: unlinkedCount, countTone: 'issue',
         body: unlinkedBody + (s.instanceLayers ? `<div class="sm-note">${plural(s.instanceLayers, 'text layer')} ${s.instanceLayers === 1 ? 'is' : 'are'} inside component instances (tagged “in component”). Styles are applied to the main component when it's in this file, otherwise as instance overrides.</div>` : '') + (s.mixedSkipped ? `<div class="sm-note">${plural(s.mixedSkipped, 'text layer')} with mixed fonts or styles in one layer ${s.mixedSkipped === 1 ? 'was' : 'were'} skipped — split or style them manually.</div>` : '') }) +
-      blockHtml(TS, { id: 'dupes', tone: 'amber', title: 'Duplicate Text Styles', sub: 'Identical font, size &amp; line-height', count: d.duplicates.length, countTone: d.duplicates.length ? 'issue' : 'info',
-        actions: d.duplicates.length ? `<button class="btn btn-sm btn-primary" data-act="t-merge-all">Merge All</button>` : '', body: dupesBody }) +
+      blockHtml(TS, { id: 'dupes', tone: 'amber', title: 'Duplicate Text Styles', sub: 'Identical font, size &amp; line-height', count: d.duplicates.length + tSvDupes.length, countTone: (d.duplicates.length + tSvDupes.length) ? 'issue' : 'info',
+        actions: d.duplicates.length ? `<button class="btn btn-sm btn-primary" data-act="t-merge-all">Merge All</button>` : '',
+        body: dupesBody + (tSvDupes.length ? `<div class="sm-divider-lbl"><span>Same values as a variable group</span><span>${tSvDupes.length}</span></div>` + styleVarDupeBody(TS, tSvDupes, svPreviewText) : '') }) +
       blockHtml(TS, { id: 'fonts', tone: 'violet', title: 'Fonts', sub: plural(s.families, 'family').replace('familys', 'families') + ' · ' + plural(s.sizes, 'size'), count: s.families, countTone: s.families > 2 ? 'issue' : 'info', body: fontsBody }) + '</div>';
   }
 
@@ -4363,13 +4412,15 @@
     if (act === 'ts-reset') { delete g.overrides[g.editing]; g.editing = null; g.draft = null; renderText(); return; }
     if (act === 'ts-generate') { generateTextStyles(); return; }
 
-    if (act === 't-create') { sendStyle(TS, { type: 'style-rows', action: 'create', label: 'Create & Apply', rows: rowsPayload(TS, [TS.rows[key]], 'suggested') }); return; }
-    if (act === 't-create-all') { sendStyle(TS, { type: 'style-rows', action: 'create', label: 'Create & Apply All', rows: rowsPayload(TS, d.newText, 'suggested') }); return; }
+    if (act === 't-create') { sendStyle(TS, { type: 'style-rows', action: 'create', target: TS.target, label: 'Create & Apply', rows: rowsPayload(TS, [TS.rows[key]], 'suggested') }); return; }
+    if (act === 't-create-all') { sendStyle(TS, { type: 'style-rows', action: 'create', target: TS.target, label: 'Create & Apply All', rows: rowsPayload(TS, d.newText, 'suggested') }); return; }
     if (act === 't-apply') { sendStyle(TS, { type: 'style-rows', action: 'apply', label: 'Apply Style', rows: [{ key: key }] }); return; }
     if (act === 't-apply-all') { sendStyle(TS, { type: 'style-rows', action: 'apply', label: 'Apply All', rows: d.matchLocal.map(r => ({ key: r.key })) }); return; }
-    if (act === 't-copy') { sendStyle(TS, { type: 'style-rows', action: 'copy', label: 'Create & Apply', rows: rowsPayload(TS, [TS.rows[key]], 'name') }); return; }
-    if (act === 't-copy-all') { sendStyle(TS, { type: 'style-rows', action: 'copy', label: 'Create & Apply All', rows: rowsPayload(TS, d.matchRemote, 'name') }); return; }
+    if (act === 't-copy') { sendStyle(TS, { type: 'style-rows', action: 'copy', target: TS.target, label: 'Create & Apply', rows: rowsPayload(TS, [TS.rows[key]], 'name') }); return; }
+    if (act === 't-copy-all') { sendStyle(TS, { type: 'style-rows', action: 'copy', target: TS.target, label: 'Create & Apply All', rows: rowsPayload(TS, d.matchRemote, 'name') }); return; }
     if (act === 't-delete') { confirmDeleteStyle(TS, TS.rows[key], 'text'); return; }
+    if (act === 't-var-delete') { confirmDeleteVariable(TS, TS.rows[key]); return; }
+    if (act === 'sv-merge') { confirmLinkToVariable(TS, TS.rows[key]); return; }
     if (act === 't-merge') {
       confirmMerge(TS, d.duplicates[+el.dataset.idx], x => `<div style="min-width:0"><div class="sm-strong">${escHtml(x.name)}</div><div class="sm-meta">${escHtml(specMeta(x.spec, true))}</div></div>`);
       return;
