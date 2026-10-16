@@ -2860,16 +2860,32 @@
       </div></div>`;
   }
 
+  // A use may cover only part of a layer — one styled run of mixed text, or
+  // one coloured word. Show which characters, and a preview of them.
+  function rangeTag(u) {
+    if (typeof u.start !== 'number' || typeof u.end !== 'number') return '';
+    const chars = ` <span class="sm-chip" title="Only these characters">characters ${u.start + 1}–${u.end}</span>`;
+    const preview = u.text ? ` <span class="sm-meta sm-ellipsis">“${escHtml(u.text)}”</span>` : '';
+    return chars + preview;
+  }
+  // Several runs can share one layer; the layer total counts it once.
+  function countLayers(uses) {
+    const ids = {};
+    for (const u of uses) ids[u.id] = true;
+    return Object.keys(ids).length;
+  }
+
   function usesPanelHtml(S, key, uses, noun) {
     const page = S.pages[key] || 0;
     const total = Math.max(1, Math.ceil(uses.length / PER_PAGE));
     const slice = uses.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE);
     return `<div class="sm-uses">
-      <div class="sm-uses-count">${plural(uses.length, 'layer')} using this ${noun}</div>
+      <div class="sm-uses-count">${plural(countLayers(uses), 'layer')} using this ${noun}${
+        uses.length !== countLayers(uses) ? ' · ' + plural(uses.length, 'run') : ''}</div>
       <div class="sm-uses-list">
       <div class="sm-uses-head"><span>Layer Name</span><span>Action</span></div>
       ${slice.map(u => `<div class="sm-uses-row">
-        <span class="sm-ellipsis" title="${escHtml(u.path)}">${escHtml(u.path)}${u.prop === 'strokes' ? ' <span class="sm-chip">stroke</span>' : ''}${u.inst ? ' <span class="sm-chip" title="Inside a component instance — styled as an override, or on the main component when it is in this file">in component</span>' : ''}</span>
+        <span class="sm-ellipsis" title="${escHtml(u.path)}">${escHtml(u.path)}${rangeTag(u)}${u.prop === 'strokes' ? ' <span class="sm-chip">stroke</span>' : ''}${u.inst ? ' <span class="sm-chip" title="Inside a component instance — styled as an override, or on the main component when it is in this file">in component</span>' : ''}</span>
         <button class="btn btn-sm" data-act="focus-one" data-id="${escHtml(u.id)}">Focus</button>
       </div>`).join('')}
       </div>
@@ -4364,7 +4380,7 @@
       blockHtml(TS, { id: 'variables', title: 'Text Variables', sub: plural(tVars.length, 'variable') + ' used in this frame', count: tVars.length,
         actions: (TS.target === 'styles' && tVars.length) ? `<button class="btn btn-sm btn-primary" data-act="convert-all" data-from="variable">Convert All to Styles</button>` : '', body: tVarsBody }) +
       blockHtml(TS, { id: 'unlinked', tone: 'red', title: 'Unlinked text', sub: 'Texts without a Text Style', count: unlinkedCount, countTone: 'issue',
-        body: unlinkedBody + (s.instanceLayers ? `<div class="sm-note">${plural(s.instanceLayers, 'text layer')} ${s.instanceLayers === 1 ? 'is' : 'are'} inside component instances (tagged “in component”). Styles are applied to the main component when it's in this file, otherwise as instance overrides.</div>` : '') + (s.mixedSkipped ? `<div class="sm-note">${plural(s.mixedSkipped, 'text layer')} with mixed fonts or styles in one layer ${s.mixedSkipped === 1 ? 'was' : 'were'} skipped — split or style them manually.</div>` : '') }) +
+        body: unlinkedBody + (s.instanceLayers ? `<div class="sm-note">${plural(s.instanceLayers, 'text layer')} ${s.instanceLayers === 1 ? 'is' : 'are'} inside component instances (tagged “in component”). Styles are applied to the main component when it's in this file, otherwise as instance overrides.</div>` : '') + (s.mixedSkipped ? `<div class="sm-note">${plural(s.mixedSkipped, 'text layer')} couldn't be read at all ${s.mixedSkipped === 1 ? 'and was' : 'and were'} skipped.</div>` : '') }) +
       blockHtml(TS, { id: 'dupes', tone: 'amber', title: 'Duplicate Text Styles', sub: 'Identical font, size &amp; line-height', count: d.duplicates.length + tSvDupes.length, countTone: (d.duplicates.length + tSvDupes.length) ? 'issue' : 'info',
         actions: d.duplicates.length ? `<button class="btn btn-sm btn-primary" data-act="t-merge-all">Merge All</button>` : '',
         body: dupesBody + (tSvDupes.length ? `<div class="sm-divider-lbl"><span>Same values as a variable group</span><span>${tSvDupes.length}</span></div>` + styleVarDupeBody(TS, tSvDupes, svPreviewText) : '') }) +

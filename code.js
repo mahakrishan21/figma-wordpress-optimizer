@@ -1851,6 +1851,45 @@ function styleScanNodes(roots) {
   return out;
 }
 
+// A text layer can mix fonts, sizes and spacing across its characters. Reading
+// node.fontName then returns figma.mixed, which used to make the whole layer
+// unscannable. Each styled run is read instead, the same way colour runs are.
+//
+// Runs that are only whitespace or punctuation (a space set in another font,
+// say) are folded into the run before them: they are not a design decision and
+// would otherwise litter the results with near-duplicate styles.
+async function textTypeRuns(node) {
+  var runs = [];
+  try {
+    var segs = node.getStyledTextSegments(
+      ['fontName', 'fontSize', 'lineHeight', 'letterSpacing', 'textCase', 'textDecoration', 'fillStyleId']);
+    for (var i = 0; i < segs.length; i++) {
+      var seg = segs[i];
+      if (!seg.fontName || typeof seg.fontSize !== 'number') continue;
+      var chars = typeof seg.characters === 'string' ? seg.characters : '';
+      // ES2017: no \p{...} property escapes. A run is "filler" when it holds no
+      // letter or digit at all — a space or a stray comma in another font.
+      var filler = !/[A-Za-z0-9\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(chars);
+      if (filler && runs.length) {
+        // extend the previous run over this one
+        runs[runs.length - 1].range.end = seg.end;
+        continue;
+      }
+      runs.push({
+        spec: {
+          family: seg.fontName.family, style: seg.fontName.style, fontSize: seg.fontSize,
+          lineHeight: seg.lineHeight || { unit: 'AUTO' },
+          letterSpacing: seg.letterSpacing || { unit: 'PERCENT', value: 0 },
+          upper: seg.textCase === 'UPPER'
+        },
+        range: { start: seg.start, end: seg.end, text: chars.length > 24 ? chars.slice(0, 24) + '…' : chars }
+      });
+    }
+  } catch (e) {}
+  // A trailing filler run with nothing before it is dropped entirely.
+  return runs;
+}
+
 // A text layer can hold several colours at once — different words or
 // characters. node.fills is figma.mixed there, so the runs have to be read
 // segment by segment. Returns one entry per coloured run.
@@ -2430,6 +2469,14 @@ async function scanText(roots) {
   // signature of a layer's bound variables -> { fields, uses, spec }
   const localTextVarUse = new Map();
   const textVarCache = new Map();   // variableId -> resolved record
+  // Counting LAYERS, not runs: a layer with three runs in one family uses that
+  // family once, which is what the "N layers" label claims.
+  const noteFont = (family, style, nodeId) => {
+    let e = famMap.get(family);
+    if (!e) famMap.set(family, e = { family: family, styles: new Set(), layers: new Set() });
+    e.styles.add(style);
+    e.layers.add(nodeId);
+  };
   let mixedSkipped = 0;
 
   for (let i = 0; i < nodes.length; i++) {
@@ -2439,14 +2486,28 @@ async function scanText(roots) {
       if (sz > 0) sizeFreq.set(sz, (sizeFreq.get(sz) || 0) + 1);
     }
     if (node.fontName !== figma.mixed) {
-      const fam = node.fontName.family;
-      if (!famMap.has(fam)) famMap.set(fam, { family: fam, styles: new Set(), count: 0 });
-      famMap.get(fam).styles.add(node.fontName.style);
-      famMap.get(fam).count++;
+      noteFont(node.fontName.family, node.fontName.style, node.id);
     }
 
     const sid = node.textStyleId;
-    if (sid === figma.mixed) { mixedSkipped++; continue; }
+    // Mixed typography, or mixed text styles, inside one layer: scan run by run
+    // rather than skipping it.
+    if (sid === figma.mixed || node.fontName === figma.mixed || node.fontSize === figma.mixed ||
+        node.lineHeight === figma.mixed || node.letterSpacing === figma.mixed) {
+      const runs = await textTypeRuns(node);
+      if (!runs.length) { mixedSkipped++; continue; }
+      for (const run of runs) {
+        // Every run's font belongs in the Fonts summary.
+        noteFont(run.spec.family, run.spec.style, node.id);
+        const sz = Math.round(run.spec.fontSize);
+        if (sz > 0) sizeFreq.set(sz, (sizeFreq.get(sz) || 0) + 1);
+
+        const rk = textSpecKey(run.spec);
+        if (!unlinked.has(rk)) unlinked.set(rk, { spec: run.spec, uses: [] });
+        unlinked.get(rk).uses.push(useRef(node, 'text', false, null, run.range));
+      }
+      continue;
+    }
     if (typeof sid === 'string' && sid) {
       const style = await getStyleCached(cache, sid);
       if (!style) continue;
@@ -2494,7 +2555,7 @@ async function scanText(roots) {
       }
     }
     const spec = textSpecOfNode(node);
-    if (!spec) { mixedSkipped++; continue; }
+    if (!spec) { mixedSkipped++; continue; }   // unreadable for another reason
     const k = textSpecKey(spec);
     if (!unlinked.has(k)) unlinked.set(k, { spec: spec, uses: [] });
     unlinked.get(k).uses.push(useRef(node, 'text'));
@@ -2579,7 +2640,7 @@ async function scanText(roots) {
   const duplicates = Array.from(dupMap.values()).filter(g => g.length > 1);
 
   const fontFamilies = Array.from(famMap.values())
-    .map(f => ({ family: f.family, styles: Array.from(f.styles).sort(), count: f.count }))
+    .map(f => ({ family: f.family, styles: Array.from(f.styles).sort(), count: f.layers.size }))
     .sort((a, b) => b.count - a.count);
   const typeSizeInfo = Array.from(sizeFreq.entries()).map(e => ({ size: e[0], count: e[1] })).sort((a, b) => b.size - a.size);
 
@@ -2688,7 +2749,12 @@ async function loadTextNodeFonts(node) {
 
 async function createOrUpdateTextStyle(name, spec, conflict, existing) {
   const fontName = { family: spec.family, style: spec.style };
-  await figma.loadFontAsync(fontName);
+  try {
+    await figma.loadFontAsync(fontName);
+  } catch (e) {
+    // Name the font — the raw rejection says nothing useful.
+    throw new Error('“' + fontName.family + ' ' + fontName.style + '” isn\'t installed.');
+  }
   let style = conflict === 'update' ? existing.get(name) : null;
   if (!style) {
     style = figma.createTextStyle();
@@ -2754,7 +2820,7 @@ async function applyStyleToUses(kind, style, uses, result) {
   if (kind === 'text') {
     try { await figma.loadFontAsync(style.fontName); } catch (e) {
       result.skipped += uses.length;
-      pushReason(result, 'Font "' + style.fontName.family + ' ' + style.fontName.style + '" is not available.');
+      pushReason(result, '“' + style.fontName.family + ' ' + style.fontName.style + '” isn\'t installed.');
       return;
     }
   }
@@ -2777,7 +2843,8 @@ async function applyStyleToUses(kind, style, uses, result) {
     try {
       if (kind === 'text') {
         await loadTextNodeFonts(node);
-        await node.setTextStyleIdAsync(style.id);
+        if (ranged) await node.setRangeTextStyleIdAsync(u.start, u.end, style.id);
+        else await node.setTextStyleIdAsync(style.id);
       } else if (ranged) {
         // Only the characters this colour actually covers.
         await loadTextNodeFonts(node);
@@ -3004,20 +3071,29 @@ async function applyTextVariablesToUses(vars, uses, result) {
     var node = target.node;
     var blocked = styleBlockedReason(node);
     if (blocked) { result.skipped++; pushReason(result, blocked); continue; }
-    if (result.done && result.done.has(node.id)) { result.applied++; continue; }
+    var ranged = typeof u.start === 'number' && typeof u.end === 'number' && u.end > u.start;
+    var doneKey = node.id + (ranged ? '|' + u.start + '-' + u.end : '');
+    if (result.done && result.done.has(doneKey)) { result.applied++; continue; }
     try {
       // Changing type on a text node needs its fonts loaded first.
       await loadTextNodeFonts(node);
       // A text style and variables can't both drive the same properties.
-      try { await node.setTextStyleIdAsync(''); } catch (e) {}
+      try {
+        if (ranged) await node.setRangeTextStyleIdAsync(u.start, u.end, '');
+        else await node.setTextStyleIdAsync('');
+      } catch (e) {}
       var bound = 0;
       for (var v = 0; v < vars.length; v++) {
-        try { node.setBoundVariable(vars[v].field, vars[v].variable); bound++; } catch (e) {}
+        try {
+          if (ranged) node.setRangeBoundVariable(u.start, u.end, vars[v].field, vars[v].variable);
+          else node.setBoundVariable(vars[v].field, vars[v].variable);
+          bound++;
+        } catch (e) {}
       }
       if (!bound) { result.skipped++; pushReason(result, 'Figma rejected every typography binding on this layer.'); continue; }
       result.applied++;
       if (!result.done) result.done = new Set();
-      result.done.add(node.id);
+      result.done.add(doneKey);
       if (target.via === 'override') result.overrides = (result.overrides || 0) + 1;
       if (target.via === 'component') result.components = (result.components || 0) + 1;
     } catch (e) {

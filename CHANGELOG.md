@@ -20,6 +20,17 @@ All notable changes to this project are documented in this file.
 - **Toolbar**: the Generate button is now **Generate Palette** (Colors) and **Generate Type Scale** (Typography), and no longer changes with the dropdown — the dropdown already decides what gets made. Order is now `[Generate …] … [Re-Scan] Create [▾] [Convert everything …]`, with Re-Scan still primary
 
 ### Fixed
+- **Text layers mixing fonts or sizes were skipped entirely** — *"3 text layers with mixed fonts or styles in one layer were skipped"* — and their fonts were missing from the Fonts summary. `textSpecOfNode()` returns null as soon as any typography property is `figma.mixed`, so the whole layer fell out of the scan. Mixed layers are now read **run by run**, the way multi-coloured text already was:
+  - Each styled run becomes its own use, carrying the character range it covers, and runs are grouped by spec exactly as whole layers are — so a run matching an existing token lands under *Matches Existing Token* and a new one under *New Text*
+  - A run that is only whitespace or punctuation (a space set in another font) is folded into the run before it, rather than littering the results with near-duplicate styles
+  - **Apply, Create & Apply, Convert and Merge all target just those characters** — `setRangeTextStyleIdAsync` for styles, `setRangeBoundVariable` for variables. The rest of the layer is untouched
+  - The uses list shows each run as the layer name plus a **"characters 1–23"** tag and a preview of the text
+  - A layer counts **once** in the layer totals however many runs it has, and every run's font appears in the Fonts summary
+  - A run whose font isn't installed is skipped **by name** — *"'Julius Sans One Regular' isn't installed"* — and only that run; previously the raw rejection surfaced instead
+  - The "mixed fonts … skipped" warning is gone; the remaining note covers only layers that genuinely can't be read
+- The **Fonts summary counted runs as layers**: a layer with three runs in one family was counted three times under a "N layers" label. It now counts distinct layers
+
+### Fixed
 - **Action buttons wrapped onto a second line at the plugin's real width.** The Convert button is a third action, and the 156px action column only fits two — so Color Variables rows (and Color Styles rows in Variables mode) broke across two lines. Earlier checks had run at 1200px wide, where it fits; the plugin's window is **760px**. Rows that show a Convert button now use a wider action column, applied to the header and the rows together so the columns stay aligned. Verified in both modes on both tabs at 760px
 - **One ⌘Z could undo your own edits as well as the plugin's.** `commitUndo()` closes the *current* undo group, and it was only called at the end of an action — so the group it closed stretched back to the previous action, swallowing anything you had done on the canvas in between. The plugin now closes the previous group before it starts work, so one ⌘Z undoes exactly that action. A failed action also commits, instead of merging its partial work into the next one
 - A typography layer whose variable bindings can't be cleared now **says so**. A surviving binding overrides the new text style, so the layer would silently keep its old appearance; the result now names the layer and what to do. Only the fields the group actually bound are unbound, rather than all five blindly
