@@ -2864,6 +2864,47 @@
   }
 
   // Creation-type picker, used by both Generate screens.
+  // Mirrors plannedAction() in code.js — the two must stay identical.
+  function plannedAction(state, target) {
+    const toVar = target === 'variables';
+    switch (state) {
+      case 'style':         return toVar ? 'variable-from-style' : 'apply-style';
+      case 'variable':      return toVar ? 'bind-variable' : 'style-from-variable';
+      case 'both-unlinked': return toVar ? 'bind-variable' : 'apply-style';
+      case 'both-linked':   return toVar ? 'bind-variable' : 'apply-style';
+      default:              return toVar ? 'create-variable' : 'create-style';
+    }
+  }
+  const ACTION_LABELS = {
+    'create-style': 'Create & Apply',
+    'create-variable': 'Create & Apply',
+    'apply-style': 'Apply Style',
+    'bind-variable': 'Apply Variable',
+    'variable-from-style': 'Create Variable from Style',
+    'style-from-variable': 'Create Style from Variable'
+  };
+  function rowActionLabel(S, row) {
+    return ACTION_LABELS[plannedAction(row.state, S.target)] || 'Apply';
+  }
+  // One label for a bulk button: the shared action when every row agrees,
+  // otherwise a neutral word, so the button never claims the wrong thing.
+  function bulkActionLabel(S, rows) {
+    if (!rows || !rows.length) return 'Apply All';
+    const first = plannedAction(rows[0].state, S.target);
+    const same = rows.every(r => plannedAction(r.state, S.target) === first);
+    return same ? (ACTION_LABELS[first] || 'Apply') + ' All' : 'Apply All';
+  }
+  // The matching column: the style and/or variable that was found.
+  function matchedTokenHtml(row) {
+    const bits = [];
+    if (row.styleName) bits.push(`<span class="sm-strong sm-ellipsis">${escHtml(row.styleName)}</span><span class="sm-meta"> style</span>`);
+    if (row.variableName) bits.push(`<span class="sm-strong sm-ellipsis">${escHtml(row.variableName)}</span><span class="sm-meta"> variable</span>`);
+    if (!bits.length) bits.push('<span class="sm-meta">—</span>');
+    const note = row.state === 'both-unlinked' ? '<div class="sm-meta">both exist, not linked</div>'
+               : row.state === 'both-linked' ? '<div class="sm-meta">style linked to variable</div>' : '';
+    return `<div style="min-width:0">${bits.join('<br>')}${note}</div>`;
+  }
+
   function targetPickerHtml(S, what) {
     const t = S.target === 'variables' ? 'variables' : 'styles';
     return `<label class="sm-target" title="Create ${what} styles, or ${what} variables. Rows that apply an existing style are unaffected.">Create
@@ -2972,13 +3013,13 @@
       : '<div class="sm-empty ok">✓ No new colors — every unlinked fill matches an existing style.</div>';
 
     const localBody = d.matchLocal.length
-      ? theadHtml(G_CROW, ['', 'Hex Value', 'Opacity', 'Matching Style', 'Uses', 'Action']) + d.matchLocal.map(r => rowWrap(CS, r.key,
+      ? theadHtml(G_CROW, ['', 'Hex Value', 'Opacity', 'Matching Token', 'Uses', 'Action']) + d.matchLocal.map(r => rowWrap(CS, r.key,
         `<div class="sm-row" style="grid-template-columns:${G_CROW}">%CHEV%
           <div class="sm-cell-color">${swatchHtml(r.hex, r.opacity)}<span class="mono">${escHtml(r.hex)}</span></div>
           <span>${pctStr(r.opacity)}</span>
-          <div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.styleName)}</div><div class="sm-meta">${escHtml(r.hex)} · ${pctStr(r.opacity)}</div></div>
+          ${matchedTokenHtml(r)}
           ${usesCell(r.uses.length)}
-          <div class="sm-actions"><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus</button><button class="btn btn-sm btn-outline-blue" data-act="c-apply" data-key="${escHtml(r.key)}">Apply Style</button></div>
+          <div class="sm-actions"><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus</button><button class="btn btn-sm btn-outline-blue" data-act="c-apply" data-key="${escHtml(r.key)}">${rowActionLabel(CS, r)}</button></div>
         </div>`, r.uses, 'color')).join('')
       : '<div class="sm-empty">No unlinked colors match a style in this file.</div>';
 
@@ -2997,10 +3038,10 @@
       subBlockHtml(CS, { id: 'new', tone: 'red', title: 'New Color', count: d.newColors.length,
         actions: d.newColors.length ? `<button class="btn btn-sm btn-primary" data-act="c-create-all">Create &amp; Apply All</button>` : '',
         body: newBody }) +
-      subBlockHtml(CS, { id: 'match', tone: 'amber', title: 'Matches Existing Style', count: null,
+      subBlockHtml(CS, { id: 'match', tone: 'amber', title: 'Matches Existing Token', count: null,
         body:
-          subBlockHtml(CS, { id: 'matchLocal', level2: true, title: 'Styles from this file', count: d.matchLocal.length, countTone: 'info',
-            actions: d.matchLocal.length ? `<button class="btn btn-sm btn-primary" data-act="c-apply-all">Apply All</button>` : '', body: localBody }) +
+          subBlockHtml(CS, { id: 'matchLocal', level2: true, title: 'In this file', count: d.matchLocal.length, countTone: 'info',
+            actions: d.matchLocal.length ? `<button class="btn btn-sm btn-primary" data-act="c-apply-all">${bulkActionLabel(CS, d.matchLocal)}</button>` : '', body: localBody }) +
           subBlockHtml(CS, { id: 'matchRemote', level2: true, title: 'Style from other file', count: d.matchRemote.length, countTone: 'info',
             actions: d.matchRemote.length ? `<button class="btn btn-sm btn-primary" data-act="c-copy-all">Create &amp; Apply All</button>` : '', body: remoteBody })
       });
@@ -3083,6 +3124,9 @@
       <div class="sm-meta sm-ellipsis">style · ${escHtml(specMeta(r.spec, true))}</div></div>`;
   }
 
+  function dupeKindTag(c) {
+    return c && c.kind === 'variable' ? '<span class="sm-chip">variable</span>' : '';
+  }
   function dupeItemColor(c) {
     return `<div class="sm-dupe-item" style="margin:2px 0">${swatchHtml(c.hex, c.opacity)}<div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(c.name)}</div><div class="sm-meta">${escHtml(c.hex)} · ${pctStr(c.opacity)}</div></div></div>`;
   }
@@ -3779,8 +3823,8 @@
 
     if (act === 'c-create') { sendStyle(CS, { type: 'style-rows', action: 'create', target: CS.target, label: 'Create & Apply', rows: rowsPayload(CS, [CS.rows[key]], 'suggested') }); return; }
     if (act === 'c-create-all') { sendStyle(CS, { type: 'style-rows', action: 'create', target: CS.target, label: 'Create & Apply All', rows: rowsPayload(CS, d.newColors, 'suggested') }); return; }
-    if (act === 'c-apply') { sendStyle(CS, { type: 'style-rows', action: 'apply', label: 'Apply Style', rows: [{ key: key }] }); return; }
-    if (act === 'c-apply-all') { sendStyle(CS, { type: 'style-rows', action: 'apply', label: 'Apply All', rows: d.matchLocal.map(r => ({ key: r.key })) }); return; }
+    if (act === 'c-apply') { sendStyle(CS, { type: 'style-rows', action: 'apply', target: CS.target, label: 'Apply Style', rows: [{ key: key }] }); return; }
+    if (act === 'c-apply-all') { sendStyle(CS, { type: 'style-rows', action: 'apply', target: CS.target, label: 'Apply All', rows: d.matchLocal.map(r => ({ key: r.key })) }); return; }
     if (act === 'c-copy') { sendStyle(CS, { type: 'style-rows', action: 'copy', target: CS.target, label: 'Create & Apply', rows: rowsPayload(CS, [CS.rows[key]], 'name') }); return; }
     if (act === 'c-copy-all') { sendStyle(CS, { type: 'style-rows', action: 'copy', target: CS.target, label: 'Create & Apply All', rows: rowsPayload(CS, d.matchRemote, 'name') }); return; }
     if (act === 'c-delete') { confirmDeleteStyle(CS, CS.rows[key], 'color'); return; }
@@ -4089,12 +4133,12 @@
       : '<div class="sm-empty ok">✓ No new text combinations — every unlinked text matches an existing style.</div>';
 
     const localBody = d.matchLocal.length
-      ? theadHtml(G_TROW, ['', 'Font Details', 'Matching Style', 'Uses', 'Action']) + d.matchLocal.map(r => rowWrap(TS, r.key,
+      ? theadHtml(G_TROW, ['', 'Font Details', 'Matching Token', 'Uses', 'Action']) + d.matchLocal.map(r => rowWrap(TS, r.key,
         `<div class="sm-row" style="grid-template-columns:${G_TROW}">%CHEV%
           ${fontCell(r.spec)}
-          <div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.styleName)}</div><div class="sm-meta sm-ellipsis">${escHtml(specMeta(r.styleSpec, true))}</div></div>
+          ${matchedTokenHtml(r)}
           ${usesCell(r.uses.length)}
-          <div class="sm-actions"><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-outline-blue" data-act="t-apply" data-key="${escHtml(r.key)}">Apply Style</button></div>
+          <div class="sm-actions"><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-outline-blue" data-act="t-apply" data-key="${escHtml(r.key)}">${rowActionLabel(TS, r)}</button></div>
         </div>`, r.uses, 'text style')).join('')
       : '<div class="sm-empty">No unlinked text matches a style in this file.</div>';
 
@@ -4111,9 +4155,9 @@
     const unlinkedBody =
       subBlockHtml(TS, { id: 'new', tone: 'red', title: 'New Text', count: d.newText.length,
         actions: d.newText.length ? `<button class="btn btn-sm btn-primary" data-act="t-create-all">Create &amp; Apply All</button>` : '', body: newBody }) +
-      subBlockHtml(TS, { id: 'match', tone: 'amber', title: 'Matches Existing Style', count: null, body:
-        subBlockHtml(TS, { id: 'matchLocal', level2: true, title: 'Styles from this file', count: d.matchLocal.length, countTone: 'info',
-          actions: d.matchLocal.length ? `<button class="btn btn-sm btn-primary" data-act="t-apply-all">Apply All</button>` : '', body: localBody }) +
+      subBlockHtml(TS, { id: 'match', tone: 'amber', title: 'Matches Existing Token', count: null, body:
+        subBlockHtml(TS, { id: 'matchLocal', level2: true, title: 'In this file', count: d.matchLocal.length, countTone: 'info',
+          actions: d.matchLocal.length ? `<button class="btn btn-sm btn-primary" data-act="t-apply-all">${bulkActionLabel(TS, d.matchLocal)}</button>` : '', body: localBody }) +
         subBlockHtml(TS, { id: 'matchRemote', level2: true, title: 'Styles from other file', count: d.matchRemote.length, countTone: 'info',
           actions: d.matchRemote.length ? `<button class="btn btn-sm btn-primary" data-act="t-copy-all">Create &amp; Apply All</button>` : '', body: remoteBody })
       });
@@ -4448,8 +4492,8 @@
 
     if (act === 't-create') { sendStyle(TS, { type: 'style-rows', action: 'create', target: TS.target, label: 'Create & Apply', rows: rowsPayload(TS, [TS.rows[key]], 'suggested') }); return; }
     if (act === 't-create-all') { sendStyle(TS, { type: 'style-rows', action: 'create', target: TS.target, label: 'Create & Apply All', rows: rowsPayload(TS, d.newText, 'suggested') }); return; }
-    if (act === 't-apply') { sendStyle(TS, { type: 'style-rows', action: 'apply', label: 'Apply Style', rows: [{ key: key }] }); return; }
-    if (act === 't-apply-all') { sendStyle(TS, { type: 'style-rows', action: 'apply', label: 'Apply All', rows: d.matchLocal.map(r => ({ key: r.key })) }); return; }
+    if (act === 't-apply') { sendStyle(TS, { type: 'style-rows', action: 'apply', target: TS.target, label: 'Apply Style', rows: [{ key: key }] }); return; }
+    if (act === 't-apply-all') { sendStyle(TS, { type: 'style-rows', action: 'apply', target: TS.target, label: 'Apply All', rows: d.matchLocal.map(r => ({ key: r.key })) }); return; }
     if (act === 't-copy') { sendStyle(TS, { type: 'style-rows', action: 'copy', target: TS.target, label: 'Create & Apply', rows: rowsPayload(TS, [TS.rows[key]], 'name') }); return; }
     if (act === 't-copy-all') { sendStyle(TS, { type: 'style-rows', action: 'copy', target: TS.target, label: 'Create & Apply All', rows: rowsPayload(TS, d.matchRemote, 'name') }); return; }
     if (act === 't-delete') { confirmDeleteStyle(TS, TS.rows[key], 'text'); return; }

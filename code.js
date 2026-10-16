@@ -2035,7 +2035,10 @@ async function scanColors(roots) {
         if (p.boundVariables && p.boundVariables.color) {
           const vid = p.boundVariables.color.id;
           const rv = await resolveColorVariable(varCache, vid);
-          const op = rv ? (typeof rv.color.a === 'number' ? rv.color.a : 1) * (typeof p.opacity === 'number' ? p.opacity : 1) : 1;
+          // Measured in Figma: binding a COLOR variable OVERWRITES paint.opacity
+          // with the variable's alpha. The two are therefore always equal, so
+          // multiplying them squares the value — a 20% colour would read as 4%.
+          const op = rv ? (typeof rv.color.a === 'number' ? rv.color.a : 1) : 1;
           if (rv && rv.remote) {
             // From another file — offer to make a local copy.
             if (!remoteVarUse.has(vid)) remoteVarUse.set(vid, { name: rv.name, hex: rgbToHexStr(rv.color), opacity: op, uses: [] });
@@ -2079,12 +2082,27 @@ async function scanColors(roots) {
   }
 
   const taken = new Set(locals.map(s => s.name));
+  // Everything this file already defines, by value — styles AND variables.
+  const tokenIndex = await buildTokenIndex('paint');
+
   const matchLocalById = new Map();
-  const addLocalMatch = (style, hex, opacity, uses) => {
-    if (!matchLocalById.has(style.id)) {
-      matchLocalById.set(style.id, { key: 'l:' + style.id, styleId: style.id, styleName: style.name, hex: hex, opacity: opacity, uses: [] });
+  // A matched value may be held by a style, a variable, or both. The row
+  // carries whatever was found so the UI can label the action per the dropdown.
+  const addLocalMatch = (found, hex, opacity, uses, styleOverride) => {
+    const style = styleOverride || found.style;
+    const id = style ? style.id : (found.variable ? found.variable.id : hex + '|' + opacity);
+    if (!matchLocalById.has(id)) {
+      matchLocalById.set(id, {
+        key: 'l:' + id,
+        styleId: style ? style.id : null,
+        styleName: style ? style.name : null,
+        variableId: found.variable ? found.variable.id : null,
+        variableName: found.variable ? found.variable.name : null,
+        state: found.state || (style ? 'style' : 'none'),
+        hex: hex, opacity: opacity, uses: []
+      });
     }
-    Array.prototype.push.apply(matchLocalById.get(style.id).uses, uses);
+    Array.prototype.push.apply(matchLocalById.get(id).uses, uses);
   };
 
   // Styles linked from another file (layers pasted in keep the link).
@@ -2097,7 +2115,7 @@ async function scanColors(roots) {
     // creating a duplicate of the other file's style.
     const twin = k ? (localByNameKey.get(r.style.name + '||' + k) || localByKey.get(k)) : null;
     if (twin) {
-      addLocalMatch(twin, sp.hex, sp.opacity, r.uses);
+      addLocalMatch(resolveToken(tokenIndex, k), sp.hex, sp.opacity, r.uses, twin);
       continue;
     }
     const row = {
@@ -2110,7 +2128,7 @@ async function scanColors(roots) {
   for (const [vid, rv] of remoteVarUse) {
     const k = colorKey(rv.hex, rv.opacity);
     const twin = localByNameKey.get(rv.name + '||' + k) || localByKey.get(k);
-    if (twin) { addLocalMatch(twin, rv.hex, rv.opacity, rv.uses); continue; }
+    if (twin) { addLocalMatch(resolveToken(tokenIndex, k), rv.hex, rv.opacity, rv.uses, twin); continue; }
     const row = { key: 'v:' + vid, variableId: vid, name: rv.name, source: 'variable', hex: rv.hex, opacity: rv.opacity, uses: rv.uses.slice() };
     matchRemote.push(row);
     if (!remoteByKey.has(k)) remoteByKey.set(k, row);
@@ -2118,8 +2136,8 @@ async function scanColors(roots) {
 
   const newColors = [];
   for (const [k, e] of unlinked) {
-    const local = localByKey.get(k);
-    if (local) { addLocalMatch(local, e.hex, e.opacity, e.uses); continue; }
+    const found = resolveToken(tokenIndex, k);
+    if (found.state !== 'none') { addLocalMatch(found, e.hex, e.opacity, e.uses); continue; }
     const remote = remoteByKey.get(k);
     if (remote) { Array.prototype.push.apply(remote.uses, e.uses); continue; }
     newColors.push({ key: 'n:' + k, hex: e.hex, opacity: e.opacity, uses: e.uses, suggested: '' });
@@ -2168,11 +2186,24 @@ async function scanColors(roots) {
   // Near-duplicates across ALL local styles: same opacity and practically the
   // same color (CIE Lab ΔE < 3). Same color at a different opacity is usually
   // a deliberate overlay, so it's only flagged, never offered for merging.
+  // Variables take part in near-duplicate detection too, so a style and a
+  // variable that are nearly the same colour are caught as well as two styles.
   const pool = [];
   for (const s of locals) {
     const sp = solidOfStyle(s);
     if (!sp) continue;
-    pool.push({ id: s.id, name: s.name, hex: sp.hex, opacity: sp.opacity, lab: hexToLab(sp.hex), uses: (localUse.get(s.id) || []).length });
+    pool.push({ id: s.id, name: s.name, kind: 'style', hex: sp.hex, opacity: sp.opacity, lab: hexToLab(sp.hex), uses: (localUse.get(s.id) || []).length });
+  }
+  for (const entry of await localVariablesWithValues('COLOR')) {
+    const val = entry.value;
+    if (!val || typeof val.r !== 'number') continue;
+    const vhex = rgbToHexStr(val);
+    const vop = typeof val.a === 'number' ? val.a : 1;
+    pool.push({
+      id: entry.variable.id, name: entry.variable.name, kind: 'variable',
+      hex: vhex, opacity: vop, lab: hexToLab(vhex),
+      uses: (localVarUse.get(entry.variable.id) || { uses: [] }).uses.length
+    });
   }
   const nearDupes = [];
   const grouped = new Set();
@@ -2232,7 +2263,7 @@ async function scanColors(roots) {
 }
 
 function stripLab(p) {
-  return { id: p.id, name: p.name, hex: p.hex, opacity: p.opacity, uses: p.uses };
+  return { id: p.id, name: p.name, kind: p.kind || 'style', hex: p.hex, opacity: p.opacity, uses: p.uses };
 }
 
 function hexToLab(hex) {
@@ -2423,12 +2454,26 @@ async function scanText(roots) {
     if (count > bestCount) { bestCount = count; baseSize = size; }
   }
 
+  const tokenIndex = await buildTokenIndex('text');
+
   const matchLocalById = new Map();
-  const addLocalMatch = (style, uses) => {
-    if (!matchLocalById.has(style.id)) {
-      matchLocalById.set(style.id, { key: 'l:' + style.id, styleId: style.id, styleName: style.name, styleSpec: textSpecOfStyle(style), spec: textSpecOfStyle(style), uses: [] });
+  const addLocalMatch = (found, uses, styleOverride, specFallback) => {
+    const style = styleOverride || found.style;
+    const spec = style ? textSpecOfStyle(style) : specFallback;
+    const group = found.variable;
+    const id = style ? style.id : (group && group.length ? group[0].variable.id : textSpecKey(spec));
+    if (!matchLocalById.has(id)) {
+      matchLocalById.set(id, {
+        key: 'l:' + id,
+        styleId: style ? style.id : null,
+        styleName: style ? style.name : null,
+        variableName: group && group.length ? group[0].variable.name.replace(/\/[^\/]+$/, '') : null,
+        variableFields: group ? group.map(g => g.field) : null,
+        state: found.state || (style ? 'style' : 'none'),
+        styleSpec: spec, spec: spec, uses: []
+      });
     }
-    Array.prototype.push.apply(matchLocalById.get(style.id).uses, uses);
+    Array.prototype.push.apply(matchLocalById.get(id).uses, uses);
   };
 
   const matchRemote = [];
@@ -2437,7 +2482,7 @@ async function scanText(roots) {
     const spec = textSpecOfStyle(r.style);
     const k = textSpecKey(spec);
     const twin = localByNameKey.get(r.style.name + '||' + k) || localByKey.get(k);
-    if (twin) { addLocalMatch(twin, r.uses); continue; }
+    if (twin) { addLocalMatch(resolveToken(tokenIndex, k), r.uses, twin); continue; }
     const row = { key: 'r:' + sid, styleId: sid, name: r.style.name, spec: spec, styleSpec: spec, uses: r.uses.slice() };
     matchRemote.push(row);
     if (!remoteByKey.has(k)) remoteByKey.set(k, row);
@@ -2446,8 +2491,8 @@ async function scanText(roots) {
   const taken = new Set(locals.map(s => s.name));
   const newText = [];
   for (const [k, e] of unlinked) {
-    const local = localByKey.get(k);
-    if (local) { addLocalMatch(local, e.uses); continue; }
+    const found = resolveToken(tokenIndex, k);
+    if (found.state !== 'none') { addLocalMatch(found, e.uses, null, e.spec); continue; }
     const remote = remoteByKey.get(k);
     if (remote) { Array.prototype.push.apply(remote.uses, e.uses); continue; }
     newText.push({ key: 'n:' + k, spec: e.spec, uses: e.uses, suggested: '' });
@@ -2913,11 +2958,97 @@ async function applyTextVariablesToUses(vars, uses, result) {
   }
 }
 
+// A row matched an existing VARIABLE — bind the layers to it.
+async function bindExistingToUses(kind, found, row, result) {
+  if (!found.variable) { result.skipped += row.uses.length; return; }
+  if (kind === 'paint') {
+    await applyVariableToUses(found.variable, row.uses, result);
+  } else {
+    await applyTextVariablesToUses(found.variable, row.uses, result);
+  }
+}
+
+// A row matched only the OTHER kind of token. Create the counterpart from it —
+// reusing the existing value and name so the two stay recognisably one token —
+// link them, then apply whichever the user asked for.
+async function createCounterpartAndApply(kind, found, row, name, msg, result) {
+  var toVar = msg.target === 'variables';
+
+  if (kind === 'paint') {
+    if (toVar) {
+      // Style exists, variable doesn't: make the variable from the style.
+      var collection = await getTokenCollection(true, 'paint');
+      if (!collection) throw new Error('Could not open a variable collection in this file.');
+      var pool = await localVariablesWithValues('COLOR');
+      var hex = String(row.hex).toUpperCase();
+      var opacity = typeof row.opacity === 'number' ? row.opacity : 1;
+      var variable = findColorVariable(pool, hex, opacity);
+      if (variable) {
+        result.reused = (result.reused || 0) + 1;
+      } else {
+        var rgba = hexToRgb01(hex);
+        rgba.a = opacity;
+        variable = figma.variables.createVariable(found.style ? found.style.name : name, collection, 'COLOR');
+        await setVarValue(variable, collection, rgba);
+        result.created++;
+      }
+      if (found.style && !found.bound && bindPaintStyleToExactVariable(found.style, variable)) {
+        result.linked = (result.linked || 0) + 1;
+      }
+      await applyVariableToUses(variable, row.uses, result);
+      return;
+    }
+    // Variable exists, style doesn't: make the style and bind it to the variable.
+    var existing = await findLocalStylesByName('paint');
+    var made = await createOrUpdatePaintStyle(
+      found.variable ? found.variable.name : name,
+      [{ type: 'SOLID', color: hexToRgb01(String(row.hex).toUpperCase()), opacity: row.opacity }],
+      'keep', existing);
+    result.created++;
+    if (found.variable && bindPaintStyleToExactVariable(made, found.variable)) {
+      result.linked = (result.linked || 0) + 1;
+    }
+    await applyStyleToUses('paint', made, row.uses, result);
+    return;
+  }
+
+  // Typography
+  var spec = row.spec || row.styleSpec;
+  if (toVar) {
+    var sub = await runTextRowVariableAction(
+      { target: 'variables' },
+      [{ ref: {}, row: row }],
+      [found.style ? found.style.name : name]);
+    mergeResults(result, sub);
+    return;
+  }
+  var existingT = await findLocalStylesByName('text');
+  var madeT = await createOrUpdateTextStyle(
+    found.variable && found.variable.length ? found.variable[0].variable.name.replace(/\/[^\/]+$/, '') : name,
+    spec, 'keep', existingT);
+  result.created++;
+  if (found.variable) {
+    var n = 0;
+    for (var i = 0; i < found.variable.length; i++) {
+      try { madeT.setBoundVariable(found.variable[i].field, found.variable[i].variable); n++; } catch (e) {}
+    }
+    if (n) result.linked = (result.linked || 0) + 1;
+  }
+  await applyStyleToUses('text', madeT, row.uses, result);
+}
+
+function mergeResults(into, from) {
+  if (!from) return;
+  var keys = ['created', 'applied', 'skipped', 'reused', 'linked', 'overrides', 'components'];
+  for (var i = 0; i < keys.length; i++) if (from[keys[i]]) into[keys[i]] = (into[keys[i]] || 0) + from[keys[i]];
+  if (from.reasons) for (var r = 0; r < from.reasons.length; r++) pushReason(into, from.reasons[r]);
+}
+
 // Scan rows -> typography variables. One variable per property, grouped under
 // the row's name, with the same reuse rule as the Generate flow.
 async function runTextRowVariableAction(msg, rows, names) {
   var result = { created: 0, applied: 0, skipped: 0, reused: 0, reasons: [], unit: 'variable' };
-  var collection = await getTokenCollection(true);
+  var collection = await getTokenCollection(true, 'text');
   if (!collection) throw new Error('Could not open a variable collection in this file.');
   var floatPool = await localVariablesWithValues('FLOAT');
   var stringPool = await localVariablesWithValues('STRING');
@@ -2960,7 +3091,7 @@ async function runTextRowVariableAction(msg, rows, names) {
 // existing variable of the same value is used rather than a second one made.
 async function runRowVariableAction(msg, rows, names) {
   var result = { created: 0, applied: 0, skipped: 0, reused: 0, reasons: [], unit: 'variable' };
-  var collection = await getTokenCollection(true);
+  var collection = await getTokenCollection(true, 'paint');
   if (!collection) throw new Error('Could not open a variable collection in this file.');
   var pool = await localVariablesWithValues('COLOR');
 
@@ -3023,16 +3154,35 @@ async function runRowAction(kind, msg) {
   const rows = (msg.rows || []).map(r => ({ ref: r, row: scan.byKey[r.key] })).filter(x => x.row);
   const result = { created: 0, applied: 0, skipped: 0, reasons: [] };
 
+  const names = rows.map(x => (x.ref.name || '').trim() || x.row.suggested || x.row.name);
+
+  // The dropdown decides, for every row, whatever it matched. This check used
+  // to sit BELOW the apply branch, so "apply" rows always applied a style no
+  // matter what the user had selected.
   if (msg.action === 'apply') {
-    for (const x of rows) {
-      const style = await figma.getStyleByIdAsync(x.row.styleId);
-      if (!style) { result.skipped += x.row.uses.length; continue; }
-      await applyStyleToUses(kind, style, x.row.uses, result);
+    const index = await buildTokenIndex(kind);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i].row;
+      const key = kind === 'paint'
+        ? colorKey(String(row.hex).toUpperCase(), row.opacity)
+        : textSpecKey(row.spec || row.styleSpec);
+      const found = resolveToken(index, key);
+      const plan = plannedAction(found.state, msg.target);
+
+      if (plan === 'apply-style') {
+        const style = found.style || await figma.getStyleByIdAsync(row.styleId);
+        if (!style) { result.skipped += row.uses.length; continue; }
+        await applyStyleToUses(kind, style, row.uses, result);
+      } else if (plan === 'bind-variable') {
+        await bindExistingToUses(kind, found, row, result);
+      } else {
+        // 'variable-from-style' / 'style-from-variable' / create — the row
+        // matched something of the other type, so make the counterpart first.
+        await createCounterpartAndApply(kind, found, row, names[i], msg, result);
+      }
     }
     return result;
   }
-
-  const names = rows.map(x => (x.ref.name || '').trim() || x.row.suggested || x.row.name);
 
   // "Create & Apply" can produce variables instead of styles. Variables carry
   // no style-name conflict, so that prompt is skipped.
@@ -3142,6 +3292,133 @@ async function createStylesFromList(kind, msg) {
 }
 
 
+// ── The token resolver ──────────────────────────────────────────────────────
+// One index of everything this file already defines, keyed by VALUE, so the
+// scan, Create & Apply, Generate and Merge all agree on what exists and what
+// should happen next. Replaces the style-only lookups the scans used to build.
+//
+// State is one of:
+//   'none'           nothing holds this value
+//   'style'          only a style
+//   'variable'       only a variable
+//   'both-unlinked'  both exist, independently  -> a duplicate, offer Merge
+//   'both-linked'    both exist, style bound to the variable
+async function buildTokenIndex(kind) {
+  var index = new Map();
+  var put = function (key, patch) {
+    var e = index.get(key);
+    if (!e) { e = { style: null, variable: null, bound: false, boundVariableId: null, boundFields: 0 }; index.set(key, e); }
+    // Only fill a slot that is still empty, so the first style/variable found
+    // for a value wins. `undefined` counts as empty — without it a key the
+    // patch introduces for the first time would never be written.
+    for (var k in patch) {
+      if (e[k] === null || e[k] === false || e[k] === undefined || e[k] === 0) e[k] = patch[k];
+    }
+    return e;
+  };
+
+  if (kind === 'paint') {
+    var styles = await figma.getLocalPaintStylesAsync();
+    for (var i = 0; i < styles.length; i++) {
+      var st = styles[i];
+      if (st.remote) continue;
+      var sv = solidOfStyle(st);
+      if (!sv) continue;
+      var paint = st.paints[0];
+      var boundId = paint && paint.boundVariables && paint.boundVariables.color
+        ? paint.boundVariables.color.id : null;
+      put(colorKey(sv.hex, sv.opacity), { style: st, boundVariableId: boundId });
+    }
+    var vars = await localVariablesWithValues('COLOR');
+    for (var j = 0; j < vars.length; j++) {
+      var val = vars[j].value;
+      if (!val || typeof val.r !== 'number') continue;
+      var a = typeof val.a === 'number' ? val.a : 1;
+      put(colorKey(rgbToHexStr(val), a), { variable: vars[j].variable });
+    }
+  } else {
+    var tstyles = await figma.getLocalTextStylesAsync();
+    for (var t = 0; t < tstyles.length; t++) {
+      var ts = tstyles[t];
+      if (ts.remote) continue;
+      put(textSpecKey(textSpecOfStyle(ts)), {
+        style: ts,
+        boundFields: boundTextVariableIds(ts).length
+      });
+    }
+    // A text "variable" is the 5-property group; it exists for a spec when
+    // every property that spec defines has a matching variable.
+    var floatPool = await localVariablesWithValues('FLOAT');
+    var stringPool = await localVariablesWithValues('STRING');
+    index.forEach(function (entry, key) {
+      if (!entry.style) return;
+      var group = matchTextVariableGroup(textSpecOfStyle(entry.style), entry.style.name, floatPool, stringPool);
+      if (group) entry.variable = group;
+    });
+  }
+
+  // Resolve the linked/unlinked distinction.
+  index.forEach(function (e) {
+    if (kind === 'paint') {
+      e.bound = !!(e.boundVariableId && e.variable && e.boundVariableId === e.variable.id);
+      if (e.boundVariableId && !e.variable) e.bound = true;   // bound to something we did not index
+    } else {
+      e.bound = !!(e.boundFields && e.variable);
+    }
+    e.state = !e.style && !e.variable ? 'none'
+            : e.style && !e.variable ? 'style'
+            : !e.style && e.variable ? 'variable'
+            : e.bound ? 'both-linked' : 'both-unlinked';
+  });
+  return index;
+}
+
+function resolveToken(index, key) {
+  return index.get(key) || { style: null, variable: null, bound: false, state: 'none' };
+}
+
+// The whole decision table, in one place, so the sandbox's behaviour and the
+// UI's button label are computed from the same function and cannot drift.
+function plannedAction(state, target) {
+  var toVar = target === 'variables';
+  switch (state) {
+    case 'style':         return toVar ? 'variable-from-style' : 'apply-style';
+    case 'variable':      return toVar ? 'bind-variable' : 'style-from-variable';
+    case 'both-unlinked': return toVar ? 'bind-variable' : 'apply-style';
+    case 'both-linked':   return toVar ? 'bind-variable' : 'apply-style';
+    default:              return toVar ? 'create-variable' : 'create-style';
+  }
+}
+
+// Labels the UI shows; kept beside the table they describe.
+var ACTION_LABELS = {
+  'create-style': 'Create & Apply',
+  'create-variable': 'Create & Apply',
+  'apply-style': 'Apply Style',
+  'bind-variable': 'Apply Variable',
+  'variable-from-style': 'Create Variable from Style',
+  'style-from-variable': 'Create Style from Variable'
+};
+
+// The 5-property variable group for a text spec, or null when incomplete.
+function matchTextVariableGroup(spec, styleName, floatPool, stringPool) {
+  var src = {
+    family: spec.family, style: spec.style, size: spec.fontSize,
+    lh: lineHeightNumber(spec.lineHeight), ls: letterSpacingNumber(spec.letterSpacing)
+  };
+  var out = [], wanted = 0;
+  for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) {
+    var def = TEXT_VAR_FIELDS[f];
+    var value = src[def.prop];
+    if (value === null || value === undefined) continue;
+    wanted++;
+    var pool = def.type === 'STRING' ? stringPool : floatPool;
+    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, styleName + '/' + def.field);
+    if (hit) out.push({ field: def.field, variable: hit });
+  }
+  return (wanted && out.length === wanted) ? out : null;
+}
+
 // ── Variables: creation and reuse ───────────────────────────────────────────
 // Figma has no "text style variable": typography tokens are a GROUP of
 // per-property variables (STRING for the font family/style, FLOAT for the
@@ -3156,11 +3433,39 @@ var TEXT_VAR_FIELDS = [
   { field: 'letterSpacing', prop: 'ls',     type: 'FLOAT',  scope: 'LETTER_SPACING' }
 ];
 
-async function getTokenCollection(create) {
+// The collection new variables belong in: whichever local collection already
+// holds the most variables of this kind, else one named "Design Tokens", else
+// a new one. A file with its own colour or type collection keeps using it.
+async function getTokenCollection(create, kind) {
   var cols = await figma.variables.getLocalVariableCollectionsAsync();
-  for (var i = 0; i < cols.length; i++) if (cols[i].name === TOKEN_COLLECTION) return cols[i];
-  if (!create) return cols.length ? cols[0] : null;
-  return figma.variables.createVariableCollection(TOKEN_COLLECTION);
+  if (!cols.length) return create ? figma.variables.createVariableCollection(TOKEN_COLLECTION) : null;
+
+  var wantTypes = kind === 'text' ? ['FLOAT', 'STRING'] : ['COLOR'];
+  var scopes = {};
+  for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) scopes[TEXT_VAR_FIELDS[f].scope] = true;
+
+  var counts = {};
+  for (var t = 0; t < wantTypes.length; t++) {
+    var vars = await figma.variables.getLocalVariablesAsync(wantTypes[t]);
+    for (var i = 0; i < vars.length; i++) {
+      var v = vars[i];
+      if (v.remote) continue;
+      // For typography only count variables actually scoped to a type property,
+      // so a spacing collection full of FLOATs isn't mistaken for a type one.
+      if (kind === 'text' && !(v.scopes || []).some(function (sc) { return scopes[sc]; })) continue;
+      counts[v.variableCollectionId] = (counts[v.variableCollectionId] || 0) + 1;
+    }
+  }
+
+  var best = null, bestN = 0;
+  for (var c = 0; c < cols.length; c++) {
+    var n = counts[cols[c].id] || 0;
+    if (n > bestN) { bestN = n; best = cols[c]; }
+  }
+  if (best) return best;
+
+  for (var k = 0; k < cols.length; k++) if (cols[k].name === TOKEN_COLLECTION) return cols[k];
+  return create ? figma.variables.createVariableCollection(TOKEN_COLLECTION) : null;
 }
 
 function modeOf(collection) {
@@ -3262,7 +3567,7 @@ function findTextVariable(pool, spec, wantName) {
 async function createVariablesFromList(kind, msg) {
   var items = msg.items || [];
   var result = { created: 0, applied: 0, skipped: 0, reused: 0, fromStyles: 0, reasons: [], unit: 'variable' };
-  var collection = await getTokenCollection(true);
+  var collection = await getTokenCollection(true, kind);
   if (!collection) throw new Error('Could not open a variable collection in this file.');
 
   if (kind === 'paint') {
@@ -3280,10 +3585,11 @@ async function createVariablesFromList(kind, msg) {
         // A local style already carries this value — reuse its name so the
         // variable and the style stay recognisably the same token.
         var name = item.name;
+        var sourceStyle = null;
         for (var si = 0; si < styles.length; si++) {
           var sv = solidOfStyle(styles[si]);
           if (sv && sv.hex === String(item.hex).toUpperCase() && Math.abs(sv.opacity - rgba.a) < 0.004) {
-            name = styles[si].name; result.fromStyles++; break;
+            name = styles[si].name; sourceStyle = styles[si]; result.fromStyles++; break;
           }
         }
 
@@ -3291,6 +3597,11 @@ async function createVariablesFromList(kind, msg) {
         await setVarValue(v, collection, rgba);
         pool.push({ variable: v, value: rgba });
         result.created++;
+        // The style this value came from must point at the new variable,
+        // otherwise we have just created the duplicate we set out to avoid.
+        if (sourceStyle && bindPaintStyleToExactVariable(sourceStyle, v)) {
+          result.linked = (result.linked || 0) + 1;
+        }
       } catch (e) {
         result.skipped++;
         pushReason(result, item.name + ': ' + (e && e.message ? e.message : 'could not create variable'));
@@ -3360,8 +3671,16 @@ function letterSpacingNumber(ls) {
 async function bindPaintStyleToVariable(style, pool, hex, opacity) {
   var v = findColorVariable(pool, hex, opacity);
   if (!v) return false;
+  return bindPaintStyleToExactVariable(style, v);
+}
+
+// Figma overwrites paint.opacity with the variable's alpha on write, so the
+// variable owns the opacity and the paint becomes a pure reference. Setting
+// opacity to 1 here only keeps our in-memory paint honest.
+function bindPaintStyleToExactVariable(style, variable) {
   try {
-    var bound = figma.variables.setBoundVariableForPaint(style.paints[0], 'color', v);
+    var base = Object.assign({}, style.paints[0], { opacity: 1 });
+    var bound = figma.variables.setBoundVariableForPaint(base, 'color', variable);
     style.paints = [bound];
     return true;
   } catch (e) { return false; }
@@ -3540,14 +3859,42 @@ async function relinkStylesInFile(kind, keepId, removeIds, result) {
   }
 }
 
+// Near-duplicate groups can now contain variables as well as styles, so a
+// member's kind decides what merging it means:
+//   style  into style     relink every layer in the file, then delete it
+//   style  into variable  bind the style to the variable (nothing deleted)
+//   variable into either  left alone — deleting a variable that other files or
+//                         pages may use is not what a near-duplicate merge is
 async function mergeStyles(kind, groups) {
   const result = { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0 };
   await figma.loadAllPagesAsync();
   for (const g of groups) {
+    const members = g.members || (g.removeIds || []).map(id => ({ id: id, kind: 'style' }));
+    const keepKind = g.keepKind || 'style';
+
+    if (keepKind === 'variable') {
+      const variable = await figma.variables.getVariableByIdAsync(g.keepId);
+      if (!variable) { pushReason(result, 'The variable to keep no longer exists.'); continue; }
+      for (const m of members) {
+        if (m.kind !== 'style') { result.skipped++; pushReason(result, 'Variables are not deleted by merge — remove them in Figma\'s variable panel.'); continue; }
+        const st = await figma.getStyleByIdAsync(m.id);
+        if (!st || st.remote) { result.skipped++; continue; }
+        if (bindPaintStyleToExactVariable(st, variable)) result.linked = (result.linked || 0) + 1;
+        else { result.skipped++; pushReason(result, 'Figma rejected binding “' + st.name + '” to the variable.'); }
+      }
+      continue;
+    }
+
     const keep = await figma.getStyleByIdAsync(g.keepId);
     if (!keep) { pushReason(result, 'Style to keep no longer exists.'); continue; }
-    await relinkStylesInFile(kind, g.keepId, g.removeIds, result);
-    for (const id of g.removeIds) {
+    const styleIds = members.filter(m => m.kind === 'style').map(m => m.id);
+    const variableCount = members.length - styleIds.length;
+    if (variableCount) {
+      result.skipped += variableCount;
+      pushReason(result, 'Variables are not deleted by merge — remove them in Figma\'s variable panel.');
+    }
+    await relinkStylesInFile(kind, g.keepId, styleIds, result);
+    for (const id of styleIds) {
       const s = await figma.getStyleByIdAsync(id);
       if (s && !s.remote) {
         try { s.remove(); result.removed++; } catch (e) { pushReason(result, e && e.message ? e.message : 'Remove failed.'); }
@@ -3566,6 +3913,7 @@ function describeResult(label, r) {
   if (r.bound) parts.push(r.bound + ' bound to variables');
   if (r.removed) parts.push(r.removed + ' ' + noun + (r.removed !== 1 ? 's' : '') + ' removed');
   if (r.merged) parts.push(r.merged + ' style' + (r.merged !== 1 ? 's' : '') + ' now linked to its variable');
+  if (r.linked) parts.push(r.linked + ' existing style' + (r.linked !== 1 ? 's' : '') + ' linked to the new variable');
   if (r.applied) parts.push(r.applied + ' layer' + (r.applied !== 1 ? 's' : '') + ' updated');
   if (r.skipped) parts.push(r.skipped + ' skipped');
   if (r.overrides) parts.push(r.overrides + ' as instance override' + (r.overrides !== 1 ? 's' : ''));

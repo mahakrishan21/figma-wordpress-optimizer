@@ -4,7 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
-- Nothing yet.
+### Fixed
+- **The Create Styles / Variables dropdown was ignored once a file already held tokens.** Scan a frame whose colours already exist as styles and every row offered only *Apply Style*, with no way to produce a variable — and the file ended up with styles and variables duplicating each other. Six causes, all fixed:
+  - The scans matched unlinked values **against local styles only**; local variables were never a match source. Both scans now resolve against a single `buildTokenIndex()` covering styles *and* variables
+  - The apply path **returned before the dropdown was ever read**, so sending a target would not have helped. The target check now runs first, for every row
+  - Creating a variable from a style's value copied its **name but never linked the style to it** — manufacturing the duplicate the feature exists to prevent. The source style is now bound to the new variable
+  - New variables always went to a "Design Tokens" collection. They now go to whichever local collection already holds the most variables of that kind, so a file with its own colour or type collection keeps using it
+  - Near-duplicate detection (ΔE < 3) covered styles only. Variables take part now, including style↔variable near matches
+- **Opacity of variable-bound paints was reported squared.** Measured in Figma: binding a COLOR variable **overwrites** `paint.opacity` with the variable's alpha, so the two are always equal — and the scan multiplied them, reporting a 20% colour as 4%. That wrong value then flowed into the panel, into matching, and into any token made from the row. Effective opacity is now the variable's alpha alone
+  - The canvas was never affected; only the reported number was. Re-scanning corrects it
+  - This misread **any** variable-bound paint, including ones bound by hand
+
+### Changed
+- One decision table (`plannedAction`) now drives the scan, Create & Apply, Generate and Merge, and is mirrored in the UI so a button can never promise something the sandbox won't do. Per row, depending on what exists and what the dropdown says: *Create & Apply*, *Apply Style*, *Apply Variable*, *Create Variable from Style*, or *Create Style from Variable*
+- "Matches Existing Style" is now **"Matches Existing Token"**, its sub-block is "In this file", and the matching column names the style and/or variable found — including whether the two are linked
+- Row and bulk buttons relabel themselves when the dropdown changes, without a re-scan
+- Merging a near-duplicate group that contains a variable binds the style to it rather than deleting anything; variables are never deleted by a merge
+
 
 ## [1.3.0] — 2026-10-16
 
