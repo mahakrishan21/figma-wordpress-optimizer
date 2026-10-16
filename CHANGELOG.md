@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- Nothing yet.
+
+## [1.3.0] — 2026-10-16
+
 ### Changed
 - **Color extraction now returns every distinct color, with no limit.** The Colors box, its 2–24 range, the 12-color default and the old hardcoded 8 are all gone. A 200-swatch image now yields ~200 colors instead of 12
   - The algorithm changed to suit: k-means with a fixed cluster count can't express "all colors", so extraction now counts colors directly (5 bits per channel plus 4 bits of alpha, averaged back to full precision) and merges greedily, most-common first

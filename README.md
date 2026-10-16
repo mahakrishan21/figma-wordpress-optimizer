@@ -5,7 +5,7 @@
 <h1 align="center">Figma WordPress Optimizer — V19</h1>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.2.0-2563eb">
+  <img alt="version" src="https://img.shields.io/badge/version-1.3.0-2563eb">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-16a34a">
   <img alt="figma api" src="https://img.shields.io/badge/Figma%20API-1.0.0-7c3aed">
   <img alt="network" src="https://img.shields.io/badge/network-offline-6b7280">
@@ -59,7 +59,7 @@ The **Colors** and **Typography** tabs cover style management for both kinds of 
 | Field | Value |
 |---|---|
 | Name | Figma WordPress Optimizer |
-| Version | 1.2.0 |
+| Version | 1.3.0 |
 | Figma API | 1.0.0 |
 | Editor type | Figma (design files only) |
 | Document access | dynamic-page |
@@ -725,10 +725,13 @@ Figma loads fonts asynchronously per-document; if the font failed to load at sca
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history.
 
-**Latest: v1.2.0 (V19)**
-- Typography & Colors split into separate **Colors** and **Typography** tabs
-- Scan: create & apply styles for unlinked colors/text, apply matching styles, copy styles from other files, delete and merge styles
-- Generate: color styles from an image or a hand-built palette (with color picker); text styles from a modular type scale
+**Latest: v1.3.0**
+- **Create Styles or Variables** — chosen per tab, on both the Scan and Generate screens, with existing styles and variables reused instead of duplicated
+- Colors and Typography scans list the **variables** from this file, not just the styles
+- A style and a variable holding the same value are reported as duplicates and can be **merged in either direction**
+- **Color extraction rebuilt**: frames are read from their design properties rather than rasterised, images return exact source values with antialiasing and compression artifacts filtered out, and there is no limit on how many colors come back
+- **Text in more than one color** is scanned run by run instead of being skipped
+- Images can be dropped anywhere in the window, pasted with ⌘V, or taken from the selected Figma frame
 
 ---
 
