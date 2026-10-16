@@ -20,6 +20,17 @@ All notable changes to this project are documented in this file.
 - **Toolbar**: the Generate button is now **Generate Palette** (Colors) and **Generate Type Scale** (Typography), and no longer changes with the dropdown — the dropdown already decides what gets made. Order is now `[Generate …] … [Re-Scan] Create [▾] [Convert everything …]`, with Re-Scan still primary
 
 ### Fixed
+- **"Merge colors" did nothing when the pair contained a variable.** The button sent every member as a style id, so a variable resolved to nothing and was silently skipped — the pair survived the re-scan. Merging is now routed by what the group actually holds:
+  - **style + style** — unchanged: re-link every layer in the file, then delete the replaced style
+  - **variable + variable** — new `mergeVariables()`: re-binds every fill and stroke across all pages, including text runs and instance overrides, then re-points styles bound to a replaced variable and any variable that aliased it, then deletes it
+  - **style + variable** — follows the Create dropdown. On **Variables** the layers move to the variable and the style is linked to it; on **Styles** the layers move to the style and the style is bound to the variable so both stay in sync. A variable is **never** deleted automatically
+  - Mixed groups of three or more apply these rules to each member against whichever one you keep
+- **Nothing is deleted while a layer still points at it.** If any layer can't be re-linked — inside an instance from another file, for instance — the token is kept and linked instead, and the result says *"N layers couldn't be re-linked — kept '<name>' linked instead"*. No layer is ever left holding a raw colour
+- The merge dialog now shows each item's **kind** (with the swatch shape) and its **use count across the whole file**, not just the scanned frame, since deleting is a file-wide act. The default keeper follows the Create dropdown — a variable on Variables, a style on Styles
+- An exact style + variable pair was listed **twice**: once under Near-Duplicate Colors and again under "Same value as a variable", each with its own button. They are now one entry with one button
+- **Merge All** appears whenever there is at least one group (it previously needed two)
+
+### Fixed
 - **The Create Styles / Variables dropdown was ignored once a file already held tokens.** Scan a frame whose colours already exist as styles and every row offered only *Apply Style*, with no way to produce a variable — and the file ended up with styles and variables duplicating each other. Six causes, all fixed:
   - The scans matched unlinked values **against local styles only**; local variables were never a match source. Both scans now resolve against a single `buildTokenIndex()` covering styles *and* variables
   - The apply path **returned before the dropdown was ever read**, so sending a target would not have helped. The target check now runs first, for every row

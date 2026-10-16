@@ -3292,6 +3292,240 @@ async function createStylesFromList(kind, msg) {
 }
 
 
+// ── Merging tokens ─────────────────────────────────────────────────────────
+// Every paint on a node, as {prop, index, paint, range?}, including the runs of
+// a text layer whose characters differ. One shape for all the re-binding below.
+function paintSlotsOf(node) {
+  var slots = [];
+  for (var pi = 0; pi < 2; pi++) {
+    var prop = pi === 0 ? 'fills' : 'strokes';
+    if (!(prop in node)) continue;
+    var paints = node[prop];
+    if (node.type === 'TEXT' && prop === 'fills' && paints === figma.mixed) {
+      try {
+        var segs = node.getStyledTextSegments(['fills']);
+        for (var si = 0; si < segs.length; si++) {
+          var f = segs[si].fills;
+          if (Array.isArray(f)) for (var j = 0; j < f.length; j++) {
+            slots.push({ prop: prop, index: j, paint: f[j], range: { start: segs[si].start, end: segs[si].end } });
+          }
+        }
+      } catch (e) {}
+      continue;
+    }
+    if (paints === figma.mixed || !Array.isArray(paints)) continue;
+    for (var k = 0; k < paints.length; k++) slots.push({ prop: prop, index: k, paint: paints[k] });
+  }
+  return slots;
+}
+
+function paintBoundTo(paint, variableId) {
+  return !!(paint && paint.boundVariables && paint.boundVariables.color && paint.boundVariables.color.id === variableId);
+}
+
+// How many layers in the WHOLE file use a token. The merge dialog shows this,
+// because deleting is a file-wide act and the frame's count understates it.
+async function countTokenUsesInFile(kind, id) {
+  await figma.loadAllPagesAsync();
+  var n = 0;
+  var pages = figma.root.children;
+  for (var p = 0; p < pages.length; p++) {
+    var nodes = pages[p].findAll(function () { return true; });
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (kind === 'style') {
+        if (node.fillStyleId === id || node.strokeStyleId === id || node.textStyleId === id) n++;
+        continue;
+      }
+      var slots = paintSlotsOf(node);
+      for (var s2 = 0; s2 < slots.length; s2++) {
+        if (paintBoundTo(slots[s2].paint, id)) { n++; break; }
+      }
+    }
+  }
+  return n;
+}
+
+// Re-bind every paint in the file that points at one of `removeIds` so it
+// points at `keep` instead. Returns how many could not be re-bound.
+async function rebindVariableEverywhere(keep, removeIds, result) {
+  await figma.loadAllPagesAsync();
+  var failed = 0;
+  var pages = figma.root.children;
+  for (var p = 0; p < pages.length; p++) {
+    var nodes = pages[p].findAll(function () { return true; });
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var slots = paintSlotsOf(node);
+      for (var s2 = 0; s2 < slots.length; s2++) {
+        var slot = slots[s2];
+        var hit = false;
+        for (var r = 0; r < removeIds.length; r++) if (paintBoundTo(slot.paint, removeIds[r])) { hit = true; break; }
+        if (!hit) continue;
+        try {
+          if (slot.range) {
+            await loadTextNodeFonts(node);
+            var runFills = node.getRangeFills(slot.range.start, slot.range.end).slice();
+            runFills[slot.index] = figma.variables.setBoundVariableForPaint(
+              Object.assign({}, runFills[slot.index], { opacity: 1 }), 'color', keep);
+            node.setRangeFills(slot.range.start, slot.range.end, runFills);
+          } else {
+            var arr = node[slot.prop].slice();
+            arr[slot.index] = figma.variables.setBoundVariableForPaint(
+              Object.assign({}, arr[slot.index], { opacity: 1 }), 'color', keep);
+            node[slot.prop] = arr;
+          }
+          result.applied++;
+        } catch (e) {
+          failed++;
+          pushReason(result, 'Could not re-link “' + node.name + '” — it may be inside an instance from another file.');
+        }
+      }
+    }
+  }
+
+  // Styles whose paint points at a removed variable follow it to the keeper.
+  var styles = await figma.getLocalPaintStylesAsync();
+  for (var si = 0; si < styles.length; si++) {
+    var st = styles[si];
+    if (st.remote || !st.paints.length) continue;
+    var bound = false;
+    for (var rr = 0; rr < removeIds.length; rr++) if (paintBoundTo(st.paints[0], removeIds[rr])) { bound = true; break; }
+    if (bound && bindPaintStyleToExactVariable(st, keep)) result.linked = (result.linked || 0) + 1;
+  }
+
+  // And variables that alias a removed one.
+  var allVars = await figma.variables.getLocalVariablesAsync('COLOR');
+  for (var vi = 0; vi < allVars.length; vi++) {
+    var v = allVars[vi];
+    if (v.remote || v.id === keep.id) continue;
+    var col = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
+    var modes = col ? col.modes : [];
+    for (var mi = 0; mi < modes.length; mi++) {
+      var val = v.valuesByMode[modes[mi].modeId];
+      if (val && val.type === 'VARIABLE_ALIAS' && removeIds.indexOf(val.id) !== -1) {
+        try { v.setValueForMode(modes[mi].modeId, figma.variables.createVariableAlias(keep)); } catch (e) {}
+      }
+    }
+  }
+  return failed;
+}
+
+// variable + variable
+async function mergeVariables(keepId, removeIds, result) {
+  var keep = await figma.variables.getVariableByIdAsync(keepId);
+  if (!keep) { pushReason(result, 'The variable to keep no longer exists.'); return; }
+  var failed = await rebindVariableEverywhere(keep, removeIds, result);
+  for (var i = 0; i < removeIds.length; i++) {
+    var v = await figma.variables.getVariableByIdAsync(removeIds[i]);
+    if (!v || v.remote) continue;
+    if (failed) {
+      // Something still points at it — keeping it is safer than orphaning a layer.
+      pushReason(result, plural(failed, 'layer') + ' couldn\'t be re-linked — kept “' + v.name + '” instead of deleting it.');
+      result.skipped += failed;
+      continue;
+    }
+    try { v.remove(); result.removed = (result.removed || 0) + 1; } catch (e) {
+      pushReason(result, 'Could not delete “' + v.name + '”.');
+    }
+  }
+}
+
+// style + variable, routed by the Create dropdown.
+async function mergeStyleAndVariable(styleId, variableId, target, removeUnused, result) {
+  var style = await figma.getStyleByIdAsync(styleId);
+  var variable = await figma.variables.getVariableByIdAsync(variableId);
+  if (!style || !variable) { pushReason(result, 'That pair is no longer available.'); return; }
+
+  if (target === 'variables') {
+    // Layers on the style move to the variable; the style is linked to it.
+    var uses = await layersUsingStyle(styleId);
+    var failed = 0;
+    for (var i = 0; i < uses.length; i++) {
+      var before = result.skipped;
+      await applyVariableToUses(variable, [uses[i]], result);
+      if (result.skipped > before) failed++;
+    }
+    if (bindPaintStyleToExactVariable(style, variable)) result.linked = (result.linked || 0) + 1;
+    if (removeUnused && !failed) {
+      var stillUsed = await styleUsedAnywhere(styleId);
+      if (!stillUsed) { try { style.remove(); result.removed = (result.removed || 0) + 1; } catch (e) {} }
+      else pushReason(result, '“' + style.name + '” is still used elsewhere, so it was kept and linked.');
+    } else if (failed) {
+      pushReason(result, plural(failed, 'layer') + ' couldn\'t be re-linked — kept “' + style.name + '” linked instead.');
+    }
+    return;
+  }
+
+  // Styles mode: layers on the variable move to the style, and the style is
+  // bound to the variable so the two stay in sync. The variable is never
+  // deleted automatically.
+  var varUses = await layersUsingVariable(variableId);
+  await applyStyleToUses('paint', style, varUses, result);
+  if (bindPaintStyleToExactVariable(style, variable)) result.linked = (result.linked || 0) + 1;
+}
+
+async function layersUsingStyle(styleId) {
+  await figma.loadAllPagesAsync();
+  var out = [];
+  var pages = figma.root.children;
+  for (var p = 0; p < pages.length; p++) {
+    var nodes = pages[p].findAll(function (n) { return n.fillStyleId === styleId || n.strokeStyleId === styleId; });
+    for (var i = 0; i < nodes.length; i++) {
+      out.push(useRef(nodes[i], nodes[i].strokeStyleId === styleId ? 'strokes' : 'fills'));
+    }
+  }
+  return out;
+}
+
+async function layersUsingVariable(variableId) {
+  await figma.loadAllPagesAsync();
+  var out = [];
+  var pages = figma.root.children;
+  for (var p = 0; p < pages.length; p++) {
+    var nodes = pages[p].findAll(function () { return true; });
+    for (var i = 0; i < nodes.length; i++) {
+      var slots = paintSlotsOf(nodes[i]);
+      for (var s2 = 0; s2 < slots.length; s2++) {
+        if (!paintBoundTo(slots[s2].paint, variableId)) continue;
+        out.push(useRef(nodes[i], slots[s2].prop, false, null, slots[s2].range));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// The one entry point: route each group by what it actually contains.
+async function mergeTokens(kind, groups, msg) {
+  var result = { created: 0, applied: 0, skipped: 0, removed: 0, linked: 0, reasons: [] };
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g];
+    var members = grp.members || [];
+    var keepKind = grp.keepKind || 'style';
+    var others = members.filter(function (m) { return m.id !== grp.keepId; });
+
+    for (var i = 0; i < others.length; i++) {
+      var other = others[i];
+      try {
+        if (keepKind === 'style' && other.kind === 'style') {
+          await mergeStyles(kind, [{ keepId: grp.keepId, keepKind: 'style', members: [other] }], result);
+        } else if (keepKind === 'variable' && other.kind === 'variable') {
+          await mergeVariables(grp.keepId, [other.id], result);
+        } else if (keepKind === 'variable') {
+          await mergeStyleAndVariable(other.id, grp.keepId, 'variables', msg.removeUnused === true, result);
+        } else {
+          await mergeStyleAndVariable(grp.keepId, other.id, 'styles', false, result);
+        }
+      } catch (e) {
+        result.skipped++;
+        pushReason(result, e && e.message ? e.message : 'Merge failed.');
+      }
+    }
+  }
+  return result;
+}
+
 // ── Convert: turn styles into variables, or variables into styles ──────────
 // Everything a conversion needs to know before it runs, so the dialog can show
 // the user what will happen. Nothing is written during the dry run.
@@ -4047,8 +4281,8 @@ async function relinkStylesInFile(kind, keepId, removeIds, result) {
 //   style  into variable  bind the style to the variable (nothing deleted)
 //   variable into either  left alone — deleting a variable that other files or
 //                         pages may use is not what a near-duplicate merge is
-async function mergeStyles(kind, groups) {
-  const result = { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0 };
+async function mergeStyles(kind, groups, into) {
+  const result = into || { created: 0, applied: 0, skipped: 0, reasons: [], removed: 0 };
   await figma.loadAllPagesAsync();
   for (const g of groups) {
     const members = g.members || (g.removeIds || []).map(id => ({ id: id, kind: 'style' }));
@@ -4143,7 +4377,7 @@ async function handleStyleMessage(msg) {
         ? await createVariablesFromList(kind, msg)
         : await createStylesFromList(kind, msg);
     }
-    else if (msg.type === 'style-merge') result = await mergeStyles(kind, msg.groups || []);
+    else if (msg.type === 'style-merge') result = await mergeTokens(kind, msg.groups || [], msg);
     else if (msg.type === 'convert') {
       result = await runConversion(kind, msg);
     }
@@ -4418,6 +4652,15 @@ figma.ui.onmessage = async (msg) => {
     }
     if (msg.type === 'style-scan' || msg.type === 'style-rows' || msg.type === 'style-create' || msg.type === 'style-merge' || msg.type === 'style-delete' || msg.type === 'variable-delete' || msg.type === 'merge-style-variable' || msg.type === 'convert') {
       await handleStyleMessage(msg);
+      return;
+    }
+    if (msg.type === 'count-token-uses') {
+      const counts = {};
+      for (const item of (msg.items || [])) {
+        try { counts[item.id] = await countTokenUsesInFile(item.kind, item.id); }
+        catch (e) { counts[item.id] = null; }
+      }
+      figma.ui.postMessage({ type: 'token-use-counts', requestId: msg.requestId, counts: counts });
       return;
     }
     if (msg.type === 'list-fonts') {

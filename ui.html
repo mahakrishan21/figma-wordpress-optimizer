@@ -2663,6 +2663,7 @@
         // one thing (the convert dialog asks for scope AND what to keep).
         const groups = {};
         ov.querySelectorAll('input[type=radio][name]:checked').forEach(r => { groups[r.name] = r.value; });
+        ov.querySelectorAll('input[type=checkbox][name]').forEach(c => { if (c.checked) groups[c.name] = c.value; });
         ov.remove();
         document.removeEventListener('keydown', onKey, true);
         resolve(Object.assign({ value: val, picked: picked ? picked.value : null }, groups));
@@ -2744,6 +2745,11 @@
     if (msg.type === 'selection-image-error') {
       setScopeBusy(CS, false);
       showToast(msg.message || 'Could not export that selection.', 'error');
+      return true;
+    }
+    if (msg.type === 'token-use-counts') {
+      const resolve = pendingCounts[msg.requestId];
+      if (resolve) { delete pendingCounts[msg.requestId]; resolve(msg.counts || {}); }
       return true;
     }
     if (msg.type === 'fonts-list') {
@@ -3094,7 +3100,6 @@
             actions: d.matchRemote.length ? `<button class="btn btn-sm btn-primary" data-act="c-copy-all">Create &amp; Apply All</button>` : '', body: remoteBody })
       });
     const variants = d.opacityVariants || [];
-    const svDupes = d.styleVarDupes || [];
     const dupesBody = (d.nearDupes.length
       ? d.nearDupes.map((g, i) => `<div class="sm-dupe-row">
           ${dupeItemColor(g[0])}<span class="sm-dupe-eq">≈</span>
@@ -3134,9 +3139,9 @@
       blockHtml(CS, { id: 'unlinked', tone: 'red', title: 'Unlinked Colors', sub: 'Fills and strokes without a Color Style', count: unlinkedCount, countTone: 'issue',
         body: unlinkedBody + instNote }) +
       (manual.length ? blockHtml(CS, { id: 'manual', tone: 'amber', title: 'Needs manual fix', sub: 'Layers with several fills or strokes', count: manual.length, countTone: 'issue', body: manualBody }) : '') +
-      blockHtml(CS, { id: 'dupes', tone: 'amber', title: 'Near-Duplicate Colors', sub: 'Same opacity, nearly identical color', count: d.nearDupes.length + svDupes.length, countTone: 'issue',
-        actions: d.nearDupes.length > 1 ? `<button class="btn btn-sm btn-primary" data-act="c-merge-all">Merge All</button>` : '',
-        body: dupesBody + (svDupes.length ? `<div class="sm-divider-lbl"><span>Same value as a variable</span><span>${svDupes.length}</span></div>` + styleVarDupeBody(CS, svDupes, svPreviewColor) : '') }) + '</div>';
+      blockHtml(CS, { id: 'dupes', tone: 'amber', title: 'Near-Duplicate Colors', sub: 'Styles and variables holding the same or nearly the same color', count: d.nearDupes.length, countTone: 'issue',
+        actions: d.nearDupes.length ? `<button class="btn btn-sm btn-primary" data-act="c-merge-all">Merge All</button>` : '',
+        body: dupesBody }) + '</div>';
   }
 
   // Rows for a style and a variable that hold the same value. Merging links
@@ -3983,30 +3988,69 @@
     if (res.value) sendStyle(S, { type: 'style-delete', styleId: row.styleId, label: 'Delete style' });
   }
 
+  // The Create dropdown decides which kind is kept by default: on Variables a
+  // variable wins, on Styles a style. Within a kind, the most-used wins.
+  function defaultKeeper(S, group) {
+    const want = S.target === 'variables' ? 'variable' : 'style';
+    const preferred = group.filter(g => (g.kind || 'style') === want);
+    const pool = preferred.length ? preferred : group;
+    return pool.slice().sort((a, b) => (b.fileUses != null ? b.fileUses : b.uses) - (a.fileUses != null ? a.fileUses : a.uses))[0];
+  }
+  function groupPayload(S, group, keepId, removeUnused) {
+    const keep = group.filter(g => g.id === keepId)[0] || group[0];
+    return {
+      keepId: keep.id, keepKind: keep.kind || 'style',
+      members: group.map(g => ({ id: g.id, kind: g.kind || 'style', name: g.name })),
+      removeIds: group.filter(g => g.id !== keep.id).map(g => g.id)   // older sandboxes
+    };
+  }
+
+  // Ask the sandbox how often each token is used across the whole FILE —
+  // deleting is file-wide, so the frame's count would understate it.
+  function fileUseCounts(group) {
+    return new Promise(resolve => {
+      const id = 'uc' + (++styleReqSeq);
+      pendingCounts[id] = resolve;
+      parent.postMessage({ pluginMessage: { type: 'count-token-uses', requestId: id,
+        items: group.map(g => ({ id: g.id, kind: g.kind || 'style' })) } }, '*');
+      setTimeout(() => { if (pendingCounts[id]) { delete pendingCounts[id]; resolve(null); } }, 4000);
+    });
+  }
+  const pendingCounts = {};
+
   async function confirmMerge(S, group, itemHtml) {
-    if (!group) return;
-    const keeper = group.slice().sort((a, b) => b.uses - a.uses)[0];
+    if (!group || !group.length) return;
+    const counts = await fileUseCounts(group);
+    if (counts) group.forEach(g => { if (counts[g.id] != null) g.fileUses = counts[g.id]; });
+    const keeper = defaultKeeper(S, group);
+    const mixed = group.some(g => (g.kind || 'style') !== (group[0].kind || 'style'));
+
     const res = await smDialog({
-      title: 'Merge ' + group.length + ' styles',
-      body: `Choose the style to keep. Every layer in the file using the others is re-linked to it, then the others are deleted.
-        ${group.map(g => `<label><input type="radio" name="keep" value="${escHtml(g.id)}" ${g.id === keeper.id ? 'checked' : ''}>${itemHtml(g)}<span class="sm-meta" style="margin-left:auto">${g.uses}× here</span></label>`).join('')}`,
+      title: 'Merge ' + plural(group.length, 'token'),
+      body: `Choose which one to keep. Everything in the file using the others is re-linked to it.
+        ${group.map(g => `<label><input type="radio" name="keep" value="${escHtml(g.id)}" ${g.id === keeper.id ? 'checked' : ''}>${itemHtml(g)}
+          <span class="sm-meta" style="margin-left:auto;text-align:right">${g.fileUses != null ? plural(g.fileUses, 'use') + ' in file' : g.uses + '× here'}</span></label>`).join('')}
+        ${mixed ? `<div class="sm-meta" style="margin-top:8px">A style and a variable can't become one token — the style is linked to the variable so a single value drives both.</div>` : ''}
+        <div style="margin-top:10px"><label><input type="checkbox" name="rm" value="1"> Remove a replaced <strong>style</strong> when nothing in the file still uses it</label></div>
+        <div class="sm-meta" style="margin-top:8px">Variables are never deleted automatically. One ⌘Z undoes the merge.</div>`,
       buttons: [{ label: 'Cancel', value: null }, { label: 'Merge', value: 'merge', primary: true }]
     });
     if (!res.value || !res.picked) return;
-    sendStyle(S, { type: 'style-merge', label: 'Merge styles', groups: [{ keepId: res.picked, removeIds: group.filter(g => g.id !== res.picked).map(g => g.id) }] });
+    sendStyle(S, { type: 'style-merge', label: 'Merge tokens', removeUnused: res.rm === '1',
+      groups: [groupPayload(S, group, res.picked)] });
   }
 
   async function confirmMergeAll(S, groups) {
     const res = await smDialog({
       title: 'Merge all ' + plural(groups.length, 'group'),
-      body: 'In each group the most-used style is kept. Every layer in the file using the others is re-linked to it, then the others are deleted.',
+      body: `In each group the ${S.target === 'variables' ? 'variable' : 'style'} used most across the file is kept, and everything using the others is re-linked to it.
+        <div class="sm-meta" style="margin-top:8px">A style paired with a variable is linked to it rather than replaced. Variables are never deleted automatically.</div>
+        <div style="margin-top:10px"><label><input type="checkbox" name="rm" value="1"> Remove a replaced <strong>style</strong> when nothing in the file still uses it</label></div>`,
       buttons: [{ label: 'Cancel', value: null }, { label: 'Merge All', value: 'merge', primary: true }]
     });
     if (!res.value) return;
-    sendStyle(S, { type: 'style-merge', label: 'Merge styles', groups: groups.map(g => {
-      const keep = g.slice().sort((a, b) => b.uses - a.uses)[0];
-      return { keepId: keep.id, removeIds: g.filter(x => x.id !== keep.id).map(x => x.id) };
-    }) });
+    sendStyle(S, { type: 'style-merge', label: 'Merge tokens', removeUnused: res.rm === '1',
+      groups: groups.map(g => groupPayload(S, g, defaultKeeper(S, g).id)) });
   }
 
   // ════════════════════════════════════════════════════════════════════════
