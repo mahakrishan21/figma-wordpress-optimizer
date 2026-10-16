@@ -2319,6 +2319,46 @@ function textSpecOfNode(node) {
   };
 }
 
+// The common leading words of a set of variable names, so "Caption Font Size"
+// and "Caption Line Height" (or the older "Caption/fontSize") both give
+// "Caption". Returns '' when they share nothing.
+function sharedTokenPrefix(names) {
+  if (!names || !names.length) return '';
+  // One variable: its own name, minus the property suffix, is the group name.
+  // (The prefix loop below would consume the whole name and keep the suffix.)
+  if (names.length === 1) {
+    var only = String(names[0]).replace(/\/[^\/]+$/, '');
+    for (var key in TEXT_FIELD_LABEL) {
+      var suffix = ' ' + TEXT_FIELD_LABEL[key];
+      if (only.length > suffix.length && only.slice(-suffix.length) === suffix) {
+        return only.slice(0, only.length - suffix.length);
+      }
+    }
+    return only;
+  }
+  var parts = names.map(function (n) {
+    return String(n).replace(/\/[^\/]+$/, '').split(/[\s\/]+/).filter(Boolean);
+  });
+  var out = [];
+  for (var i = 0; i < parts[0].length; i++) {
+    var word = parts[0][i], same = true;
+    for (var j = 1; j < parts.length; j++) if (parts[j][i] !== word) { same = false; break; }
+    if (!same) break;
+    out.push(word);
+  }
+  return out.join(' ').trim();
+}
+
+// Flat variable names: "Caption Font Size" rather than "Caption/fontSize",
+// which Figma renders as a folder per text style.
+var TEXT_FIELD_LABEL = {
+  fontFamily: 'Font Family', fontStyle: 'Font Style', fontWeight: 'Font Weight',
+  fontSize: 'Font Size', lineHeight: 'Line Height', letterSpacing: 'Letter Spacing'
+};
+function textVarName(groupName, field) {
+  return groupName + ' ' + (TEXT_FIELD_LABEL[field] || field);
+}
+
 function boundTextVariableIds(holder) {
   var bound = holder.boundVariables || {};
   var out = [];
@@ -2387,7 +2427,9 @@ async function scanText(roots) {
   const unlinked = new Map();
   const sizeFreq = new Map();
   const famMap = new Map();
-  const localTextVarUse = new Map(); // local variableId -> { name, field, value, uses } | null
+  // signature of a layer's bound variables -> { fields, uses, spec }
+  const localTextVarUse = new Map();
+  const textVarCache = new Map();   // variableId -> resolved record
   let mixedSkipped = 0;
 
   for (let i = 0; i < nodes.length; i++) {
@@ -2419,22 +2461,37 @@ async function scanText(roots) {
     }
     var tvars = boundTextVariableIds(node);
     if (tvars.length) {
+      // Resolve each bound variable once, then key the LAYER by the exact
+      // combination it uses. Every layer sharing a combination becomes one
+      // text style, which is the thing a conversion can actually create.
+      var fields = [];
       for (var tv = 0; tv < tvars.length; tv++) {
         var tid = tvars[tv].id;
-        var rec = localTextVarUse.get(tid);
+        var rec = textVarCache.get(tid);
         if (rec === undefined) {
           rec = null;
           try {
             var variable = await figma.variables.getVariableByIdAsync(tid);
             if (variable && !variable.remote) {
-              rec = { name: variable.name, field: tvars[tv].field, value: await variableValue(variable), uses: [] };
+              rec = { id: tid, name: variable.name, value: await variableValue(variable) };
             }
           } catch (e) {}
-          localTextVarUse.set(tid, rec);
+          textVarCache.set(tid, rec);
         }
-        if (rec) rec.uses.push(useRef(node, 'text'));
+        if (rec) fields.push({ field: tvars[tv].field, id: tid, name: rec.name, value: rec.value });
       }
-      continue;
+      if (fields.length) {
+        fields.sort(function (a, b) { return a.field < b.field ? -1 : a.field > b.field ? 1 : 0; });
+        var sig = fields.map(function (f) { return f.field + '=' + f.id; }).join('|');
+        var grp = localTextVarUse.get(sig);
+        if (!grp) {
+          // Unbound properties keep whatever the layer itself has, so a
+          // partially-bound layer still yields a complete style.
+          localTextVarUse.set(sig, grp = { fields: fields, uses: [], spec: textSpecOfNode(node) });
+        }
+        grp.uses.push(useRef(node, 'text'));
+        continue;
+      }
     }
     const spec = textSpecOfNode(node);
     if (!spec) { mixedSkipped++; continue; }
@@ -2537,11 +2594,23 @@ async function scanText(roots) {
   // Figma has no single "text style variable", so each bound property is its
   // own variable and is listed as its own row.
   const textVariables = [];
-  localTextVarUse.forEach((rec, vid) => {
-    if (!rec || !rec.uses.length) return;
+  localTextVarUse.forEach((grp, sig) => {
+    if (!grp.uses.length) return;
+    // Name the group after the shared prefix of its variables — "Caption" from
+    // "Caption Font Size" / "Caption/fontSize" — else suggest one from the type.
+    const groupName = sharedTokenPrefix(grp.fields.map(f => f.name))
+      || (grp.spec ? suggestTextName(grp.spec, baseSize, new Set()) : 'Text');
     textVariables.push({
-      key: 'tv:' + vid, variableId: vid, name: rec.name, field: rec.field,
-      value: rec.value == null ? '' : String(rec.value), uses: rec.uses
+      key: 'tvg:' + sig,
+      name: groupName,
+      signature: sig,
+      spec: grp.spec,
+      // Each bound property, for the expanded view.
+      fields: grp.fields.map(f => ({
+        field: f.field, variableId: f.id, name: f.name,
+        value: f.value == null ? '' : String(f.value)
+      })),
+      uses: grp.uses
     });
   });
   textVariables.sort((a, b) => b.uses.length - a.uses.length || a.name.localeCompare(b.name));
@@ -2851,7 +2920,7 @@ async function findTextStyleVariableDupes() {
       if (value === null || value === undefined) continue;
       wanted++;
       var pool = def.type === 'STRING' ? stringPool : floatPool;
-      var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, st.name + '/' + def.field);
+      var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, [textVarName(st.name, def.field), st.name + '/' + def.field]);
       if (hit) matches.push({ field: def.field, variable: hit });
     }
     if (!wanted || matches.length !== wanted) continue;   // partial match isn't a duplicate
@@ -2896,7 +2965,7 @@ async function mergeStyleIntoVariable(kind, styleId) {
     var value = src[def.prop];
     if (value === null || value === undefined) continue;
     var pool = def.type === 'STRING' ? stringPool : floatPool;
-    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, style.name + '/' + def.field);
+    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, [textVarName(style.name, def.field), style.name + '/' + def.field]);
     if (!hit) continue;
     try { style.setBoundVariable(def.field, hit); n++; } catch (e) {}
   }
@@ -3068,10 +3137,10 @@ async function runTextRowVariableAction(msg, rows, names) {
         var value = src[def.prop];
         if (value === null || value === undefined) continue;
         var pool = def.type === 'STRING' ? stringPool : floatPool;
-        var wantName = names[i] + '/' + def.field;
-        var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, wantName);
+        var flatName = textVarName(names[i], def.field);
+        var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, [flatName, names[i] + '/' + def.field]);
         if (hit) { result.reused++; made.push({ field: def.field, variable: hit }); continue; }
-        var nv = figma.variables.createVariable(wantName, collection, def.type);
+        var nv = figma.variables.createVariable(flatName, collection, def.type);
         try { nv.scopes = [def.scope]; } catch (e) {}
         await setVarValue(nv, collection, value);
         result.created++;
@@ -3629,10 +3698,10 @@ async function convertTextStyleToVariables(row, ctx, result) {
     var value = src[def.prop];
     if (value === null || value === undefined) continue;
     var pool = def.type === 'STRING' ? ctx.stringPool : ctx.floatPool;
-    var wantName = style.name + '/' + def.field;
-    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, wantName);
+    var flatName = textVarName(style.name, def.field);
+    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, [flatName, style.name + '/' + def.field]);
     if (hit) { result.reused++; group.push({ field: def.field, variable: hit }); continue; }
-    var nv = figma.variables.createVariable(wantName, ctx.collection, def.type);
+    var nv = figma.variables.createVariable(flatName, ctx.collection, def.type);
     try { nv.scopes = [def.scope]; } catch (e) {}
     await setVarValue(nv, ctx.collection, value);
     result.created++;
@@ -3651,6 +3720,107 @@ async function convertTextStyleToVariables(row, ctx, result) {
     try { style.setBoundVariable(group[g].field, group[g].variable); n++; } catch (e) {}
   }
   if (n) result.linked = (result.linked || 0) + 1;
+}
+
+// A variable group -> one text style. The group's resolved values become the
+// style, the style's fields are bound back to the group's variables, and every
+// layer in the group is switched to the style.
+async function convertTextVariableGroupToStyle(row, ctx, result) {
+  var byField = {};
+  for (var i = 0; i < (row.fields || []).length; i++) byField[row.fields[i].field] = row.fields[i];
+
+  // Resolved values: a bound variable wins, otherwise the layer's own value.
+  var base = row.spec || { family: 'Inter', style: 'Regular', fontSize: 16,
+                           lineHeight: { unit: 'AUTO' }, letterSpacing: { unit: 'PERCENT', value: 0 } };
+  var family = byField.fontFamily ? String(byField.fontFamily.value) : base.family;
+  var fontStyle = byField.fontStyle ? String(byField.fontStyle.value) : base.style;
+  var size = byField.fontSize ? Number(byField.fontSize.value) : base.fontSize;
+  var lh = byField.lineHeight
+    ? { unit: (base.lineHeight && base.lineHeight.unit && base.lineHeight.unit !== 'AUTO') ? base.lineHeight.unit : 'PERCENT',
+        value: Number(byField.lineHeight.value) }
+    : base.lineHeight;
+  var ls = byField.letterSpacing
+    ? { unit: (base.letterSpacing && base.letterSpacing.unit) || 'PERCENT', value: Number(byField.letterSpacing.value) }
+    : base.letterSpacing;
+  var spec = { family: family, style: fontStyle, fontSize: size, lineHeight: lh, letterSpacing: ls };
+
+  // The fonts must be loadable before anything is created or applied.
+  try {
+    await figma.loadFontAsync({ family: family, style: fontStyle });
+  } catch (e) {
+    result.skipped += row.uses.length;
+    pushReason(result, '“' + family + ' ' + fontStyle + '” isn\'t installed, so “' + row.name + '” was skipped.');
+    return;
+  }
+
+  // Reuse a style with the same resolved values, preferring the same name.
+  var key = textSpecKey(spec);
+  var style = null;
+  for (var si = 0; si < ctx.styles.length; si++) {
+    if (textSpecKey(textSpecOfStyle(ctx.styles[si])) !== key) continue;
+    if (ctx.styles[si].name === row.name) { style = ctx.styles[si]; break; }
+    if (!style) style = ctx.styles[si];
+  }
+  if (style) {
+    result.reused++;
+  } else {
+    style = await createOrUpdateTextStyle(uniqueName(row.name, ctx.taken), spec, 'keep', new Map());
+    ctx.taken.add(style.name);
+    ctx.styles.push(style);
+    result.created++;
+  }
+
+  // The style points back at the group's variables, so both stay in sync.
+  var boundFields = 0;
+  for (var f = 0; f < (row.fields || []).length; f++) {
+    var fl = row.fields[f];
+    try {
+      var variable = await figma.variables.getVariableByIdAsync(fl.variableId);
+      if (variable) { style.setBoundVariable(fl.field, variable); boundFields++; }
+    } catch (e) {}
+  }
+  if (boundFields) result.linked = (result.linked || 0) + 1;
+
+  // Switch every layer (or styled run) to the style and drop its direct bindings.
+  for (var u = 0; u < row.uses.length; u++) {
+    var use = row.uses[u];
+    var node = null;
+    try { node = await figma.getNodeByIdAsync(use.id); } catch (e) {}
+    if (!node) { result.skipped++; continue; }
+    var target = await styleTargetFor(node);
+    var tn = target.node;
+    var blocked = styleBlockedReason(tn);
+    if (blocked) { result.skipped++; pushReason(result, blocked); continue; }
+    try {
+      await loadTextNodeFonts(tn);
+      var ranged = typeof use.start === 'number' && typeof use.end === 'number' && use.end > use.start;
+      // Only the fields this group actually bound, and only where the unbind
+      // succeeds. A binding left in place OVERRIDES the text style, so the
+      // layer would silently keep its old look — worth reporting, not hiding.
+      var unbindFailed = 0;
+      for (var uf = 0; uf < (row.fields || []).length; uf++) {
+        var field = row.fields[uf].field;
+        try {
+          if (ranged) tn.setRangeBoundVariable(use.start, use.end, field, null);
+          else tn.setBoundVariable(field, null);
+        } catch (e) { unbindFailed++; }
+      }
+      if (ranged) await tn.setRangeTextStyleIdAsync(use.start, use.end, style.id);
+      else await tn.setTextStyleIdAsync(style.id);
+
+      if (unbindFailed && boundTextVariableIds(tn).length) {
+        // The style was applied but a surviving binding still wins.
+        pushReason(result, '“' + (tn.name || 'A layer') + '” kept ' + plural(unbindFailed, 'variable binding') +
+          ' that override the new style — unbind them in Figma, or convert that layer on its own.');
+      }
+      result.applied++;
+      if (target.via === 'override') result.overrides = (result.overrides || 0) + 1;
+      if (target.via === 'component') result.components = (result.components || 0) + 1;
+    } catch (e) {
+      result.skipped++;
+      pushReason(result, (tn.name || 'A layer') + ': ' + (e && e.message ? e.message : 'could not apply the style.'));
+    }
+  }
 }
 
 // Is a style used by ANY layer in the file? Needed before deleting one.
@@ -3699,7 +3869,7 @@ async function runConversion(kind, msg) {
       if (kind === 'paint' && direction === 'to-variable') await convertStyleToVariable(rows[i], ctx, result);
       else if (kind === 'paint') await convertVariableToStyle(rows[i], ctx, result);
       else if (direction === 'to-variable') await convertTextStyleToVariables(rows[i], ctx, result);
-      else { result.skipped += rows[i].uses.length; pushReason(result, 'Converting a text variable group back to a style is done from the Text Styles list.'); }
+      else await convertTextVariableGroupToStyle(rows[i], ctx, result);
     } catch (e) {
       result.skipped += rows[i].uses.length;
       pushReason(result, (rows[i].name || 'row') + ': ' + (e && e.message ? e.message : 'conversion failed'));
@@ -3829,7 +3999,7 @@ function matchTextVariableGroup(spec, styleName, floatPool, stringPool) {
     if (value === null || value === undefined) continue;
     wanted++;
     var pool = def.type === 'STRING' ? stringPool : floatPool;
-    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, styleName + '/' + def.field);
+    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, [textVarName(styleName, def.field), styleName + '/' + def.field]);
     if (hit) out.push({ field: def.field, variable: hit });
   }
   return (wanted && out.length === wanted) ? out : null;
@@ -3949,9 +4119,16 @@ function findColorVariable(pool, hex, opacity) {
 // "H1/fontSize". Those belong to that style and must not be handed to a
 // different style just because the value happens to match.
 function isGroupMemberName(name) {
-  var slash = String(name).lastIndexOf('/');
+  var n = String(name);
+  // Flat naming: "Caption Font Size".
+  for (var key in TEXT_FIELD_LABEL) {
+    var suffix = ' ' + TEXT_FIELD_LABEL[key];
+    if (n.length > suffix.length && n.slice(-suffix.length) === suffix) return true;
+  }
+  // Older folder naming: "Caption/fontSize".
+  var slash = n.lastIndexOf('/');
   if (slash === -1) return false;
-  var tail = String(name).slice(slash + 1);
+  var tail = n.slice(slash + 1);
   for (var i = 0; i < TEXT_VAR_FIELDS.length; i++) if (TEXT_VAR_FIELDS[i].field === tail) return true;
   return false;
 }
@@ -3962,11 +4139,14 @@ function isGroupMemberName(name) {
 //      own token, e.g. "Brand/Heading Size"), so existing work is reused.
 // Another style's group member is never matched by value, so each text style
 // stays independently editable.
+// `wantName` may be a list: new variables use the flat "Caption Font Size"
+// naming, but files made earlier hold "Caption/fontSize", and both must match.
 function findTextVariable(pool, spec, wantName) {
+  var wanted = Array.isArray(wantName) ? wantName : [wantName];
   var exact = null, byValue = null;
   for (var i = 0; i < pool.length; i++) {
     var v = pool[i].variable, val = pool[i].value;
-    if (v.name === wantName) exact = v;
+    if (wanted.indexOf(v.name) !== -1) exact = v;
     if (byValue || isGroupMemberName(v.name)) continue;
     var same = spec.type === 'STRING'
       ? String(val) === String(spec.value)
@@ -4050,10 +4230,10 @@ async function createVariablesFromList(kind, msg) {
         var value = src[def.prop];
         if (value === null || value === undefined) continue;
         var pool2 = def.type === 'STRING' ? stringPool : floatPool;
-        var wantName = it.name + '/' + def.field;
-        var hit = findTextVariable(pool2, { type: def.type, value: value, scope: def.scope }, wantName);
+        var flatName = textVarName(it.name, def.field);
+        var hit = findTextVariable(pool2, { type: def.type, value: value, scope: def.scope }, [flatName, it.name + '/' + def.field]);
         if (hit) { result.reused++; continue; }
-        var nv = figma.variables.createVariable(wantName, collection, def.type);
+        var nv = figma.variables.createVariable(flatName, collection, def.type);
         try { nv.scopes = [def.scope]; } catch (e) {}
         await setVarValue(nv, collection, value);
         // Deliberately NOT added to the pool: every text style keeps its own
@@ -4111,7 +4291,7 @@ async function bindTextStyleToVariables(style, floatPool, stringPool, spec) {
     var value = src[def.prop];
     if (value === null || value === undefined) continue;
     var pool = def.type === 'STRING' ? stringPool : floatPool;
-    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, spec.name + '/' + def.field);
+    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, [textVarName(spec.name, def.field), spec.name + '/' + def.field]);
     if (!hit) continue;
     try { style.setBoundVariable(def.field, hit); n++; } catch (e) {}
   }
@@ -4370,6 +4550,12 @@ async function handleStyleMessage(msg) {
       await postStyleScan(kind);
       return;
     }
+    // commitUndo() closes the CURRENT undo group. Called only at the end, the
+    // group it closes stretches back to the previous action — swallowing any
+    // edit the user made on the canvas in between. Close that group first, so
+    // one ⌘Z undoes exactly this action and nothing else.
+    figma.commitUndo();
+
     let result;
     if (msg.type === 'style-rows') result = await runRowAction(kind, msg);
     else if (msg.type === 'style-create') {
@@ -4413,6 +4599,9 @@ async function handleStyleMessage(msg) {
     // Generate flows have no scan to refresh.
     if (msg.type !== 'style-create') await postStyleScan(kind);
   } catch (e) {
+    // Whatever was written before the failure is its own undo step too,
+    // rather than merging into the next action's group.
+    try { figma.commitUndo(); } catch (e2) {}
     figma.ui.postMessage({ type: 'style-error', scope: scope, requestId: msg.requestId, message: e instanceof Error ? e.message : String(e) });
   }
 }

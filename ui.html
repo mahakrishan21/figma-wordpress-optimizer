@@ -2844,6 +2844,22 @@
       `<span${i === cols.length - 1 ? ' style="text-align:right"' : ''}>${c}</span>`).join('')}</div>`;
   }
 
+  // Shown above the layer list when a variable-group row is expanded.
+  function varGroupDetail(r) {
+    const fields = r.fields || [];
+    if (!fields.length) return '';
+    return `<div class="sm-uses" style="padding-left:12px;background:var(--surface)">
+      <div class="sm-uses-list">
+        <div class="sm-uses-head"><span>Bound variable</span><span>Value</span></div>
+        ${fields.map(f => `<div class="sm-uses-row">
+          <span style="display:flex;align-items:center;gap:8px;min-width:0">${typeMarkFor('variable')}
+            <span style="min-width:0"><span class="sm-ellipsis" style="display:block;color:var(--text-primary)">${escHtml(f.name)}</span>
+            <span class="sm-meta">${escHtml(f.field)}</span></span></span>
+          <span class="mono">${escHtml(f.value)}</span>
+        </div>`).join('')}
+      </div></div>`;
+  }
+
   function usesPanelHtml(S, key, uses, noun) {
     const page = S.pages[key] || 0;
     const total = Math.max(1, Math.ceil(uses.length / PER_PAGE));
@@ -2877,11 +2893,13 @@
     return `<span class="sm-name-wrap"><span class="sm-ellipsis ${cls || ''}" title="${escHtml(v)}">${escHtml(v)}</span><button class="sm-pencil" data-act="edit-name" data-key="${escHtml(key)}" aria-label="Edit name">${SI.pencil}</button></span>`;
   }
 
-  function rowWrap(S, key, rowHtml, uses, noun) {
+  // `extra` is rendered above the layer list when the row is expanded — the
+  // variable-group rows use it to show which variables they hold.
+  function rowWrap(S, key, rowHtml, uses, noun, extra) {
     const open = !!S.expanded[key];
     return `<div class="sm-row-wrap${open ? ' open' : ''}">${rowHtml.replace('%CHEV%',
       `<button class="sm-expand${open ? '' : ' closed'}" data-act="expand" data-key="${escHtml(key)}" aria-label="${open ? 'Collapse' : 'Expand'}">▾</button>`)}
-      ${open ? usesPanelHtml(S, key, uses, noun) : ''}</div>`;
+      ${open ? (extra || '') + usesPanelHtml(S, key, uses, noun) : ''}</div>`;
   }
 
   function usesCell(n) { return `<span><span class="badge badge-blue">${n}×</span></span>`; }
@@ -3020,6 +3038,11 @@
   }
 
   const G_CSTYLE = '24px minmax(0,1.8fr) minmax(0,.9fr) minmax(0,.7fr) 52px 156px';
+  // A Convert button is a THIRD action, which doesn't fit 156px at the plugin's
+  // real 760px width — the buttons wrapped onto a second line. These variants
+  // widen the action column, and are used for the header and the rows together
+  // so the columns stay aligned.
+  const G_CSTYLE_CONV = '24px minmax(0,1.3fr) minmax(0,.75fr) minmax(0,.6fr) 48px 248px';
   const G_CROW   = '24px minmax(0,1fr) minmax(0,.55fr) minmax(0,1.5fr) 52px 176px';
 
   function colorResultsHtml() {
@@ -3036,9 +3059,12 @@
       { v: s.dupes, l: 'Dup. Styles', sub: 'near-identical', jump: 'dupes', issue: true }
     ]);
 
+    // A block showing a Convert button needs the wider action column.
+    const gCStyle = CS.target === 'variables' ? G_CSTYLE_CONV : G_CSTYLE;
+    const gCVar   = CS.target === 'styles'    ? G_CSTYLE_CONV : G_CSTYLE;
     const stylesBody = d.colorStyles.length
-      ? theadHtml(G_CSTYLE, ['', 'Style Name', 'Hex', 'Opacity', 'Uses', 'Actions']) + d.colorStyles.map(r => rowWrap(CS, r.key,
-        `<div class="sm-row" style="grid-template-columns:${G_CSTYLE}">%CHEV%
+      ? theadHtml(gCStyle, ['', 'Style Name', 'Hex', 'Opacity', 'Uses', 'Actions']) + d.colorStyles.map(r => rowWrap(CS, r.key,
+        `<div class="sm-row" style="grid-template-columns:${gCStyle}">%CHEV%
           <div class="sm-cell-color">${swatchFor('style', r.hex, r.opacity)}<span class="sm-ellipsis sm-strong" title="${escHtml(r.name)}">${escHtml(r.name)}</span></div>
           <span class="mono">${r.hex ? escHtml(r.hex) : 'Gradient'}</span><span>${pctStr(r.opacity)}</span>${usesCell(r.uses.length)}
           <div class="sm-actions">${CS.target === 'variables' ? `<button class="btn btn-sm btn-outline-blue" data-act="convert-row" data-key="${escHtml(r.key)}">Convert to Variable</button>` : ''}<button class="btn btn-sm btn-danger-soft" data-act="c-delete" data-key="${escHtml(r.key)}">Delete</button><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button></div>
@@ -3047,8 +3073,8 @@
 
     const vars = d.colorVariables || [];
     const varsBody = vars.length
-      ? theadHtml(G_CSTYLE, ['', 'Variable Name', 'Hex', 'Opacity', 'Uses', 'Actions']) + vars.map(r => rowWrap(CS, r.key,
-        `<div class="sm-row" style="grid-template-columns:${G_CSTYLE}">%CHEV%
+      ? theadHtml(gCVar, ['', 'Variable Name', 'Hex', 'Opacity', 'Uses', 'Actions']) + vars.map(r => rowWrap(CS, r.key,
+        `<div class="sm-row" style="grid-template-columns:${gCVar}">%CHEV%
           <div class="sm-cell-color">${swatchFor('variable', r.hex, r.opacity)}<span class="sm-ellipsis sm-strong" title="${escHtml(r.name)}">${escHtml(r.name)}</span></div>
           <span class="mono">${r.hex ? escHtml(r.hex) : '—'}</span><span>${pctStr(r.opacity)}</span>${usesCell(r.uses.length)}
           <div class="sm-actions">${CS.target === 'styles' ? `<button class="btn btn-sm btn-outline-blue" data-act="convert-row" data-key="${escHtml(r.key)}">Convert to Style</button>` : ''}<button class="btn btn-sm btn-danger-soft" data-act="c-var-delete" data-key="${escHtml(r.key)}">Delete</button><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button></div>
@@ -3949,7 +3975,10 @@
   // A row's key tells the sandbox which single token to convert.
   function convertFromRow(S, row) {
     if (!row) return;
-    const toVar = String(row.key).indexOf('s:') === 0 || String(row.key).indexOf('l:') === 0;
+    const k = String(row.key);
+    // s: style row, lv:/tvg: token rows. A style converts to variables; a
+    // variable or variable group converts to a style.
+    const toVar = k.indexOf('s:') === 0 || k.indexOf('l:') === 0;
     confirmConvert(S, toVar ? 'to-variable' : 'to-style', [row.key], 1);
   }
   function convertCount(S, from) {
@@ -4223,6 +4252,7 @@
   }
 
   const G_TSTYLE = '24px minmax(0,2fr) 52px 190px';
+  const G_TSTYLE_CONV = '24px minmax(0,1.4fr) 48px 288px';
   const G_TROW   = '24px minmax(0,1.25fr) minmax(0,1.5fr) 52px 190px';
 
   function fontCell(spec) {
@@ -4246,22 +4276,27 @@
       { v: s.families, l: 'Fonts', sub: plural(s.families, 'Family').replace('Familys', 'Families') + ', ' + plural(s.sizes, 'size'), jump: 'fonts' }
     ]);
 
+    const gTStyle = TS.target === 'variables' ? G_TSTYLE_CONV : G_TSTYLE;
+    const gTVar   = TS.target === 'styles'    ? G_TSTYLE_CONV : G_TSTYLE;
     const stylesBody = d.textStyles.length
-      ? theadHtml(G_TSTYLE, ['', 'Style', 'Uses', 'Action']) + d.textStyles.map(r => rowWrap(TS, r.key,
-        `<div class="sm-row" style="grid-template-columns:${G_TSTYLE}">%CHEV%
+      ? theadHtml(gTStyle, ['', 'Style', 'Uses', 'Action']) + d.textStyles.map(r => rowWrap(TS, r.key,
+        `<div class="sm-row" style="grid-template-columns:${gTStyle}">%CHEV%
           <div style="min-width:0;display:flex;align-items:center;gap:8px">${typeMarkFor('style')}<div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.name)}</div><div class="sm-meta">${escHtml(specMeta(r.spec, true))}</div></div></div>
           ${usesCell(r.uses.length)}
           <div class="sm-actions">${TS.target === 'variables' ? `<button class="btn btn-sm btn-outline-blue" data-act="convert-row" data-key="${escHtml(r.key)}">Convert to Variable</button>` : ''}<button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-danger-soft" data-act="t-delete" data-key="${escHtml(r.key)}">Delete</button></div>
         </div>`, r.uses, 'style')).join('')
       : '<div class="sm-empty">No text styles are used in this frame yet.</div>';
 
+    // One row per variable GROUP — the set of variables a text layer is bound
+    // to — because that is what can become a single text style. The individual
+    // variables appear when the row is expanded.
     const tVarsBody = tVars.length
-      ? theadHtml(G_TSTYLE, ['', 'Variable', 'Uses', 'Action']) + tVars.map(r => rowWrap(TS, r.key,
-        `<div class="sm-row" style="grid-template-columns:${G_TSTYLE}">%CHEV%
-          <div style="min-width:0;display:flex;align-items:center;gap:8px">${typeMarkFor('variable')}<div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.name)}</div><div class="sm-meta">${escHtml(r.field)}${r.value === '' ? '' : ' · ' + escHtml(r.value)}</div></div></div>
+      ? theadHtml(gTVar, ['', 'Variable group', 'Uses', 'Action']) + tVars.map(r => rowWrap(TS, r.key,
+        `<div class="sm-row" style="grid-template-columns:${gTVar}">%CHEV%
+          <div style="min-width:0;display:flex;align-items:center;gap:8px">${typeMarkFor('variable')}<div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.name)}</div><div class="sm-meta sm-ellipsis">${escHtml(r.spec ? specMeta(r.spec, true) : plural((r.fields || []).length, 'property'))}</div></div></div>
           ${usesCell(r.uses.length)}
-          <div class="sm-actions">${TS.target === 'styles' ? `<button class="btn btn-sm btn-outline-blue" data-act="convert-row" data-key="${escHtml(r.key)}">Convert to Style</button>` : ''}<button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-danger-soft" data-act="t-var-delete" data-key="${escHtml(r.key)}">Delete</button></div>
-        </div>`, r.uses, 'variable')).join('')
+          <div class="sm-actions">${TS.target === 'styles' ? `<button class="btn btn-sm btn-outline-blue" data-act="convert-row" data-key="${escHtml(r.key)}">Convert to Style</button>` : ''}<button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button></div>
+        </div>`, r.uses, 'layer', varGroupDetail(r))).join('')
       : '<div class="sm-empty">No text variables from this file are used in this frame.</div>';
 
     const newBody = d.newText.length

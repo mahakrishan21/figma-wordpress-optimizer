@@ -20,6 +20,20 @@ All notable changes to this project are documented in this file.
 - **Toolbar**: the Generate button is now **Generate Palette** (Colors) and **Generate Type Scale** (Typography), and no longer changes with the dropdown — the dropdown already decides what gets made. Order is now `[Generate …] … [Re-Scan] Create [▾] [Convert everything …]`, with Re-Scan still primary
 
 ### Fixed
+- **Action buttons wrapped onto a second line at the plugin's real width.** The Convert button is a third action, and the 156px action column only fits two — so Color Variables rows (and Color Styles rows in Variables mode) broke across two lines. Earlier checks had run at 1200px wide, where it fits; the plugin's window is **760px**. Rows that show a Convert button now use a wider action column, applied to the header and the rows together so the columns stay aligned. Verified in both modes on both tabs at 760px
+- **One ⌘Z could undo your own edits as well as the plugin's.** `commitUndo()` closes the *current* undo group, and it was only called at the end of an action — so the group it closed stretched back to the previous action, swallowing anything you had done on the canvas in between. The plugin now closes the previous group before it starts work, so one ⌘Z undoes exactly that action. A failed action also commits, instead of merging its partial work into the next one
+- A typography layer whose variable bindings can't be cleared now **says so**. A surviving binding overrides the new text style, so the layer would silently keep its old appearance; the result now names the layer and what to do. Only the fields the group actually bound are unbound, rather than all five blindly
+
+### Fixed
+- **Typography "Convert to Style" always failed** with *"N skipped. Converting a text variable group back to a style is done from the Text Styles list"* — and that list was empty, because layers bound straight to variables use no text style. The Text Variables block listed **one row per variable** (`Caption Font Family`, `Caption Font Size`, …), and a single variable can't become a text style, so every row was skipped
+  - Text variables are now grouped **by layer**: each distinct combination of bound variables is one group, and one group becomes one text style. Each styled segment of mixed text counts separately
+  - The block shows **one row per group** — name, resolved type, layer count — with the individual variables listed when the row is expanded. The dead *Convert to Style* button is gone from single-variable rows
+  - Converting resolves the group's values (a bound variable wins; an unbound property keeps the layer's own value, so a partially-bound layer still yields a complete style), reuses a matching text style or creates one, binds the style's fields back to the group's variables, and switches every layer to it, clearing its direct bindings. The variables are kept
+  - A layer whose font isn't installed is skipped **by name** — *"'Irish Grover Regular' isn't installed, so 'Caption' was skipped"* — instead of failing the group
+  - The result reads "N styles created, N reused, N layers updated" rather than a bare "20 skipped"
+- New typography variables use **flat names** ("Caption Font Size") instead of "Caption/fontSize", which Figma renders as a folder per style. Variables named the old way are still matched, so re-running on an existing file stays idempotent and creates no flat duplicates
+
+### Fixed
 - **"Merge colors" did nothing when the pair contained a variable.** The button sent every member as a style id, so a variable resolved to nothing and was silently skipped — the pair survived the re-scan. Merging is now routed by what the group actually holds:
   - **style + style** — unchanged: re-link every layer in the file, then delete the replaced style
   - **variable + variable** — new `mergeVariables()`: re-binds every fill and stroke across all pages, including text runs and instance overrides, then re-points styles bound to a replaced variable and any variable that aliased it, then deletes it
