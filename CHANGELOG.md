@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Convert** — turn the colours and type in a frame into one kind of token, instead of deleting and recreating them by hand. The buttons follow the Create dropdown:
+  - Create = **Variables** → *Convert to Variable* on each Color Styles row and *Convert All to Variables* in its header
+  - Create = **Styles** → *Convert to Style* on each Color Variables row and *Convert All to Styles*
+  - *Convert everything to Variables/Styles* in the toolbar, shown only when the frame holds **both** kinds
+  - **Style → variable**: reuses a variable of the same value, preferring the same name, so "Neutral / White" is reused rather than becoming "Neutral / White 2". Every layer and text range is re-bound. The old style is kept and linked to the variable by default, or removed when **nothing anywhere in the file** still uses it (and kept, with a note, when something does)
+  - **Variable → style**: reuses a style of the same value, else creates one **bound to the variable**, and applies it. The variable is kept — a Figma variable cannot point at a style
+  - Typography converts a text style to its five-variable group and binds the text layers
+  - A dialog asks for scope (**this frame** or **entire file**) and what to do with the old style, and the result reports created / reused / re-bound / skipped. One ⌘Z undoes the whole thing
+  - Running a conversion twice creates nothing. Colour and opacity are preserved exactly
+
+### Changed
+- **Swatch shape now says what a token is**, following Figma's own convention: a **circle** for a colour style, a **rounded square** for a colour variable, a **dashed square** for an unlinked colour — everywhere a swatch appears, with a tooltip and a legend under the Color Summary. Typography uses an "Aa" mark, circled for a text style and rounded-square for a variable group. The checkerboard behind partial opacity is unchanged
+- **Toolbar**: the Generate button is now **Generate Palette** (Colors) and **Generate Type Scale** (Typography), and no longer changes with the dropdown — the dropdown already decides what gets made. Order is now `[Generate …] … [Re-Scan] Create [▾] [Convert everything …]`, with Re-Scan still primary
+
 ### Fixed
 - **The Create Styles / Variables dropdown was ignored once a file already held tokens.** Scan a frame whose colours already exist as styles and every row offered only *Apply Style*, with no way to produce a variable — and the file ended up with styles and variables duplicating each other. Six causes, all fixed:
   - The scans matched unlinked values **against local styles only**; local variables were never a match source. Both scans now resolve against a single `buildTokenIndex()` covering styles *and* variables

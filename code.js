@@ -3292,6 +3292,188 @@ async function createStylesFromList(kind, msg) {
 }
 
 
+// ── Convert: turn styles into variables, or variables into styles ──────────
+// Everything a conversion needs to know before it runs, so the dialog can show
+// the user what will happen. Nothing is written during the dry run.
+async function planConversion(kind, direction, scopeIds, onlyIds) {
+  var roots = (scopeIds && scopeIds.length)
+    ? await resolveNodesByIds(scopeIds)
+    : [figma.currentPage];
+  var data = kind === 'paint' ? await scanColors(roots) : await scanText(roots);
+  var rows = direction === 'to-variable'
+    ? (kind === 'paint' ? data.colorStyles : data.textStyles)
+    : (kind === 'paint' ? (data.colorVariables || []) : (data.textVariables || []));
+  if (onlyIds && onlyIds.length) {
+    rows = rows.filter(function (r) { return onlyIds.indexOf(r.key) !== -1; });
+  }
+  return { rows: rows, data: data };
+}
+
+// Style -> variable, for one scan row.
+async function convertStyleToVariable(row, ctx, result) {
+  var hex = String(row.hex).toUpperCase();
+  var opacity = typeof row.opacity === 'number' ? row.opacity : 1;
+  var style = await figma.getStyleByIdAsync(row.styleId);
+  if (!style || style.remote) { result.skipped += row.uses.length; pushReason(result, 'That style is no longer available.'); return; }
+
+  // Prefer a variable of the same value AND name, then any of the same value.
+  var variable = null;
+  for (var i = 0; i < ctx.pool.length; i++) {
+    var e = ctx.pool[i];
+    if (!sameColorValue(e.value, hex, opacity)) continue;
+    if (e.variable.name === style.name) { variable = e.variable; break; }
+    if (!variable) variable = e.variable;
+  }
+  if (variable) {
+    result.reused++;
+  } else {
+    var rgba = hexToRgb01(hex);
+    rgba.a = opacity;
+    variable = figma.variables.createVariable(uniqueName(style.name, ctx.taken), ctx.collection, 'COLOR');
+    ctx.taken.add(variable.name);
+    await setVarValue(variable, ctx.collection, rgba);
+    ctx.pool.push({ variable: variable, value: rgba });
+    result.created++;
+  }
+
+  // Point every layer at the variable instead of the style.
+  await applyVariableToUses(variable, row.uses, result);
+
+  if (ctx.removeUnused) {
+    var stillUsed = await styleUsedAnywhere(style.id);
+    if (!stillUsed) {
+      try { style.remove(); result.removed = (result.removed || 0) + 1; return; } catch (e) {}
+    } else {
+      pushReason(result, '“' + style.name + '” is still used elsewhere in the file, so it was kept and linked.');
+    }
+  }
+  if (bindPaintStyleToExactVariable(style, variable)) result.linked = (result.linked || 0) + 1;
+}
+
+// Variable -> style, for one scan row.
+async function convertVariableToStyle(row, ctx, result) {
+  var hex = String(row.hex).toUpperCase();
+  var opacity = typeof row.opacity === 'number' ? row.opacity : 1;
+  var variable = await figma.variables.getVariableByIdAsync(row.variableId);
+  if (!variable) { result.skipped += row.uses.length; pushReason(result, 'That variable is no longer available.'); return; }
+
+  var style = null;
+  for (var i = 0; i < ctx.styles.length; i++) {
+    var sv = solidOfStyle(ctx.styles[i]);
+    if (!sv || sv.hex !== hex || Math.abs(sv.opacity - opacity) > 0.004) continue;
+    if (ctx.styles[i].name === variable.name) { style = ctx.styles[i]; break; }
+    if (!style) style = ctx.styles[i];
+  }
+  if (style) {
+    result.reused++;
+  } else {
+    style = figma.createPaintStyle();
+    style.name = uniqueName(variable.name, ctx.taken);
+    ctx.taken.add(style.name);
+    style.paints = [{ type: 'SOLID', color: hexToRgb01(hex), opacity: opacity }];
+    ctx.styles.push(style);
+    result.created++;
+  }
+  // The style references the variable — a variable can't point at a style, so
+  // this is the only direction a link can run.
+  if (bindPaintStyleToExactVariable(style, variable)) result.linked = (result.linked || 0) + 1;
+  await applyStyleToUses('paint', style, row.uses, result);
+}
+
+// Text styles convert to their 5-variable group, and back.
+async function convertTextStyleToVariables(row, ctx, result) {
+  var style = await figma.getStyleByIdAsync(row.styleId);
+  if (!style || style.remote) { result.skipped += row.uses.length; pushReason(result, 'That text style is no longer available.'); return; }
+  var spec = textSpecOfStyle(style);
+  var src = {
+    family: spec.family, style: spec.style, size: spec.fontSize,
+    lh: lineHeightNumber(spec.lineHeight), ls: letterSpacingNumber(spec.letterSpacing)
+  };
+  var group = [];
+  for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) {
+    var def = TEXT_VAR_FIELDS[f];
+    var value = src[def.prop];
+    if (value === null || value === undefined) continue;
+    var pool = def.type === 'STRING' ? ctx.stringPool : ctx.floatPool;
+    var wantName = style.name + '/' + def.field;
+    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, wantName);
+    if (hit) { result.reused++; group.push({ field: def.field, variable: hit }); continue; }
+    var nv = figma.variables.createVariable(wantName, ctx.collection, def.type);
+    try { nv.scopes = [def.scope]; } catch (e) {}
+    await setVarValue(nv, ctx.collection, value);
+    result.created++;
+    group.push({ field: def.field, variable: nv });
+  }
+  if (!group.length) { result.skipped += row.uses.length; return; }
+  await applyTextVariablesToUses(group, row.uses, result);
+
+  if (ctx.removeUnused) {
+    var stillUsed = await styleUsedAnywhere(style.id);
+    if (!stillUsed) { try { style.remove(); result.removed = (result.removed || 0) + 1; return; } catch (e) {} }
+    else pushReason(result, '“' + style.name + '” is still used elsewhere in the file, so it was kept and linked.');
+  }
+  var n = 0;
+  for (var g = 0; g < group.length; g++) {
+    try { style.setBoundVariable(group[g].field, group[g].variable); n++; } catch (e) {}
+  }
+  if (n) result.linked = (result.linked || 0) + 1;
+}
+
+// Is a style used by ANY layer in the file? Needed before deleting one.
+async function styleUsedAnywhere(styleId) {
+  await figma.loadAllPagesAsync();
+  var pages = figma.root.children;
+  for (var p = 0; p < pages.length; p++) {
+    var nodes = pages[p].findAll(function (n) {
+      return n.fillStyleId === styleId || n.strokeStyleId === styleId || n.textStyleId === styleId;
+    });
+    if (nodes.length) return true;
+  }
+  return false;
+}
+
+// The whole conversion, committed as a single undo step by the caller.
+async function runConversion(kind, msg) {
+  var direction = msg.direction === 'to-style' ? 'to-style' : 'to-variable';
+  var result = { created: 0, applied: 0, skipped: 0, reused: 0, linked: 0, removed: 0, reasons: [],
+                 unit: direction === 'to-variable' ? 'variable' : 'style' };
+
+  var scopeIds = msg.scope === 'file' ? [] : (kind === 'paint' ? lastColorRootIds : lastTextRootIds);
+  var planned = await planConversion(kind, direction, scopeIds, msg.keys);
+  var rows = planned.rows;
+  if (!rows.length) { pushReason(result, 'Nothing of that kind was found to convert.'); return result; }
+
+  var ctx = { removeUnused: msg.removeUnused === true };
+  if (direction === 'to-variable') {
+    ctx.collection = await getTokenCollection(true, kind);
+    if (!ctx.collection) throw new Error('Could not open a variable collection in this file.');
+    if (kind === 'paint') {
+      ctx.pool = await localVariablesWithValues('COLOR');
+      ctx.taken = new Set(ctx.pool.map(function (e) { return e.variable.name; }));
+    } else {
+      ctx.floatPool = await localVariablesWithValues('FLOAT');
+      ctx.stringPool = await localVariablesWithValues('STRING');
+    }
+  } else {
+    ctx.styles = (await (kind === 'paint' ? figma.getLocalPaintStylesAsync() : figma.getLocalTextStylesAsync()))
+      .filter(function (st) { return !st.remote; });
+    ctx.taken = new Set(ctx.styles.map(function (st) { return st.name; }));
+  }
+
+  for (var i = 0; i < rows.length; i++) {
+    try {
+      if (kind === 'paint' && direction === 'to-variable') await convertStyleToVariable(rows[i], ctx, result);
+      else if (kind === 'paint') await convertVariableToStyle(rows[i], ctx, result);
+      else if (direction === 'to-variable') await convertTextStyleToVariables(rows[i], ctx, result);
+      else { result.skipped += rows[i].uses.length; pushReason(result, 'Converting a text variable group back to a style is done from the Text Styles list.'); }
+    } catch (e) {
+      result.skipped += rows[i].uses.length;
+      pushReason(result, (rows[i].name || 'row') + ': ' + (e && e.message ? e.message : 'conversion failed'));
+    }
+  }
+  return result;
+}
+
 // ── The token resolver ──────────────────────────────────────────────────────
 // One index of everything this file already defines, keyed by VALUE, so the
 // scan, Create & Apply, Generate and Merge all agree on what exists and what
@@ -3913,7 +4095,7 @@ function describeResult(label, r) {
   if (r.bound) parts.push(r.bound + ' bound to variables');
   if (r.removed) parts.push(r.removed + ' ' + noun + (r.removed !== 1 ? 's' : '') + ' removed');
   if (r.merged) parts.push(r.merged + ' style' + (r.merged !== 1 ? 's' : '') + ' now linked to its variable');
-  if (r.linked) parts.push(r.linked + ' existing style' + (r.linked !== 1 ? 's' : '') + ' linked to the new variable');
+  if (r.linked) parts.push(r.linked + ' style' + (r.linked !== 1 ? 's' : '') + ' linked');
   if (r.applied) parts.push(r.applied + ' layer' + (r.applied !== 1 ? 's' : '') + ' updated');
   if (r.skipped) parts.push(r.skipped + ' skipped');
   if (r.overrides) parts.push(r.overrides + ' as instance override' + (r.overrides !== 1 ? 's' : ''));
@@ -3962,6 +4144,9 @@ async function handleStyleMessage(msg) {
         : await createStylesFromList(kind, msg);
     }
     else if (msg.type === 'style-merge') result = await mergeStyles(kind, msg.groups || []);
+    else if (msg.type === 'convert') {
+      result = await runConversion(kind, msg);
+    }
     else if (msg.type === 'merge-style-variable') {
       result = msg.direction === 'style'
         ? await mergeVariableIntoStyle(kind, msg.styleId, msg.uses || [])
@@ -4231,7 +4416,7 @@ figma.ui.onmessage = async (msg) => {
       figma.notify('Click on a frame or component in the canvas to select it', { timeout: 3000 });
       return;
     }
-    if (msg.type === 'style-scan' || msg.type === 'style-rows' || msg.type === 'style-create' || msg.type === 'style-merge' || msg.type === 'style-delete' || msg.type === 'variable-delete' || msg.type === 'merge-style-variable') {
+    if (msg.type === 'style-scan' || msg.type === 'style-rows' || msg.type === 'style-create' || msg.type === 'style-merge' || msg.type === 'style-delete' || msg.type === 'variable-delete' || msg.type === 'merge-style-variable' || msg.type === 'convert') {
       await handleStyleMessage(msg);
       return;
     }

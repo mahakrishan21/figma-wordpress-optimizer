@@ -807,6 +807,23 @@
     .sm-swatch.lg { width: 36px; height: 36px; border-radius: 7px; }
     .sm-swatch.click { cursor: pointer; }
     .sm-swatch.click:hover { box-shadow: 0 0 0 2px var(--blue-200); }
+    /* Token shape: circle = style, rounded square = variable, dashed = unlinked */
+    .sm-swatch.sw-style, .sm-swatch.sw-style > i { border-radius: 50%; }
+    .sm-swatch.sw-variable, .sm-swatch.sw-variable > i { border-radius: 3px; }
+    .sm-swatch.sw-unlinked, .sm-swatch.sw-unlinked > i { border-radius: 2px; }
+    .sm-swatch.sw-unlinked { border-style: dashed; border-width: 1px; border-color: var(--gray-400); }
+    .sm-typemark { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+      font-size: 10px; font-weight: 700; color: var(--text-secondary); background: var(--gray-100);
+      border: 1px solid var(--border); flex-shrink: 0; }
+    .sm-typemark.sw-style { border-radius: 50%; }
+    .sm-typemark.sw-variable { border-radius: 4px; }
+    .sm-legend { display: flex; align-items: center; gap: 14px; padding: 6px 2px 10px; font-size: 11px; color: var(--text-muted); }
+    .sm-legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .sm-legend i { width: 10px; height: 10px; background: var(--gray-400); display: inline-block; }
+    .sm-legend i.l-style { border-radius: 50%; }
+    .sm-legend i.l-variable { border-radius: 2px; }
+    .sm-legend i.l-unlinked { background: none; border: 1px dashed var(--gray-400); border-radius: 1px; }
+    .sm-convert-all { white-space: nowrap; }
 
     /* Editable names */
     .sm-name-wrap { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
@@ -889,7 +906,8 @@
     .sm-upload-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
     .sm-upload-box.drag { border-color: var(--blue-400); background: var(--blue-50); }
     .sm-option-alt { width: 100%; justify-content: center; margin-top: 6px; }
-    .sm-target { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-left: auto; }
+    .sm-target { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+    .sm-toolbar .sm-rescan { margin-left: auto; }
     .sm-target .sm-input { width: auto; padding-right: 22px; }
     .sm-ex-total { font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-left: auto; }
     .sm-ex-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
@@ -2562,6 +2580,30 @@
   function swatchHtml(hex, op, cls, attrs) {
     return `<span class="sm-swatch ${cls || ''}" ${attrs || ''}><i style="background:${hex ? escHtml(hex) : 'linear-gradient(135deg,#c7d2fe,#fbcfe8)'};opacity:${op == null ? 1 : op}"></i></span>`;
   }
+  // Figma's own convention: a style is a circle, a variable a rounded square.
+  // An unlinked colour is a plain square with a dashed edge — it is not a token.
+  const SW_TITLE = { style: 'Color style', variable: 'Color variable', unlinked: 'Unlinked color' };
+  function swatchFor(kind, hex, op, cls) {
+    const k = SW_TITLE[kind] ? kind : 'unlinked';
+    return swatchHtml(hex, op, ((cls || '') + ' sw-' + k).trim(), 'title="' + SW_TITLE[k] + '"');
+  }
+  // The same idea for typography, where there is no colour to show.
+  function typeMarkFor(kind) {
+    const k = kind === 'variable' ? 'variable' : 'style';
+    const title = k === 'variable' ? 'Text variable group' : 'Text style';
+    return `<span class="sm-typemark sw-${k}" title="${title}">Aa</span>`;
+  }
+  // The row of buttons that converts a whole frame one way or the other.
+  function convertAllHtml(S) {
+    const d = S.data;
+    if (!d) return '';
+    const styles = (S === CS ? d.colorStyles : d.textStyles) || [];
+    const vars = (S === CS ? d.colorVariables : d.textVariables) || [];
+    if (!styles.length || !vars.length) return '';      // only when BOTH exist
+    const toVar = S.target === 'variables';
+    return `<button class="btn sm-convert-all" data-act="convert-everything" title="Make every token in this frame the same kind">
+      ${SI.wand} Convert everything to ${toVar ? 'Variables' : 'Styles'}</button>`;
+  }
   function lhStr(lh) {
     if (!lh || lh.unit === 'AUTO') return 'Auto';
     return trimNum(lh.value) + (lh.unit === 'PIXELS' ? 'px' : '%');
@@ -2617,9 +2659,13 @@
       </div>`;
       const done = (val) => {
         const picked = ov.querySelector('input[type=radio]:checked');
+        // Named radio groups come back by name, so a dialog can ask more than
+        // one thing (the convert dialog asks for scope AND what to keep).
+        const groups = {};
+        ov.querySelectorAll('input[type=radio][name]:checked').forEach(r => { groups[r.name] = r.value; });
         ov.remove();
         document.removeEventListener('keydown', onKey, true);
-        resolve({ value: val, picked: picked ? picked.value : null });
+        resolve(Object.assign({ value: val, picked: picked ? picked.value : null }, groups));
       };
       const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } };
       ov.addEventListener('click', e => {
@@ -2841,7 +2887,7 @@
     const el = $('colorsScreen');
     let html = '', foot = footerTexts.colors;
     if (CS.screen === 'entry') {
-      html = entryHtml({ icon: SI.colors, badge: SI.badgeColors, tint: 'green', title: 'Audit colors', readyHint: 'Scan finds unlinked colors and duplicate styles in this frame.', desc: 'Select a frame or component on the canvas to scan its color styles and unlinked colors.', genAct: 'gen-colors', genLabel: 'Generate Color Styles' });
+      html = entryHtml({ icon: SI.colors, badge: SI.badgeColors, tint: 'green', title: 'Audit colors', readyHint: 'Scan finds unlinked colors and duplicate styles in this frame.', desc: 'Select a frame or component on the canvas to scan its color styles and unlinked colors.', genAct: 'gen-colors', genLabel: 'Generate Palette' });
       foot = entryFooter('colors', 'generate color styles');
     } else if (CS.screen === 'results') {
       html = colorResultsHtml();
@@ -2951,8 +2997,9 @@
     const collapsed = !!S.collapsed.__stats;
     return `<div class="toolbar-card"><div class="sm-toolbar">
         <button class="btn" data-act="${genAct}">${SI.wand} ${genLabel}</button>
+        <button class="btn btn-primary sm-rescan" data-act="rescan" ${S.busy ? 'disabled' : ''}>${SI.refresh} Re-Scan</button>
         ${picker || ''}
-        <button class="btn btn-primary" data-act="rescan" ${S.busy ? 'disabled' : ''}>${SI.refresh} Re-Scan</button>
+        ${convertAllHtml(S)}
       </div></div>
       <div>
         <div class="stats-head" data-act="toggle" data-id="__stats">
@@ -2962,6 +3009,7 @@
         </div>
         ${collapsed ? '' : statsHtml}
       </div>
+      ${S === CS ? `<div class="sm-legend"><span><i class="l-style"></i> Style</span><span><i class="l-variable"></i> Variable</span><span><i class="l-unlinked"></i> Unlinked</span></div>` : ''}
       <div class="sm-section-gap"></div>`;
   }
 
@@ -2985,9 +3033,9 @@
     const stylesBody = d.colorStyles.length
       ? theadHtml(G_CSTYLE, ['', 'Style Name', 'Hex', 'Opacity', 'Uses', 'Actions']) + d.colorStyles.map(r => rowWrap(CS, r.key,
         `<div class="sm-row" style="grid-template-columns:${G_CSTYLE}">%CHEV%
-          <div class="sm-cell-color">${swatchHtml(r.hex, r.opacity)}<span class="sm-ellipsis sm-strong" title="${escHtml(r.name)}">${escHtml(r.name)}</span></div>
+          <div class="sm-cell-color">${swatchFor('style', r.hex, r.opacity)}<span class="sm-ellipsis sm-strong" title="${escHtml(r.name)}">${escHtml(r.name)}</span></div>
           <span class="mono">${r.hex ? escHtml(r.hex) : 'Gradient'}</span><span>${pctStr(r.opacity)}</span>${usesCell(r.uses.length)}
-          <div class="sm-actions"><button class="btn btn-sm btn-danger-soft" data-act="c-delete" data-key="${escHtml(r.key)}">Delete</button><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button></div>
+          <div class="sm-actions">${CS.target === 'variables' ? `<button class="btn btn-sm btn-outline-blue" data-act="convert-row" data-key="${escHtml(r.key)}">Convert to Variable</button>` : ''}<button class="btn btn-sm btn-danger-soft" data-act="c-delete" data-key="${escHtml(r.key)}">Delete</button><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button></div>
         </div>`, r.uses, 'style')).join('')
       : '<div class="sm-empty">No color styles are used in this frame yet.</div>';
 
@@ -2995,16 +3043,16 @@
     const varsBody = vars.length
       ? theadHtml(G_CSTYLE, ['', 'Variable Name', 'Hex', 'Opacity', 'Uses', 'Actions']) + vars.map(r => rowWrap(CS, r.key,
         `<div class="sm-row" style="grid-template-columns:${G_CSTYLE}">%CHEV%
-          <div class="sm-cell-color">${swatchHtml(r.hex, r.opacity)}<span class="sm-ellipsis sm-strong" title="${escHtml(r.name)}">${escHtml(r.name)}</span></div>
+          <div class="sm-cell-color">${swatchFor('variable', r.hex, r.opacity)}<span class="sm-ellipsis sm-strong" title="${escHtml(r.name)}">${escHtml(r.name)}</span></div>
           <span class="mono">${r.hex ? escHtml(r.hex) : '—'}</span><span>${pctStr(r.opacity)}</span>${usesCell(r.uses.length)}
-          <div class="sm-actions"><button class="btn btn-sm btn-danger-soft" data-act="c-var-delete" data-key="${escHtml(r.key)}">Delete</button><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button></div>
+          <div class="sm-actions">${CS.target === 'styles' ? `<button class="btn btn-sm btn-outline-blue" data-act="convert-row" data-key="${escHtml(r.key)}">Convert to Style</button>` : ''}<button class="btn btn-sm btn-danger-soft" data-act="c-var-delete" data-key="${escHtml(r.key)}">Delete</button><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button></div>
         </div>`, r.uses, 'variable')).join('')
       : '<div class="sm-empty">No color variables from this file are used in this frame.</div>';
 
     const newBody = d.newColors.length
       ? theadHtml(G_CROW, ['', 'Hex Value', 'Opacity', 'Suggestion', 'Uses', 'Actions']) + d.newColors.map(r => rowWrap(CS, r.key,
         `<div class="sm-row" style="grid-template-columns:${G_CROW}">%CHEV%
-          <div class="sm-cell-color">${swatchHtml(r.hex, r.opacity)}<span class="mono">${escHtml(r.hex)}</span></div>
+          <div class="sm-cell-color">${swatchFor('unlinked', r.hex, r.opacity)}<span class="mono">${escHtml(r.hex)}</span></div>
           <span>${pctStr(r.opacity)}</span>
           <div style="min-width:0"><div class="sm-strong">New color</div><div class="sm-meta" style="display:flex;gap:3px;align-items:center">Suggested: ${nameEditHtml(CS, r.key, r.suggested)}</div></div>
           ${usesCell(r.uses.length)}
@@ -3015,7 +3063,7 @@
     const localBody = d.matchLocal.length
       ? theadHtml(G_CROW, ['', 'Hex Value', 'Opacity', 'Matching Token', 'Uses', 'Action']) + d.matchLocal.map(r => rowWrap(CS, r.key,
         `<div class="sm-row" style="grid-template-columns:${G_CROW}">%CHEV%
-          <div class="sm-cell-color">${swatchHtml(r.hex, r.opacity)}<span class="mono">${escHtml(r.hex)}</span></div>
+          <div class="sm-cell-color">${swatchFor('unlinked', r.hex, r.opacity)}<span class="mono">${escHtml(r.hex)}</span></div>
           <span>${pctStr(r.opacity)}</span>
           ${matchedTokenHtml(r)}
           ${usesCell(r.uses.length)}
@@ -3065,7 +3113,7 @@
       <div class="sm-uses" style="padding-left:12px;background:var(--surface)"><div class="sm-uses-list">
         <div class="sm-uses-head"><span>Layer · Color · Why</span><span>Action</span></div>
         ${manual.slice(mPage * PER_PAGE, mPage * PER_PAGE + PER_PAGE).map(m => `<div class="sm-uses-row">
-          <span style="display:flex;align-items:center;gap:8px;min-width:0">${swatchHtml(m.hex, m.opacity)}
+          <span style="display:flex;align-items:center;gap:8px;min-width:0">${swatchFor('unlinked', m.hex, m.opacity)}
             <span style="min-width:0"><span class="sm-ellipsis" style="display:block;color:var(--text-primary)">${escHtml(m.path)}${m.inst ? ' <span class="sm-chip">in component</span>' : ''}</span>
             <span class="sm-meta" style="display:block">${escHtml(m.label)} · ${escHtml(m.hex || '')} · ${escHtml(m.paints)}</span></span></span>
           <button class="btn btn-sm" data-act="focus-one" data-id="${escHtml(m.id)}">Focus</button>
@@ -3078,9 +3126,11 @@
       </div>` : ''}</div>` : '';
     const instNote = s.instanceLayers ? `<div class="sm-note">${plural(s.instanceLayers, 'layer')} ${s.instanceLayers === 1 ? 'is' : 'are'} inside component instances (tagged “in component”). Styles are applied to the main component when it's in this file, otherwise as instance overrides.</div>` : '';
 
-    return resultsTopHtml(CS, 'gen-colors', targetLabel(CS, 'Color'), 'Color Summary', stats, targetPickerHtml(CS, 'color')) + '<div class="sm-blocks">' +
-      blockHtml(CS, { id: 'styles', title: 'Color Styles', sub: plural(d.colorStyles.length, 'style') + ' used in this frame', count: d.colorStyles.length, body: stylesBody }) +
-      blockHtml(CS, { id: 'variables', title: 'Color Variables', sub: plural(vars.length, 'variable') + ' used in this frame', count: vars.length, body: varsBody }) +
+    return resultsTopHtml(CS, 'gen-colors', 'Generate Palette', 'Color Summary', stats, targetPickerHtml(CS, 'color')) + '<div class="sm-blocks">' +
+      blockHtml(CS, { id: 'styles', title: 'Color Styles', sub: plural(d.colorStyles.length, 'style') + ' used in this frame', count: d.colorStyles.length,
+        actions: (CS.target === 'variables' && d.colorStyles.length) ? `<button class="btn btn-sm btn-primary" data-act="convert-all" data-from="style">Convert All to Variables</button>` : '', body: stylesBody }) +
+      blockHtml(CS, { id: 'variables', title: 'Color Variables', sub: plural(vars.length, 'variable') + ' used in this frame', count: vars.length,
+        actions: (CS.target === 'styles' && vars.length) ? `<button class="btn btn-sm btn-primary" data-act="convert-all" data-from="variable">Convert All to Styles</button>` : '', body: varsBody }) +
       blockHtml(CS, { id: 'unlinked', tone: 'red', title: 'Unlinked Colors', sub: 'Fills and strokes without a Color Style', count: unlinkedCount, countTone: 'issue',
         body: unlinkedBody + instNote }) +
       (manual.length ? blockHtml(CS, { id: 'manual', tone: 'amber', title: 'Needs manual fix', sub: 'Layers with several fills or strokes', count: manual.length, countTone: 'issue', body: manualBody }) : '') +
@@ -3115,7 +3165,7 @@
       </div>`).join('');
   }
   function svPreviewColor(r) {
-    return `<div style="min-width:0;display:flex;align-items:center;gap:8px">${swatchHtml(r.hex, r.opacity)}
+    return `<div style="min-width:0;display:flex;align-items:center;gap:8px">${swatchFor('style', r.hex, r.opacity)}
       <span style="min-width:0"><span class="sm-strong sm-ellipsis" style="display:block">${escHtml(r.styleName)}</span>
       <span class="sm-meta">style · ${escHtml(r.hex)} · ${pctStr(r.opacity)}</span></span></div>`;
   }
@@ -3128,7 +3178,8 @@
     return c && c.kind === 'variable' ? '<span class="sm-chip">variable</span>' : '';
   }
   function dupeItemColor(c) {
-    return `<div class="sm-dupe-item" style="margin:2px 0">${swatchHtml(c.hex, c.opacity)}<div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(c.name)}</div><div class="sm-meta">${escHtml(c.hex)} · ${pctStr(c.opacity)}</div></div></div>`;
+    // c.kind is 'style' or 'variable' — the shape says which.
+    return `<div class="sm-dupe-item" style="margin:2px 0">${swatchFor(c.kind || 'style', c.hex, c.opacity)}<div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(c.name)}</div><div class="sm-meta">${escHtml(c.kind === 'variable' ? 'variable' : 'style')} · ${escHtml(c.hex)} · ${pctStr(c.opacity)}</div></div></div>`;
   }
 
   // ── Brand assets / generate screens ───────────────────────────────────────
@@ -3229,7 +3280,7 @@
             <div class="sm-h" style="margin:0">Extraction Summary</div>
             <span class="sm-ex-total">${plural(ex.summary.length, 'color')} found</span>
           </div>
-          <div class="sm-ex-swatches">${ex.summary.map(c => `<div class="sm-ex-sw">${swatchHtml(c.hex, 1, 'lg')}<span class="mono">${escHtml(c.hex)}</span></div>`).join('')}</div>
+          <div class="sm-ex-swatches">${ex.summary.map(c => `<div class="sm-ex-sw">${swatchFor('unlinked', c.hex, 1, 'lg')}<span class="mono">${escHtml(c.hex)}</span></div>`).join('')}</div>
           <ul class="sm-ex-notes">
             <li>${ex.exact
               ? `Read from the frame's own fills and strokes — exact design values, nothing sampled or guessed.`
@@ -3830,8 +3881,42 @@
     if (act === 'c-delete') { confirmDeleteStyle(CS, CS.rows[key], 'color'); return; }
     if (act === 'c-var-delete') { confirmDeleteVariable(CS, CS.rows[key]); return; }
     if (act === 'sv-merge') { confirmLinkToVariable(CS, CS.rows[key]); return; }
+    if (act === 'convert-row') { convertFromRow(CS, CS.rows[key]); return; }
+    if (act === 'convert-all') { confirmConvert(CS, el.dataset.from === 'variable' ? 'to-style' : 'to-variable', null, convertCount(CS, el.dataset.from)); return; }
+    if (act === 'convert-everything') { confirmConvert(CS, CS.target === 'variables' ? 'to-variable' : 'to-style', null, null); return; }
     if (act === 'c-merge') { confirmMerge(CS, d.nearDupes[+el.dataset.idx], dupeItemColor); return; }
     if (act === 'c-merge-all') { confirmMergeAll(CS, d.nearDupes); return; }
+  }
+
+  // Convert: styles -> variables, or variables -> styles.
+  async function confirmConvert(S, direction, keys, countHint) {
+    const toVar = direction === 'to-variable';
+    const what = S === CS ? 'color' : 'text';
+    const fromWord = toVar ? (keys ? 'style' : 'styles') : (keys ? 'variable' : 'variables');
+    const toWord = toVar ? 'variable' : 'style';
+    const n = countHint == null ? null : countHint;
+
+    const res = await smDialog({
+      title: toVar ? 'Convert to variables' : 'Convert to styles',
+      body: `${n != null ? `<div><strong>${plural(n, what + ' ' + fromWord.replace(/s$/, ''))}</strong> will be converted.</div>` : ''}
+        <div style="margin-top:8px">Each one reuses an existing ${toWord} with the same value where there is one, and creates a new ${toWord} otherwise. Every layer using it is re-pointed. Colours and opacity are unchanged.</div>
+        <div style="margin-top:10px"><strong>Scope</strong></div>
+        <label><input type="radio" name="scope" value="frame" checked> This frame</label>
+        <label><input type="radio" name="scope" value="file"> Entire file</label>
+        ${toVar ? `<div style="margin-top:10px"><strong>The old ${fromWord}</strong></div>
+        <label><input type="radio" name="keep" value="link" checked> Keep ${fromWord}, linked to the variable</label>
+        <label><input type="radio" name="keep" value="remove"> Remove ${fromWord} if nothing else in the file uses ${keys ? 'it' : 'them'}</label>` : `
+        <div class="sm-meta" style="margin-top:10px">The variable is kept — the new style references it, since a Figma variable can't point at a style.</div>`}
+        <div class="sm-meta" style="margin-top:10px">One ⌘Z undoes the whole conversion.</div>`,
+      buttons: [{ label: 'Cancel', value: null }, { label: toVar ? 'Convert to variables' : 'Convert to styles', value: 'go', primary: true }]
+    });
+    if (!res.value) return;
+    const dlgScope = res.scope || 'frame';
+    sendStyle(S, {
+      type: 'convert', direction: direction, keys: keys || null,
+      scope: dlgScope, removeUnused: res.keep === 'remove',
+      label: toVar ? 'Convert to variables' : 'Convert to styles'
+    });
   }
 
   async function confirmLinkToVariable(S, row) {
@@ -3854,6 +3939,19 @@
       ? { type: 'merge-style-variable', styleId: row.styleId, label: 'Link style to variable' }
       : { type: 'merge-style-variable', direction: 'style', styleId: row.styleId,
           uses: cloneUses(row.uses || []), label: 'Link layers to style' });
+  }
+
+  // A row's key tells the sandbox which single token to convert.
+  function convertFromRow(S, row) {
+    if (!row) return;
+    const toVar = String(row.key).indexOf('s:') === 0 || String(row.key).indexOf('l:') === 0;
+    confirmConvert(S, toVar ? 'to-variable' : 'to-style', [row.key], 1);
+  }
+  function convertCount(S, from) {
+    const d = S.data; if (!d) return null;
+    return from === 'variable'
+      ? ((S === CS ? d.colorVariables : d.textVariables) || []).length
+      : ((S === CS ? d.colorStyles : d.textStyles) || []).length;
   }
 
   // Only the fields the sandbox needs to re-find each layer.
@@ -4060,7 +4158,7 @@
     const el = $('textScreen');
     let html = '', foot = footerTexts.typography;
     if (TS.screen === 'entry') {
-      html = entryHtml({ icon: SI.typeTT, badge: SI.badgeType, tint: 'amber', title: 'Audit typography', readyHint: 'Scan finds unlinked text and duplicate text styles in this frame.', desc: 'Select a frame or component on the canvas to scan its text styles and unlinked text.', genAct: 'gen-text', genLabel: 'Generate Text Styles' });
+      html = entryHtml({ icon: SI.typeTT, badge: SI.badgeType, tint: 'amber', title: 'Audit typography', readyHint: 'Scan finds unlinked text and duplicate text styles in this frame.', desc: 'Select a frame or component on the canvas to scan its text styles and unlinked text.', genAct: 'gen-text', genLabel: 'Generate Type Scale' });
       foot = entryFooter('text styles', 'generate text styles');
     } else if (TS.screen === 'results') {
       html = textResultsHtml();
@@ -4107,18 +4205,18 @@
     const stylesBody = d.textStyles.length
       ? theadHtml(G_TSTYLE, ['', 'Style', 'Uses', 'Action']) + d.textStyles.map(r => rowWrap(TS, r.key,
         `<div class="sm-row" style="grid-template-columns:${G_TSTYLE}">%CHEV%
-          <div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.name)}</div><div class="sm-meta">${escHtml(specMeta(r.spec, true))}</div></div>
+          <div style="min-width:0;display:flex;align-items:center;gap:8px">${typeMarkFor('style')}<div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.name)}</div><div class="sm-meta">${escHtml(specMeta(r.spec, true))}</div></div></div>
           ${usesCell(r.uses.length)}
-          <div class="sm-actions"><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-danger-soft" data-act="t-delete" data-key="${escHtml(r.key)}">Delete</button></div>
+          <div class="sm-actions">${TS.target === 'variables' ? `<button class="btn btn-sm btn-outline-blue" data-act="convert-row" data-key="${escHtml(r.key)}">Convert to Variable</button>` : ''}<button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-danger-soft" data-act="t-delete" data-key="${escHtml(r.key)}">Delete</button></div>
         </div>`, r.uses, 'style')).join('')
       : '<div class="sm-empty">No text styles are used in this frame yet.</div>';
 
     const tVarsBody = tVars.length
       ? theadHtml(G_TSTYLE, ['', 'Variable', 'Uses', 'Action']) + tVars.map(r => rowWrap(TS, r.key,
         `<div class="sm-row" style="grid-template-columns:${G_TSTYLE}">%CHEV%
-          <div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.name)}</div><div class="sm-meta">${escHtml(r.field)}${r.value === '' ? '' : ' · ' + escHtml(r.value)}</div></div>
+          <div style="min-width:0;display:flex;align-items:center;gap:8px">${typeMarkFor('variable')}<div style="min-width:0"><div class="sm-strong sm-ellipsis">${escHtml(r.name)}</div><div class="sm-meta">${escHtml(r.field)}${r.value === '' ? '' : ' · ' + escHtml(r.value)}</div></div></div>
           ${usesCell(r.uses.length)}
-          <div class="sm-actions"><button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-danger-soft" data-act="t-var-delete" data-key="${escHtml(r.key)}">Delete</button></div>
+          <div class="sm-actions">${TS.target === 'styles' ? `<button class="btn btn-sm btn-outline-blue" data-act="convert-row" data-key="${escHtml(r.key)}">Convert to Style</button>` : ''}<button class="btn btn-sm" data-act="focus-row" data-key="${escHtml(r.key)}">Focus All</button><button class="btn btn-sm btn-danger-soft" data-act="t-var-delete" data-key="${escHtml(r.key)}">Delete</button></div>
         </div>`, r.uses, 'variable')).join('')
       : '<div class="sm-empty">No text variables from this file are used in this frame.</div>';
 
@@ -4181,9 +4279,11 @@
           <div class="sm-size-count${r.count === 1 ? ' oneoff' : ''}">${r.count}×${r.count === 1 ? ' ⚠' : ''}</div>
         </div>`).join('')}</div>` : '');
 
-    return resultsTopHtml(TS, 'gen-text', targetLabel(TS, 'Text'), 'Text & Font Summary', stats, targetPickerHtml(TS, 'text')) + '<div class="sm-blocks">' +
-      blockHtml(TS, { id: 'styles', title: 'Text Styles', sub: 'in this file', count: d.textStyles.length, body: stylesBody }) +
-      blockHtml(TS, { id: 'variables', title: 'Text Variables', sub: plural(tVars.length, 'variable') + ' used in this frame', count: tVars.length, body: tVarsBody }) +
+    return resultsTopHtml(TS, 'gen-text', 'Generate Type Scale', 'Text & Font Summary', stats, targetPickerHtml(TS, 'text')) + '<div class="sm-blocks">' +
+      blockHtml(TS, { id: 'styles', title: 'Text Styles', sub: 'in this file', count: d.textStyles.length,
+        actions: (TS.target === 'variables' && d.textStyles.length) ? `<button class="btn btn-sm btn-primary" data-act="convert-all" data-from="style">Convert All to Variables</button>` : '', body: stylesBody }) +
+      blockHtml(TS, { id: 'variables', title: 'Text Variables', sub: plural(tVars.length, 'variable') + ' used in this frame', count: tVars.length,
+        actions: (TS.target === 'styles' && tVars.length) ? `<button class="btn btn-sm btn-primary" data-act="convert-all" data-from="variable">Convert All to Styles</button>` : '', body: tVarsBody }) +
       blockHtml(TS, { id: 'unlinked', tone: 'red', title: 'Unlinked text', sub: 'Texts without a Text Style', count: unlinkedCount, countTone: 'issue',
         body: unlinkedBody + (s.instanceLayers ? `<div class="sm-note">${plural(s.instanceLayers, 'text layer')} ${s.instanceLayers === 1 ? 'is' : 'are'} inside component instances (tagged “in component”). Styles are applied to the main component when it's in this file, otherwise as instance overrides.</div>` : '') + (s.mixedSkipped ? `<div class="sm-note">${plural(s.mixedSkipped, 'text layer')} with mixed fonts or styles in one layer ${s.mixedSkipped === 1 ? 'was' : 'were'} skipped — split or style them manually.</div>` : '') }) +
       blockHtml(TS, { id: 'dupes', tone: 'amber', title: 'Duplicate Text Styles', sub: 'Identical font, size &amp; line-height', count: d.duplicates.length + tSvDupes.length, countTone: (d.duplicates.length + tSvDupes.length) ? 'issue' : 'info',
@@ -4499,6 +4599,9 @@
     if (act === 't-delete') { confirmDeleteStyle(TS, TS.rows[key], 'text'); return; }
     if (act === 't-var-delete') { confirmDeleteVariable(TS, TS.rows[key]); return; }
     if (act === 'sv-merge') { confirmLinkToVariable(TS, TS.rows[key]); return; }
+    if (act === 'convert-row') { convertFromRow(TS, TS.rows[key]); return; }
+    if (act === 'convert-all') { confirmConvert(TS, el.dataset.from === 'variable' ? 'to-style' : 'to-variable', null, convertCount(TS, el.dataset.from)); return; }
+    if (act === 'convert-everything') { confirmConvert(TS, TS.target === 'variables' ? 'to-variable' : 'to-style', null, null); return; }
     if (act === 't-merge') {
       confirmMerge(TS, d.duplicates[+el.dataset.idx], x => `<div style="min-width:0"><div class="sm-strong">${escHtml(x.name)}</div><div class="sm-meta">${escHtml(specMeta(x.spec, true))}</div></div>`);
       return;
