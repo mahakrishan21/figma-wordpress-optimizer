@@ -1861,8 +1861,12 @@ function styleScanNodes(roots) {
 async function textTypeRuns(node) {
   var runs = [];
   try {
-    var segs = node.getStyledTextSegments(
-      ['fontName', 'fontSize', 'lineHeight', 'letterSpacing', 'textCase', 'textDecoration', 'fillStyleId']);
+    var baseFields = ['fontName', 'fontSize', 'lineHeight', 'letterSpacing', 'textCase', 'textDecoration', 'fillStyleId'];
+    // Each run's own text style and typography variables, so a run that was
+    // styled after the last scan isn't reported as unlinked again.
+    var segs;
+    try { segs = node.getStyledTextSegments(baseFields.concat(['textStyleId', 'boundVariables'])); }
+    catch (e) { segs = node.getStyledTextSegments(baseFields); }
     for (var i = 0; i < segs.length; i++) {
       var seg = segs[i];
       if (!seg.fontName || typeof seg.fontSize !== 'number') continue;
@@ -1882,6 +1886,8 @@ async function textTypeRuns(node) {
           letterSpacing: seg.letterSpacing || { unit: 'PERCENT', value: 0 },
           upper: seg.textCase === 'UPPER'
         },
+        styleId: typeof seg.textStyleId === 'string' ? seg.textStyleId : '',
+        varIds: seg.boundVariables ? boundTextVariableIds(seg) : [],
         range: { start: seg.start, end: seg.end, text: chars.length > 24 ? chars.slice(0, 24) + '…' : chars }
       });
     }
@@ -2489,6 +2495,52 @@ async function scanText(roots) {
   };
   let mixedSkipped = 0;
 
+  // A layer (or one run of it) that uses a text style. False when the style
+  // can't be read, so the caller can fall back to treating it as unlinked.
+  const noteStyleUse = async (sid, use) => {
+    const style = await getStyleCached(cache, sid);
+    if (!style) return false;
+    if (localIds.has(sid) && !style.remote) {
+      if (!localUse.has(sid)) localUse.set(sid, []);
+      localUse.get(sid).push(use);
+    } else {
+      if (!remoteUse.has(sid)) remoteUse.set(sid, { style: style, uses: [] });
+      remoteUse.get(sid).uses.push(use);
+    }
+    return true;
+  };
+  // Resolve each bound variable once, then key the use by the exact
+  // combination it has. Every use sharing a combination becomes one text
+  // style, which is the thing a conversion can actually create. False when
+  // none of the variables is a readable local one.
+  const noteVarUse = async (tvars, use, spec) => {
+    var fields = [];
+    for (var tv = 0; tv < tvars.length; tv++) {
+      var tid = tvars[tv].id;
+      var rec = textVarCache.get(tid);
+      if (rec === undefined) {
+        rec = null;
+        try {
+          var variable = await figma.variables.getVariableByIdAsync(tid);
+          if (variable && !variable.remote) {
+            rec = { id: tid, name: variable.name, value: await variableValue(variable) };
+          }
+        } catch (e) {}
+        textVarCache.set(tid, rec);
+      }
+      if (rec) fields.push({ field: tvars[tv].field, id: tid, name: rec.name, value: rec.value });
+    }
+    if (!fields.length) return false;
+    fields.sort(function (a, b) { return a.field < b.field ? -1 : a.field > b.field ? 1 : 0; });
+    var sig = fields.map(function (f) { return f.field + '=' + f.id; }).join('|');
+    var grp = localTextVarUse.get(sig);
+    // Unbound properties keep whatever the layer itself has, so a
+    // partially-bound layer still yields a complete style.
+    if (!grp) localTextVarUse.set(sig, grp = { fields: fields, uses: [], spec: spec });
+    grp.uses.push(use);
+    return true;
+  };
+
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     if (node.fontSize !== figma.mixed) {
@@ -2512,58 +2564,24 @@ async function scanText(roots) {
         const sz = Math.round(run.spec.fontSize);
         if (sz > 0) sizeFreq.set(sz, (sizeFreq.get(sz) || 0) + 1);
 
+        // A run that already has a text style or typography variables applied
+        // is linked — it must not come back as an unresolved match.
+        const runUse = useRef(node, 'text', false, null, run.range);
+        if (run.styleId && await noteStyleUse(run.styleId, runUse)) continue;
+        if (run.varIds && run.varIds.length && await noteVarUse(run.varIds, runUse, run.spec)) continue;
+
         const rk = textSpecKey(run.spec);
         if (!unlinked.has(rk)) unlinked.set(rk, { spec: run.spec, uses: [] });
-        unlinked.get(rk).uses.push(useRef(node, 'text', false, null, run.range));
+        unlinked.get(rk).uses.push(runUse);
       }
       continue;
     }
     if (typeof sid === 'string' && sid) {
-      const style = await getStyleCached(cache, sid);
-      if (!style) continue;
-      if (localIds.has(sid) && !style.remote) {
-        if (!localUse.has(sid)) localUse.set(sid, []);
-        localUse.get(sid).push(useRef(node, 'text'));
-      } else {
-        if (!remoteUse.has(sid)) remoteUse.set(sid, { style: style, uses: [] });
-        remoteUse.get(sid).uses.push(useRef(node, 'text'));
-      }
+      await noteStyleUse(sid, useRef(node, 'text'));
       continue;
     }
     var tvars = boundTextVariableIds(node);
-    if (tvars.length) {
-      // Resolve each bound variable once, then key the LAYER by the exact
-      // combination it uses. Every layer sharing a combination becomes one
-      // text style, which is the thing a conversion can actually create.
-      var fields = [];
-      for (var tv = 0; tv < tvars.length; tv++) {
-        var tid = tvars[tv].id;
-        var rec = textVarCache.get(tid);
-        if (rec === undefined) {
-          rec = null;
-          try {
-            var variable = await figma.variables.getVariableByIdAsync(tid);
-            if (variable && !variable.remote) {
-              rec = { id: tid, name: variable.name, value: await variableValue(variable) };
-            }
-          } catch (e) {}
-          textVarCache.set(tid, rec);
-        }
-        if (rec) fields.push({ field: tvars[tv].field, id: tid, name: rec.name, value: rec.value });
-      }
-      if (fields.length) {
-        fields.sort(function (a, b) { return a.field < b.field ? -1 : a.field > b.field ? 1 : 0; });
-        var sig = fields.map(function (f) { return f.field + '=' + f.id; }).join('|');
-        var grp = localTextVarUse.get(sig);
-        if (!grp) {
-          // Unbound properties keep whatever the layer itself has, so a
-          // partially-bound layer still yields a complete style.
-          localTextVarUse.set(sig, grp = { fields: fields, uses: [], spec: textSpecOfNode(node) });
-        }
-        grp.uses.push(useRef(node, 'text'));
-        continue;
-      }
-    }
+    if (tvars.length && await noteVarUse(tvars, useRef(node, 'text'), textSpecOfNode(node))) continue;
     const spec = textSpecOfNode(node);
     if (!spec) { mixedSkipped++; continue; }   // unreadable for another reason
     const k = textSpecKey(spec);
@@ -2686,7 +2704,8 @@ async function scanText(roots) {
   });
   textVariables.sort((a, b) => b.uses.length - a.uses.length || a.name.localeCompare(b.name));
 
-  const styleVarDupes = await findTextStyleVariableDupes();
+  const styleVarDupes = await findTextStyleVariableDupes(
+    Array.from(localTextVarUse.values()).map(g => ({ ids: g.fields.map(f => f.id), uses: g.uses })));
 
   return {
     textStyles: textStyles,
@@ -2826,7 +2845,7 @@ function styleBlockedReason(node) {
   return null;
 }
 
-async function applyStyleToUses(kind, style, uses, result) {
+async function applyStyleToUses(kind, style, uses, result, opts) {
   if (kind === 'text') {
     try { await figma.loadFontAsync(style.fontName); } catch (e) {
       result.skipped += uses.length;
@@ -2853,8 +2872,29 @@ async function applyStyleToUses(kind, style, uses, result) {
     try {
       if (kind === 'text') {
         await loadTextNodeFonts(node);
+        if (opts && opts.unbindVars) {
+          for (const def of TEXT_VAR_FIELDS) {
+            try {
+              if (ranged) node.setRangeBoundVariable(u.start, u.end, def.field, null);
+              else node.setBoundVariable(def.field, null);
+            } catch (e) {}
+          }
+        }
         if (ranged) await node.setRangeTextStyleIdAsync(u.start, u.end, style.id);
         else await node.setTextStyleIdAsync(style.id);
+        // An instance that overrides its typography keeps the override when
+        // the main component is styled, so the scanned layer would stay
+        // unlinked. Style it directly as well.
+        if (target.via === 'component' && found !== node && !found.removed) {
+          const now = ranged ? found.getRangeTextStyleId(u.start, u.end) : found.textStyleId;
+          if (now !== style.id) {
+            try {
+              await loadTextNodeFonts(found);
+              if (ranged) await found.setRangeTextStyleIdAsync(u.start, u.end, style.id);
+              else await found.setTextStyleIdAsync(style.id);
+            } catch (e) { pushReason(result, 'An instance override could not be styled.'); }
+          }
+        }
       } else if (ranged) {
         // Only the characters this colour actually covers.
         await loadTextNodeFonts(node);
@@ -2975,7 +3015,40 @@ async function findColorStyleVariableDupes(varUses) {
 
 // A text style duplicates a variable group when EVERY property it defines is
 // already held by a variable of the right scope and value.
-async function findTextStyleVariableDupes() {
+// The variables holding every property a text style defines, or null when any
+// property has no matching variable (a partial match isn't a duplicate).
+function textStyleVariableMatches(st, floatPool, stringPool) {
+  var spec = textSpecOfStyle(st);
+  var src = {
+    family: spec.family, style: spec.style, size: spec.fontSize,
+    lh: lineHeightNumber(spec.lineHeight), ls: letterSpacingNumber(spec.letterSpacing)
+  };
+  var matches = [], wanted = 0;
+  for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) {
+    var def = TEXT_VAR_FIELDS[f];
+    var value = src[def.prop];
+    if (value === null || value === undefined) continue;
+    wanted++;
+    var pool = def.type === 'STRING' ? stringPool : floatPool;
+    var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, [textVarName(st.name, def.field), st.name + '/' + def.field]);
+    if (hit) matches.push({ field: def.field, variable: hit });
+  }
+  if (!wanted || matches.length !== wanted) return null;
+  return { spec: spec, matches: matches };
+}
+
+// Plugin data on a text style recording that the user resolved its duplicate
+// variable group in favour of the style ("Link to style"): the variable ids,
+// sorted, so the record only holds while the same variables still match.
+var SV_RESOLVED_KEY = 'svResolvedVars';
+function variableIdSignature(matches) {
+  return matches.map(function (m) { return m.variable.id; }).sort().join(',');
+}
+
+// varGroups: the frame's layers bound to typography variables, as
+// [{ ids: [variableId…], uses: [...] }]. A group whose variables all belong to
+// a style's matching set is a layer the Styles direction re-points.
+async function findTextStyleVariableDupes(varGroups) {
   var styles = await figma.getLocalTextStylesAsync();
   var floatPool = await localVariablesWithValues('FLOAT');
   var stringPool = await localVariablesWithValues('STRING');
@@ -2985,27 +3058,26 @@ async function findTextStyleVariableDupes() {
     if (st.remote) continue;
     var already = boundTextVariableIds(st);
     if (already.length) continue;                 // already linked to variables
-    var spec = textSpecOfStyle(st);
-    var src = {
-      family: spec.family, style: spec.style, size: spec.fontSize,
-      lh: lineHeightNumber(spec.lineHeight), ls: letterSpacingNumber(spec.letterSpacing)
-    };
-    var matches = [], wanted = 0;
-    for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) {
-      var def = TEXT_VAR_FIELDS[f];
-      var value = src[def.prop];
-      if (value === null || value === undefined) continue;
-      wanted++;
-      var pool = def.type === 'STRING' ? stringPool : floatPool;
-      var hit = findTextVariable(pool, { type: def.type, value: value, scope: def.scope }, [textVarName(st.name, def.field), st.name + '/' + def.field]);
-      if (hit) matches.push({ field: def.field, variable: hit });
-    }
-    if (!wanted || matches.length !== wanted) continue;   // partial match isn't a duplicate
+    var found = textStyleVariableMatches(st, floatPool, stringPool);
+    if (!found) continue;
+    var matches = found.matches;
+    var idSet = new Set(matches.map(function (m) { return m.variable.id; }));
+    var uses = [];
+    (varGroups || []).forEach(function (g) {
+      if (g.ids.length && g.ids.every(function (id) { return idSet.has(id); })) Array.prototype.push.apply(uses, g.uses);
+    });
+    // Resolved in favour of the style, and no layer here is bound to those
+    // variables any more: not an open duplicate. A layer bound to them again
+    // brings the row back.
+    var resolved = '';
+    try { resolved = st.getPluginData(SV_RESOLVED_KEY); } catch (e) {}
+    if (resolved && resolved === variableIdSignature(matches) && !uses.length) continue;
     out.push({
       key: 'sv:' + st.id, styleId: st.id, styleName: st.name,
       variableName: matches[0].variable.name.replace(/\/[^\/]+$/, ''),
       fields: matches.map(function (m) { return m.field; }),
-      spec: spec
+      spec: found.spec,
+      uses: uses
     });
   }
   return out;
@@ -3063,11 +3135,26 @@ async function mergeVariableIntoStyle(kind, styleId, uses) {
   if (!uses || !uses.length) {
     pushReason(result, 'No layer in this frame uses that variable, so there was nothing to re-point.');
     result.merged = 1;
+    if (kind === 'text') await markTextStyleResolved(style);
     return result;
   }
-  await applyStyleToUses(kind, style, uses, result);
-  if (result.applied) result.merged = 1;
+  // A text layer's bound variables would keep driving its type over the style.
+  await applyStyleToUses(kind, style, uses, result, kind === 'text' ? { unbindVars: true } : null);
+  if (result.applied) {
+    result.merged = 1;
+    if (kind === 'text') await markTextStyleResolved(style);
+  }
   return result;
+}
+
+// Record on a text style that its duplicate variable group was resolved in its
+// favour, so the next scan stops listing the pair (see findTextStyleVariableDupes).
+async function markTextStyleResolved(style) {
+  try {
+    var found = textStyleVariableMatches(style,
+      await localVariablesWithValues('FLOAT'), await localVariablesWithValues('STRING'));
+    if (found) style.setPluginData(SV_RESOLVED_KEY, variableIdSignature(found.matches));
+  } catch (e) {}
 }
 
 // Bind a group of typography variables to every text layer a scan row covers.
@@ -3101,6 +3188,17 @@ async function applyTextVariablesToUses(vars, uses, result) {
         } catch (e) {}
       }
       if (!bound) { result.skipped++; pushReason(result, 'Figma rejected every typography binding on this layer.'); continue; }
+      // As in applyStyleToUses(): an instance that overrides its typography
+      // keeps the override, so bind the scanned layer directly too.
+      if (target.via === 'component' && found !== node && !found.removed && !ranged && !hasTextVariableBinding(found)) {
+        try {
+          await loadTextNodeFonts(found);
+          try { await found.setTextStyleIdAsync(''); } catch (e) {}
+          for (var fv = 0; fv < vars.length; fv++) {
+            try { found.setBoundVariable(vars[fv].field, vars[fv].variable); } catch (e) {}
+          }
+        } catch (e) {}
+      }
       result.applied++;
       if (!result.done) result.done = new Set();
       result.done.add(doneKey);

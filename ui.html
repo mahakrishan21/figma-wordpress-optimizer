@@ -907,7 +907,15 @@
     .sm-upload-box.drag { border-color: var(--blue-400); background: var(--blue-50); }
     .sm-option-alt { width: 100%; justify-content: center; margin-top: 6px; }
     .sm-target { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
-    .sm-toolbar .sm-rescan { margin-left: auto; }
+    /* Results header: Re-Scan + Generate on the left, Create on the right. */
+    .sm-toolbar .sm-create-btn { margin-left: auto; }
+    .sm-create-btn { position: relative; white-space: nowrap; }
+    .sm-create-btn:focus-within { outline: 2px solid var(--blue-500); outline-offset: 1px; }
+    .sm-create-val { display: inline-flex; align-items: center; gap: 5px; padding-left: 7px; border-left: 1px solid var(--border); }
+    .sm-create-val svg { color: var(--text-muted); }
+    .sm-create-btn:hover .sm-create-val svg { color: currentColor; }
+    /* The native select covers the whole button, so a click anywhere opens it. */
+    .sm-create-select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font: inherit; border: none; }
     .sm-target .sm-input { width: auto; padding-right: 22px; }
     .sm-ex-total { font-size: 11px; color: var(--text-secondary); white-space: nowrap; margin-left: auto; }
     .sm-ex-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
@@ -3000,6 +3008,17 @@
       </select>
     </label>`;
   }
+  // The same Styles/Variables choice, as a button for the results header.
+  function createButtonHtml(S, what) {
+    const t = S.target === 'variables' ? 'variables' : 'styles';
+    return `<label class="btn sm-create-btn" title="Create ${what} styles, or ${what} variables. Rows that apply an existing style are unaffected.">
+      <span>Create</span><span class="sm-create-val">${t === 'variables' ? 'Variables' : 'Styles'}${SI.chevDown}</span>
+      <select class="sm-create-select" data-target aria-label="What to create">
+        <option value="styles"${t === 'styles' ? ' selected' : ''}>Styles</option>
+        <option value="variables"${t === 'variables' ? ' selected' : ''}>Variables</option>
+      </select>
+    </label>`;
+  }
   function targetLabel(S, what) {
     return 'Create ' + what + ' ' + (S.target === 'variables' ? 'Variables' : 'Styles');
   }
@@ -3036,10 +3055,10 @@
   function resultsTopHtml(S, genAct, genLabel, summaryTitle, statsHtml, picker) {
     const collapsed = !!S.collapsed.__stats;
     return `<div class="toolbar-card"><div class="sm-toolbar">
-        <button class="btn" data-act="${genAct}">${SI.wand} ${genLabel}</button>
         <button class="btn btn-primary sm-rescan" data-act="rescan" ${S.busy ? 'disabled' : ''}>${SI.refresh} Re-Scan</button>
-        ${picker || ''}
+        <button class="btn" data-act="${genAct}">${SI.wand} ${genLabel}</button>
         ${convertAllHtml(S)}
+        ${picker || ''}
       </div></div>
       <div>
         <div class="stats-head" data-act="toggle" data-id="__stats">
@@ -3173,7 +3192,7 @@
       </div>` : ''}</div>` : '';
     const instNote = s.instanceLayers ? `<div class="sm-note">${plural(s.instanceLayers, 'layer')} ${s.instanceLayers === 1 ? 'is' : 'are'} inside component instances (tagged “in component”). Styles are applied to the main component when it's in this file, otherwise as instance overrides.</div>` : '';
 
-    return resultsTopHtml(CS, 'gen-colors', 'Generate Palette', 'Color Summary', stats, targetPickerHtml(CS, 'color')) + '<div class="sm-blocks">' +
+    return resultsTopHtml(CS, 'gen-colors', 'Generate Palette', 'Color Summary', stats, createButtonHtml(CS, 'color')) + '<div class="sm-blocks">' +
       blockHtml(CS, { id: 'styles', title: 'Color Styles', sub: plural(d.colorStyles.length, 'style') + ' used in this frame', count: d.colorStyles.length,
         actions: (CS.target === 'variables' && d.colorStyles.length) ? `<button class="btn btn-sm btn-primary" data-act="convert-all" data-from="style">Convert All to Variables</button>` : '', body: stylesBody }) +
       blockHtml(CS, { id: 'variables', title: 'Color Variables', sub: plural(vars.length, 'variable') + ' used in this frame', count: vars.length,
@@ -4374,7 +4393,7 @@
           <div class="sm-size-count${r.count === 1 ? ' oneoff' : ''}">${r.count}×${r.count === 1 ? ' ⚠' : ''}</div>
         </div>`).join('')}</div>` : '');
 
-    return resultsTopHtml(TS, 'gen-text', 'Generate Type Scale', 'Text & Font Summary', stats, targetPickerHtml(TS, 'text')) + '<div class="sm-blocks">' +
+    return resultsTopHtml(TS, 'gen-text', 'Generate Type Scale', 'Text & Font Summary', stats, createButtonHtml(TS, 'text')) + '<div class="sm-blocks">' +
       blockHtml(TS, { id: 'styles', title: 'Text Styles', sub: 'in this file', count: d.textStyles.length,
         actions: (TS.target === 'variables' && d.textStyles.length) ? `<button class="btn btn-sm btn-primary" data-act="convert-all" data-from="style">Convert All to Variables</button>` : '', body: stylesBody }) +
       blockHtml(TS, { id: 'variables', title: 'Text Variables', sub: plural(tVars.length, 'variable') + ' used in this frame', count: tVars.length,
