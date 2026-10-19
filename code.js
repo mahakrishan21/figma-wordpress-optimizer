@@ -1962,6 +1962,22 @@ function solidOfStyle(style) {
   return { hex: rgbToHexStr(p.color), opacity: typeof p.opacity === 'number' ? p.opacity : 1 };
 }
 
+// Colour styles are created individually, never inside groups: Figma turns
+// every "/" in a style name into a folder. "Brand / Primary" -> "Primary".
+// A last part that is only a number or percentage keeps the part before it,
+// so "Blue/500" -> "Blue 500" and "White / 6%" -> "White 6%".
+function flatColorStyleName(name) {
+  var parts = String(name || '').split('/').map(function (p) { return p.trim(); }).filter(Boolean);
+  if (!parts.length) return String(name || '').trim();
+  var last = parts[parts.length - 1];
+  if (parts.length > 1 && /^[\d.,]+%?$/.test(last)) {
+    var prev = parts[parts.length - 2];
+    if (parts.length > 2 && /^[\d.,]+%?$/.test(prev)) prev = parts[parts.length - 3] + ' ' + prev;
+    return prev + ' ' + last;
+  }
+  return last;
+}
+
 function uniqueName(name, taken) {
   let candidate = name;
   let n = 2;
@@ -2002,29 +2018,12 @@ function colorShade(hex) {
   return { neutral: false, name: prefix + hue };
 }
 
-const ICON_TYPES = ['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'LINE'];
-
-function colorRoleOf(use) {
-  if (use.prop === 'strokes') return 'Border';
-  if (use.type === 'TEXT') return 'Text';
-  if (ICON_TYPES.indexOf(use.type) !== -1) return 'Icon';
-  return 'Fill';
-}
-
-// "Text / Dark Gray", "Brand / Blue", "Neutral / White / 6%" …
+// "Dark Gray", "Blue", "White 6%" … — one flat name per colour, with no
+// group prefix, since colour styles are created individually.
 function suggestColorName(hex, opacity, uses, taken) {
   const shade = colorShade(hex);
-  const counts = {};
-  for (const u of uses) {
-    const role = colorRoleOf(u);
-    counts[role] = (counts[role] || 0) + 1;
-  }
-  let group = shade.neutral ? 'Neutral' : 'Brand';
-  for (const role of ['Text', 'Border', 'Icon']) {
-    if (uses.length && (counts[role] || 0) / uses.length >= 0.7) { group = role; break; }
-  }
   const pct = opPct(opacity);
-  const base = group + ' / ' + shade.name + (pct < 100 ? ' / ' + pct + '%' : '');
+  const base = shade.name + (pct < 100 ? ' ' + pct + '%' : '');
   return uniqueName(base, taken);
 }
 
@@ -2045,6 +2044,13 @@ async function scanColors(roots) {
 
   const cache = new Map();
   const varCache = new Map();
+  // Variables that really exist in this file right now. A variable deleted in
+  // Figma can still be returned by id while layers reference it, so a local
+  // id missing from this set is treated as deleted.
+  const liveLocalVarIds = new Set();
+  try {
+    (await figma.variables.getLocalVariablesAsync('COLOR')).forEach(v => liveLocalVarIds.add(v.id));
+  } catch (e) {}
   const localUse = new Map();   // local styleId -> uses
   const remoteUse = new Map();  // remote styleId -> { style, uses }
   const remoteVarUse = new Map(); // remote variableId -> { name, hex, opacity, uses }
@@ -2088,13 +2094,17 @@ async function scanColors(roots) {
             // From another file — offer to make a local copy.
             if (!remoteVarUse.has(vid)) remoteVarUse.set(vid, { name: rv.name, hex: rgbToHexStr(rv.color), opacity: op, uses: [] });
             remoteVarUse.get(vid).uses.push(useRef(node, prop, multi, paintInfo, range));
-          } else if (rv) {
+            continue;
+          }
+          if (rv && liveLocalVarIds.has(vid)) {
             // Defined in this file — already linked, and listed in its own
             // section alongside Color Styles.
             if (!localVarUse.has(vid)) localVarUse.set(vid, { name: rv.name, hex: rgbToHexStr(rv.color), opacity: op, uses: [] });
             localVarUse.get(vid).uses.push(useRef(node, prop, multi, paintInfo, range));
+            continue;
           }
-          continue;
+          // The variable was deleted (or can't be resolved): the binding is a
+          // dangling reference, so the paint's own colour is unlinked.
         }
         const hex = rgbToHexStr(p.color);
         const op = typeof p.opacity === 'number' ? p.opacity : 1;
@@ -2752,11 +2762,16 @@ async function findLocalStylesByName(kind) {
 async function styleNameConflicts(kind, names) {
   const existing = await findLocalStylesByName(kind);
   const out = [];
-  for (const n of names) if (existing.has(n) && out.indexOf(n) === -1) out.push(n);
+  for (let n of names) {
+    // Paint styles are created under their flat name, so check that one.
+    if (kind === 'paint') n = flatColorStyleName(n);
+    if (existing.has(n) && out.indexOf(n) === -1) out.push(n);
+  }
   return out;
 }
 
 async function createOrUpdatePaintStyle(name, paints, conflict, existing) {
+  name = flatColorStyleName(name);
   let style = conflict === 'update' ? existing.get(name) : null;
   if (!style) {
     style = figma.createPaintStyle();
@@ -2987,9 +3002,23 @@ async function applyVariableToUses(variable, uses, result) {
 // ── Duplicates ACROSS types: the same value held by both a style and a
 // variable. Merging binds the style to the variable, so one value drives both
 // and every layer keeps working — nothing is deleted.
+// The colour variable a paint is bound to, when that variable still exists:
+// a local one in this file's variable list, or one from a library. A variable
+// deleted in Figma leaves a dangling id behind, which counts as unbound.
+async function liveColorBindingId(paint, liveLocalIds) {
+  var id = paint && paint.boundVariables && paint.boundVariables.color
+    ? paint.boundVariables.color.id : null;
+  if (!id) return null;
+  if (liveLocalIds.has(id)) return id;
+  var v = null;
+  try { v = await figma.variables.getVariableByIdAsync(id); } catch (e) {}
+  return v && v.remote ? id : null;
+}
+
 async function findColorStyleVariableDupes(varUses) {
   var styles = await figma.getLocalPaintStylesAsync();
   var vars = await localVariablesWithValues('COLOR');
+  var liveIds = new Set(vars.map(function (e) { return e.variable.id; }));
   var out = [];
   for (var i = 0; i < styles.length; i++) {
     var st = styles[i];
@@ -2997,8 +3026,7 @@ async function findColorStyleVariableDupes(varUses) {
     var sv = solidOfStyle(st);
     if (!sv) continue;
     // Already pointing at a variable? Then it isn't a duplicate.
-    var paint = st.paints[0];
-    if (paint && paint.boundVariables && paint.boundVariables.color) continue;
+    if (await liveColorBindingId(st.paints[0], liveIds)) continue;
     var match = findColorVariable(vars, sv.hex, sv.opacity);
     if (!match) continue;
     out.push({
@@ -3514,7 +3542,8 @@ async function createStylesFromList(kind, msg) {
   for (const item of items) {
     try {
       const dupe = sameValueStyles.get(kind === 'paint' ? colorKey(String(item.hex).toUpperCase(), item.opacity) : textSpecKey(specOfItem(item)));
-      if (dupe && dupe.name !== item.name && msg.reuse !== false) {
+      const itemName = kind === 'paint' ? flatColorStyleName(item.name) : item.name;
+      if (dupe && dupe.name !== itemName && msg.reuse !== false) {
         made.push(dupe);
         result.reused = (result.reused || 0) + 1;
         continue;
@@ -3845,17 +3874,18 @@ async function convertVariableToStyle(row, ctx, result) {
   if (!variable) { result.skipped += row.uses.length; pushReason(result, 'That variable is no longer available.'); return; }
 
   var style = null;
+  var flatName = flatColorStyleName(variable.name);
   for (var i = 0; i < ctx.styles.length; i++) {
     var sv = solidOfStyle(ctx.styles[i]);
     if (!sv || sv.hex !== hex || Math.abs(sv.opacity - opacity) > 0.004) continue;
-    if (ctx.styles[i].name === variable.name) { style = ctx.styles[i]; break; }
+    if (ctx.styles[i].name === variable.name || ctx.styles[i].name === flatName) { style = ctx.styles[i]; break; }
     if (!style) style = ctx.styles[i];
   }
   if (style) {
     result.reused++;
   } else {
     style = figma.createPaintStyle();
-    style.name = uniqueName(variable.name, ctx.taken);
+    style.name = uniqueName(flatName, ctx.taken);
     ctx.taken.add(style.name);
     style.paints = [{ type: 'SOLID', color: hexToRgb01(hex), opacity: opacity }];
     ctx.styles.push(style);
@@ -4089,17 +4119,17 @@ async function buildTokenIndex(kind) {
 
   if (kind === 'paint') {
     var styles = await figma.getLocalPaintStylesAsync();
+    var vars = await localVariablesWithValues('COLOR');
+    var liveIds = new Set(vars.map(function (e) { return e.variable.id; }));
     for (var i = 0; i < styles.length; i++) {
       var st = styles[i];
       if (st.remote) continue;
       var sv = solidOfStyle(st);
       if (!sv) continue;
-      var paint = st.paints[0];
-      var boundId = paint && paint.boundVariables && paint.boundVariables.color
-        ? paint.boundVariables.color.id : null;
+      // A binding to a deleted variable doesn't count as linked.
+      var boundId = await liveColorBindingId(st.paints[0], liveIds);
       put(colorKey(sv.hex, sv.opacity), { style: st, boundVariableId: boundId });
     }
-    var vars = await localVariablesWithValues('COLOR');
     for (var j = 0; j < vars.length; j++) {
       var val = vars[j].value;
       if (!val || typeof val.r !== 'number') continue;
