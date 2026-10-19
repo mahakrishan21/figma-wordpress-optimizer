@@ -2228,12 +2228,22 @@ async function scanColors(roots) {
   // Variables take part in near-duplicate detection too, so a style and a
   // variable that are nearly the same colour are caught as well as two styles.
   const pool = [];
+  const localVarEntries = await localVariablesWithValues('COLOR');
+  const localVarIds = new Set(localVarEntries.map(e => e.variable.id));
+
   for (const s of locals) {
     const sp = solidOfStyle(s);
     if (!sp) continue;
+    // A style bound to a local variable has no value of its own — it IS that
+    // variable. Pairing the two would report a duplicate that merging can
+    // never clear, because linking them is exactly what merging does.
+    const paint = s.paints && s.paints[0];
+    const boundId = paint && paint.boundVariables && paint.boundVariables.color
+      ? paint.boundVariables.color.id : null;
+    if (boundId && localVarIds.has(boundId)) continue;
     pool.push({ id: s.id, name: s.name, kind: 'style', hex: sp.hex, opacity: sp.opacity, lab: hexToLab(sp.hex), uses: (localUse.get(s.id) || []).length });
   }
-  for (const entry of await localVariablesWithValues('COLOR')) {
+  for (const entry of localVarEntries) {
     const val = entry.value;
     if (!val || typeof val.r !== 'number') continue;
     const vhex = rgbToHexStr(val);

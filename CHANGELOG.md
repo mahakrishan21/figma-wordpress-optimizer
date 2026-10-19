@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **A merged colour stayed in Near-Duplicate Colors with its Merge button still offered.** When a style and a variable hold the same value, merging in *Styles* mode links the style to the variable and deliberately deletes nothing — so on the next scan both tokens still existed and still looked like a duplicate. Merging again did the same thing, forever
+  - A style whose paint is bound to a local variable no longer takes part in duplicate detection: it has no value of its own, it **is** that variable. The pair disappears as soon as it is linked
+  - Genuine duplicates are still caught. A near-identical *unbound* style is reported against the variable rather than against its bound style, so nothing is hidden — only the redundant half of a linked pair is
+  - Merging with **variables** is untouched: the replaced variable is still deleted and the pair still clears
+  - A **failed** merge changes nothing, so the item stays listed for a retry with its reason shown
+  - Typography was already correct for both cases — duplicate text styles are deleted on merge, and a text style bound to a variable group was already excluded. Confirmed by test rather than assumed
+
 ### Added
 - **Convert** — turn the colours and type in a frame into one kind of token, instead of deleting and recreating them by hand. The buttons follow the Create dropdown:
   - Create = **Variables** → *Convert to Variable* on each Color Styles row and *Convert All to Variables* in its header
