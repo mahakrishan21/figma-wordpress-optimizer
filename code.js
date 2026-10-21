@@ -4685,6 +4685,464 @@ async function previewBreakpoint(bpName) {
   return result;
 }
 
+// ── UI Kit: the elements ───────────────────────────────────────────────────
+// Real components, with real variant properties, built from the tokens —
+// not pictures of components. Everything here is created through the same
+// token layer the rest of the tab writes, so the kit is on-system the
+// moment it exists rather than needing a later clean-up pass.
+
+var KIT_COLORS = [
+  ['color/brand/default',   { r: 0.145, g: 0.388, b: 0.922 }],
+  ['color/brand/hover',     { r: 0.114, g: 0.306, b: 0.847 }],
+  ['color/brand/subtle',    { r: 0.937, g: 0.965, b: 1.000 }],
+  ['color/surface',         { r: 1.000, g: 1.000, b: 1.000 }],
+  ['color/surface/raised',  { r: 0.976, g: 0.980, b: 0.984 }],
+  ['color/surface/sunken',  { r: 0.953, g: 0.957, b: 0.965 }],
+  ['color/border',          { r: 0.898, g: 0.906, b: 0.922 }],
+  ['color/border/strong',   { r: 0.820, g: 0.835, b: 0.859 }],
+  ['color/text/primary',    { r: 0.067, g: 0.094, b: 0.153 }],
+  ['color/text/secondary',  { r: 0.420, g: 0.447, b: 0.502 }],
+  ['color/text/disabled',   { r: 0.612, g: 0.639, b: 0.686 }],
+  ['color/text/inverse',    { r: 1.000, g: 1.000, b: 1.000 }],
+  ['color/success',         { r: 0.086, g: 0.639, b: 0.290 }],
+  ['color/warning',         { r: 0.851, g: 0.467, b: 0.024 }],
+  ['color/danger',          { r: 0.863, g: 0.149, b: 0.149 }]
+];
+
+// Inter is Figma's default, but it is not guaranteed to be installed — and
+// a missing font is a hard failure on every text node, so fall back to
+// whatever the machine actually has rather than throwing.
+async function resolveKitFonts() {
+  var tryFamily = async function (family, styles) {
+    var out = {};
+    for (var k in styles) {
+      await figma.loadFontAsync({ family: family, style: styles[k] });
+      out[k] = { family: family, style: styles[k] };
+    }
+    return out;
+  };
+  try {
+    return await tryFamily('Inter', { regular: 'Regular', medium: 'Medium', bold: 'Semi Bold' });
+  } catch (e) { /* not installed, or no such weight */ }
+  try {
+    return await tryFamily('Inter', { regular: 'Regular', medium: 'Regular', bold: 'Bold' });
+  } catch (e) { /* still no */ }
+
+  var all = await figma.listAvailableFontsAsync();
+  var byFamily = {};
+  for (var i = 0; i < all.length; i++) {
+    var f = all[i].fontName;
+    if (!byFamily[f.family]) byFamily[f.family] = [];
+    byFamily[f.family].push(f.style);
+  }
+  for (var fam in byFamily) {
+    if (byFamily[fam].indexOf('Regular') === -1) continue;
+    var bold = byFamily[fam].indexOf('Bold') !== -1 ? 'Bold' : 'Regular';
+    var med = byFamily[fam].indexOf('Medium') !== -1 ? 'Medium' : 'Regular';
+    try { return await tryFamily(fam, { regular: 'Regular', medium: med, bold: bold }); }
+    catch (e) { /* try the next family */ }
+  }
+  throw new Error('No usable font is installed, so the elements cannot be drawn.');
+}
+
+function kitSolid(rgb) {
+  return { type: 'SOLID', color: { r: rgb.r, g: rgb.g, b: rgb.b }, opacity: 1 };
+}
+
+// Create the kit's colour tokens in Primitives, reusing by name.
+async function ensureKitColorVariables(cols) {
+  var map = {};
+  if (!cols.primitives) return map;
+  var existing = await variablesByNameIn(cols.primitives);
+  for (var i = 0; i < KIT_COLORS.length; i++) {
+    var name = KIT_COLORS[i][0], rgb = KIT_COLORS[i][1];
+    var v = existing[name];
+    if (!v) {
+      v = figma.variables.createVariable(name, cols.primitives, 'COLOR');
+      // The variable carries the alpha; Figma overwrites a bound paint's
+      // opacity with it, so never multiply the two.
+      await setVarValue(v, cols.primitives, { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 });
+    }
+    map[name] = v;
+  }
+  return map;
+}
+
+function paintFor(colorMap, name, rgb) {
+  var paint = kitSolid(rgb);
+  var v = colorMap[name];
+  if (v) {
+    try { paint = figma.variables.setBoundVariableForPaint(paint, 'color', v); }
+    catch (e) { /* unbound paint still renders correctly */ }
+  }
+  return paint;
+}
+
+function rgbNamed(name) {
+  for (var i = 0; i < KIT_COLORS.length; i++) if (KIT_COLORS[i][0] === name) return KIT_COLORS[i][1];
+  return { r: 0, g: 0, b: 0 };
+}
+
+function kitFill(node, colorMap, name) {
+  try { node.fills = [paintFor(colorMap, name, rgbNamed(name))]; } catch (e) { /* no fills */ }
+}
+function kitStroke(node, colorMap, name, weight) {
+  try {
+    node.strokes = [paintFor(colorMap, name, rgbNamed(name))];
+    node.strokeWeight = weight || 1;
+  } catch (e) { /* no strokes */ }
+}
+
+function kitRow(name, o) {
+  o = o || {};
+  var f = figma.createFrame();
+  f.name = name;
+  f.layoutMode = o.vertical ? 'VERTICAL' : 'HORIZONTAL';
+  f.primaryAxisSizingMode = 'AUTO';
+  f.counterAxisSizingMode = 'AUTO';
+  f.counterAxisAlignItems = o.align || 'CENTER';
+  f.itemSpacing = o.gap === undefined ? 8 : o.gap;
+  f.paddingLeft = o.px === undefined ? 0 : o.px;
+  f.paddingRight = o.px === undefined ? 0 : o.px;
+  f.paddingTop = o.py === undefined ? 0 : o.py;
+  f.paddingBottom = o.py === undefined ? 0 : o.py;
+  if (o.radius !== undefined) f.cornerRadius = o.radius;
+  f.fills = [];
+  return f;
+}
+
+function kitText(chars, font, size, colorMap, colorName) {
+  var t = figma.createText();
+  t.fontName = font;
+  t.fontSize = size;
+  t.characters = chars;
+  t.textAutoResize = 'WIDTH_AND_HEIGHT';
+  kitFill(t, colorMap, colorName);
+  return t;
+}
+
+// Bind a numeric field to a token when one holds exactly that value, so the
+// kit is wired to the scale from birth instead of needing a Bind pass.
+function bindNumber(node, field, tokenIndex, value) {
+  var v = tokenIndex[value];
+  if (!v) return false;
+  try { node.setBoundVariable(field, v); return true; } catch (e) { return false; }
+}
+
+async function numericTokenIndex(cols) {
+  var index = {};
+  var all = await localVariablesAllModes('FLOAT');
+  for (var i = 0; i < all.length; i++) {
+    var e = all[i];
+    var inKit = (cols.primitives && e.variable.variableCollectionId === cols.primitives.id);
+    if (!inKit) continue;
+    var val = e.resolved[modeOf(e.collection)];
+    if (typeof val === 'number' && index[val] === undefined) index[val] = e.variable;
+  }
+  return index;
+}
+
+// ── The elements themselves ────────────────────────────────────────────────
+
+function makeButton(ctx, variant, state) {
+  var bg = variant === 'Primary' ? 'color/brand/default'
+         : variant === 'Secondary' ? 'color/surface' : 'color/surface';
+  var fg = variant === 'Primary' ? 'color/text/inverse' : 'color/text/primary';
+  if (state === 'Hover' && variant === 'Primary') bg = 'color/brand/hover';
+  if (state === 'Hover' && variant !== 'Primary') bg = 'color/surface/raised';
+  if (state === 'Disabled') { bg = 'color/surface/sunken'; fg = 'color/text/disabled'; }
+
+  var c = figma.createComponent();
+  c.name = 'Variant=' + variant + ', State=' + state;
+  c.layoutMode = 'HORIZONTAL';
+  c.primaryAxisSizingMode = 'AUTO';
+  c.counterAxisSizingMode = 'AUTO';
+  c.counterAxisAlignItems = 'CENTER';
+  c.itemSpacing = 8;
+  c.paddingLeft = 24; c.paddingRight = 24; c.paddingTop = 12; c.paddingBottom = 12;
+  c.cornerRadius = 8;
+  kitFill(c, ctx.colors, bg);
+  if (variant !== 'Primary') kitStroke(c, ctx.colors, state === 'Disabled' ? 'color/border' : 'color/border/strong', 1);
+  if (variant === 'Tertiary') { c.fills = []; c.strokes = []; }
+
+  bindNumber(c, 'paddingLeft', ctx.nums, 24);
+  bindNumber(c, 'paddingRight', ctx.nums, 24);
+  bindNumber(c, 'paddingTop', ctx.nums, 12);
+  bindNumber(c, 'paddingBottom', ctx.nums, 12);
+  bindNumber(c, 'itemSpacing', ctx.nums, 8);
+  bindNumber(c, 'cornerRadius', ctx.nums, 8);
+
+  c.appendChild(kitText('Button', ctx.fonts.medium, 14, ctx.colors, fg));
+  return c;
+}
+
+function makeInput(ctx, state) {
+  var border = state === 'Focus' ? 'color/brand/default'
+             : state === 'Error' ? 'color/danger' : 'color/border/strong';
+  var fg = state === 'Filled' ? 'color/text/primary' : 'color/text/secondary';
+  var bg = state === 'Disabled' ? 'color/surface/sunken' : 'color/surface';
+
+  var c = figma.createComponent();
+  c.name = 'State=' + state;
+  c.layoutMode = 'HORIZONTAL';
+  c.primaryAxisSizingMode = 'FIXED';
+  c.counterAxisSizingMode = 'AUTO';
+  c.counterAxisAlignItems = 'CENTER';
+  c.resize(280, 40);
+  c.paddingLeft = 12; c.paddingRight = 12; c.paddingTop = 12; c.paddingBottom = 12;
+  c.cornerRadius = 8;
+  kitFill(c, ctx.colors, bg);
+  kitStroke(c, ctx.colors, border, state === 'Focus' ? 2 : 1);
+  bindNumber(c, 'paddingLeft', ctx.nums, 12);
+  bindNumber(c, 'paddingRight', ctx.nums, 12);
+  bindNumber(c, 'cornerRadius', ctx.nums, 8);
+  c.appendChild(kitText(state === 'Filled' ? 'hello@example.com' : 'Placeholder', ctx.fonts.regular, 14, ctx.colors, fg));
+  return c;
+}
+
+function makeToggleish(ctx, kind, state) {
+  var c = figma.createComponent();
+  c.name = 'State=' + state;
+  c.layoutMode = 'HORIZONTAL';
+  c.primaryAxisSizingMode = 'AUTO';
+  c.counterAxisSizingMode = 'AUTO';
+  c.counterAxisAlignItems = 'CENTER';
+  c.itemSpacing = 8;
+  c.fills = [];
+  bindNumber(c, 'itemSpacing', ctx.nums, 8);
+
+  var box = figma.createFrame();
+  box.name = 'Box';
+  box.resize(kind === 'Switch' ? 36 : 18, kind === 'Switch' ? 20 : 18);
+  box.cornerRadius = kind === 'Radio' ? 9 : (kind === 'Switch' ? 10 : 4);
+  var on = state === 'Checked' || state === 'On';
+  kitFill(box, ctx.colors, on ? 'color/brand/default' : 'color/surface');
+  if (!on) kitStroke(box, ctx.colors, 'color/border/strong', 1);
+  c.appendChild(box);
+  c.appendChild(kitText(kind, ctx.fonts.regular, 14, ctx.colors, 'color/text/primary'));
+  return c;
+}
+
+function makeBadge(ctx, tone) {
+  var map = { Neutral: 'color/text/secondary', Brand: 'color/brand/default',
+              Success: 'color/success', Warning: 'color/warning', Danger: 'color/danger' };
+  var c = figma.createComponent();
+  c.name = 'Tone=' + tone;
+  c.layoutMode = 'HORIZONTAL';
+  c.primaryAxisSizingMode = 'AUTO';
+  c.counterAxisSizingMode = 'AUTO';
+  c.counterAxisAlignItems = 'CENTER';
+  c.paddingLeft = 8; c.paddingRight = 8; c.paddingTop = 4; c.paddingBottom = 4;
+  c.cornerRadius = 999;
+  kitFill(c, ctx.colors, 'color/surface/raised');
+  kitStroke(c, ctx.colors, 'color/border', 1);
+  bindNumber(c, 'paddingLeft', ctx.nums, 8);
+  bindNumber(c, 'paddingRight', ctx.nums, 8);
+  bindNumber(c, 'paddingTop', ctx.nums, 4);
+  bindNumber(c, 'paddingBottom', ctx.nums, 4);
+  c.appendChild(kitText(tone, ctx.fonts.medium, 12, ctx.colors, map[tone] || 'color/text/secondary'));
+  return c;
+}
+
+function makeCard(ctx) {
+  var c = figma.createComponent();
+  c.name = 'Card';
+  c.layoutMode = 'VERTICAL';
+  c.primaryAxisSizingMode = 'AUTO';
+  c.counterAxisSizingMode = 'FIXED';
+  c.resize(320, 200);
+  c.itemSpacing = 12;
+  c.paddingLeft = 24; c.paddingRight = 24; c.paddingTop = 24; c.paddingBottom = 24;
+  c.cornerRadius = 16;
+  kitFill(c, ctx.colors, 'color/surface');
+  kitStroke(c, ctx.colors, 'color/border', 1);
+  bindNumber(c, 'paddingLeft', ctx.nums, 24);
+  bindNumber(c, 'paddingRight', ctx.nums, 24);
+  bindNumber(c, 'paddingTop', ctx.nums, 24);
+  bindNumber(c, 'paddingBottom', ctx.nums, 24);
+  bindNumber(c, 'itemSpacing', ctx.nums, 12);
+  bindNumber(c, 'cornerRadius', ctx.nums, 16);
+  c.appendChild(kitText('Card title', ctx.fonts.bold, 18, ctx.colors, 'color/text/primary'));
+  c.appendChild(kitText('Supporting copy that explains what this card is for.',
+    ctx.fonts.regular, 14, ctx.colors, 'color/text/secondary'));
+  return c;
+}
+
+function makeAlert(ctx, tone) {
+  var accent = tone === 'Success' ? 'color/success' : tone === 'Warning' ? 'color/warning'
+             : tone === 'Danger' ? 'color/danger' : 'color/brand/default';
+  var c = figma.createComponent();
+  c.name = 'Tone=' + tone;
+  c.layoutMode = 'HORIZONTAL';
+  c.primaryAxisSizingMode = 'FIXED';
+  c.counterAxisSizingMode = 'AUTO';
+  c.counterAxisAlignItems = 'MIN';
+  c.resize(420, 56);
+  c.itemSpacing = 12;
+  c.paddingLeft = 16; c.paddingRight = 16; c.paddingTop = 12; c.paddingBottom = 12;
+  c.cornerRadius = 8;
+  kitFill(c, ctx.colors, 'color/surface/raised');
+  kitStroke(c, ctx.colors, accent, 1);
+  bindNumber(c, 'paddingLeft', ctx.nums, 16);
+  bindNumber(c, 'itemSpacing', ctx.nums, 12);
+  bindNumber(c, 'cornerRadius', ctx.nums, 8);
+  var dot = figma.createFrame();
+  dot.name = 'Icon'; dot.resize(16, 16); dot.cornerRadius = 8;
+  kitFill(dot, ctx.colors, accent);
+  c.appendChild(dot);
+  c.appendChild(kitText(tone + ' message', ctx.fonts.medium, 14, ctx.colors, 'color/text/primary'));
+  return c;
+}
+
+function makeAvatar(ctx, size) {
+  var c = figma.createComponent();
+  c.name = 'Size=' + size;
+  var px = size === 'sm' ? 24 : size === 'md' ? 32 : 48;
+  c.layoutMode = 'HORIZONTAL';
+  c.primaryAxisSizingMode = 'FIXED';
+  c.counterAxisSizingMode = 'FIXED';
+  c.primaryAxisAlignItems = 'CENTER';
+  c.counterAxisAlignItems = 'CENTER';
+  c.resize(px, px);
+  c.cornerRadius = px / 2;
+  kitFill(c, ctx.colors, 'color/brand/subtle');
+  c.appendChild(kitText('AB', ctx.fonts.medium, px / 2.6, ctx.colors, 'color/brand/default'));
+  return c;
+}
+
+function makeNavLink(ctx, state) {
+  var c = figma.createComponent();
+  c.name = 'State=' + state;
+  c.layoutMode = 'HORIZONTAL';
+  c.primaryAxisSizingMode = 'AUTO';
+  c.counterAxisSizingMode = 'AUTO';
+  c.counterAxisAlignItems = 'CENTER';
+  c.paddingLeft = 12; c.paddingRight = 12; c.paddingTop = 8; c.paddingBottom = 8;
+  c.cornerRadius = 8;
+  if (state === 'Active') kitFill(c, ctx.colors, 'color/brand/subtle'); else c.fills = [];
+  bindNumber(c, 'paddingLeft', ctx.nums, 12);
+  bindNumber(c, 'paddingTop', ctx.nums, 8);
+  c.appendChild(kitText('Nav link', ctx.fonts.medium, 14, ctx.colors,
+    state === 'Active' ? 'color/brand/default' : 'color/text/secondary'));
+  return c;
+}
+
+var KIT_ELEMENTS = [
+  { key: 'button', label: 'Button', variants: [['Primary', 'Secondary', 'Tertiary'], ['Default', 'Hover', 'Disabled']] },
+  { key: 'input', label: 'Input', states: ['Default', 'Filled', 'Focus', 'Error', 'Disabled'] },
+  { key: 'checkbox', label: 'Checkbox', states: ['Unchecked', 'Checked'] },
+  { key: 'radio', label: 'Radio', states: ['Unchecked', 'Checked'] },
+  { key: 'switch', label: 'Switch', states: ['Off', 'On'] },
+  { key: 'badge', label: 'Badge', states: ['Neutral', 'Brand', 'Success', 'Warning', 'Danger'] },
+  { key: 'alert', label: 'Alert', states: ['Info', 'Success', 'Warning', 'Danger'] },
+  { key: 'avatar', label: 'Avatar', states: ['sm', 'md', 'lg'] },
+  { key: 'navlink', label: 'Nav link', states: ['Default', 'Active'] },
+  { key: 'card', label: 'Card', states: null }
+];
+
+function buildElement(ctx, key, state) {
+  if (key === 'input') return makeInput(ctx, state);
+  if (key === 'checkbox') return makeToggleish(ctx, 'Checkbox', state);
+  if (key === 'radio') return makeToggleish(ctx, 'Radio', state);
+  if (key === 'switch') return makeToggleish(ctx, 'Switch', state);
+  if (key === 'badge') return makeBadge(ctx, state);
+  if (key === 'alert') return makeAlert(ctx, state);
+  if (key === 'avatar') return makeAvatar(ctx, state);
+  if (key === 'navlink') return makeNavLink(ctx, state);
+  if (key === 'card') return makeCard(ctx);
+  return null;
+}
+
+// Build the kit. Each element is a component set with real variant
+// properties — one Button with a Variant and a State, not nine Buttons.
+async function generateKitElements(cfg, opts) {
+  opts = opts || {};
+  var want = opts.elements && opts.elements.length ? opts.elements : null;
+  var result = { created: 0, skipped: 0, bound: 0, reasons: [], sets: [], unit: 'element' };
+
+  var fonts;
+  try { fonts = await resolveKitFonts(); }
+  catch (e) { result.reasons.push(e.message); return result; }
+
+  var cols = await getUiKitCollections(true);
+  var colors = await ensureKitColorVariables(cols);
+  var nums = await numericTokenIndex(cols);
+  var ctx = { fonts: fonts, colors: colors, nums: nums };
+
+  var page = figma.createFrame();
+  page.name = 'UI Kit — Elements';
+  page.layoutMode = 'VERTICAL';
+  page.primaryAxisSizingMode = 'AUTO';
+  page.counterAxisSizingMode = 'AUTO';
+  page.itemSpacing = 48;
+  page.paddingLeft = 48; page.paddingRight = 48; page.paddingTop = 48; page.paddingBottom = 48;
+  kitFill(page, colors, 'color/surface');
+
+  for (var e = 0; e < KIT_ELEMENTS.length; e++) {
+    var def = KIT_ELEMENTS[e];
+    if (want && want.indexOf(def.key) === -1) continue;
+
+    var section = kitRow(def.label, { vertical: true, gap: 16, align: 'MIN' });
+    section.appendChild(kitText(def.label, fonts.bold, 16, colors, 'color/text/primary'));
+
+    var made = [];
+    try {
+      if (def.variants) {
+        for (var a = 0; a < def.variants[0].length; a++) {
+          for (var b = 0; b < def.variants[1].length; b++) {
+            made.push(makeButton(ctx, def.variants[0][a], def.variants[1][b]));
+          }
+        }
+      } else if (def.states) {
+        for (var s2 = 0; s2 < def.states.length; s2++) made.push(buildElement(ctx, def.key, def.states[s2]));
+      } else {
+        made.push(buildElement(ctx, def.key, null));
+      }
+    } catch (err) {
+      result.skipped++;
+      result.reasons.push(def.label + ': ' + ((err && err.message) ? err.message : String(err)));
+      continue;
+    }
+
+    var holder = null;
+    if (made.length > 1) {
+      try {
+        holder = figma.combineAsVariants(made, section);
+        holder.name = def.label;
+        holder.layoutMode = 'HORIZONTAL';
+        holder.itemSpacing = 16;
+        holder.paddingLeft = 16; holder.paddingRight = 16; holder.paddingTop = 16; holder.paddingBottom = 16;
+      } catch (err2) {
+        // Without a variant set the components are still usable, just loose.
+        result.reasons.push(def.label + ': variants could not be combined, so they were left as separate components.');
+        for (var m = 0; m < made.length; m++) section.appendChild(made[m]);
+      }
+    } else {
+      section.appendChild(made[0]);
+    }
+
+    result.created++;
+    result.sets.push({ key: def.key, label: def.label, count: made.length });
+    page.appendChild(section);
+  }
+
+  if (!result.created) { try { page.remove(); } catch (e3) { /* nothing to clean */ } return result; }
+
+  // Place it clear of everything already on the page.
+  var maxX = 0, minY = 0, kids = figma.currentPage.children;
+  for (var k = 0; k < kids.length; k++) {
+    if (typeof kids[k].x === 'number') maxX = Math.max(maxX, kids[k].x + (kids[k].width || 0));
+    if (typeof kids[k].y === 'number') minY = Math.min(minY, kids[k].y);
+  }
+  page.x = maxX + 160;
+  page.y = minY;
+  figma.currentPage.appendChild(page);
+  try { figma.currentPage.selection = [page]; figma.viewport.scrollAndZoomIntoView([page]); } catch (e4) { /* headless */ }
+
+  result.frameId = page.id;
+  return result;
+}
+
 // ── UI Kit: responsive rules ───────────────────────────────────────────────
 // Values reflow from variable modes. LAYOUT cannot: layoutMode,
 // layoutSizingHorizontal, layoutWrap and visible are enums and booleans, and
@@ -5234,6 +5692,7 @@ async function uiKitState() {
     presetNames: presetNames,
     spacingPresets: SPACING_PRESETS,
     radiusPresets: RADIUS_PRESETS,
+    elements: KIT_ELEMENTS.map(function (d) { return { key: d.key, label: d.label }; }),
     valueKey: UIKIT_VALUE_KEY,
     collections: {
       primitives: !!cols.primitives,
@@ -5354,6 +5813,16 @@ async function handleUiKitMessage(msg) {
         tone = 'warning';
       }
       if (r.skipped) tone = 'warning';
+    } else if (msg.type === 'uikit-elements') {
+      var ecfg = readBreakpointConfig();
+      r = await generateKitElements(ecfg, msg);
+      if (r.created) {
+        summary = r.created + ' element' + (r.created === 1 ? '' : 's') + ' created, bound to the tokens.';
+        if (r.skipped) tone = 'warning';
+      } else {
+        summary = r.reasons.length ? r.reasons[0] : 'Nothing to create.';
+        tone = 'warning';
+      }
     } else if (msg.type === 'uikit-bind') {
       r = await bindScaleToSelection(msg);
       summary = uiKitSummary('bind', r);
@@ -6278,7 +6747,7 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-generate' || msg.type === 'uikit-bind' ||
         msg.type === 'uikit-preview' || msg.type === 'uikit-parse' ||
         msg.type === 'uikit-reseed' || msg.type === 'uikit-infer' ||
-        msg.type === 'uikit-responsive') {
+        msg.type === 'uikit-responsive' || msg.type === 'uikit-elements') {
       await handleUiKitMessage(msg);
       return;
     }

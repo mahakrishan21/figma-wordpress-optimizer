@@ -398,6 +398,52 @@ Binds `paddingLeft/Right/Top/Bottom`, `itemSpacing`, `counterAxisSpacing` and `c
 
 A field that is already bound is counted, not rebound. Frames without auto layout have no padding or gap to bind and say so. Locked layers are skipped with a reason.
 
+### Elements
+
+The kit itself, as **real components with real variant properties** — one `Button` carrying a `Variant` and a `State` property, not nine separate Buttons.
+
+| Element | Variants |
+|---|---|
+| Button | Primary / Secondary / Tertiary x Default / Hover / Disabled |
+| Input | Default / Filled / Focus / Error / Disabled |
+| Checkbox, Radio, Switch | two states each |
+| Badge | Neutral / Brand / Success / Warning / Danger |
+| Alert | Info / Success / Warning / Danger |
+| Avatar | sm / md / lg |
+| Nav link | Default / Active |
+| Card | one |
+
+Padding, gaps and radii are bound to the scale **as they are drawn**, and colour tokens (`color/brand/default`, `color/text/primary`, …) are created in `Primitives` and reused on a second run. The kit is on-system from the start rather than needing a clean-up pass afterwards.
+
+Inter is not assumed. If it is not installed the kit falls back to a font the machine actually has, and if there is no usable font at all it says so rather than failing on every text layer.
+
+### Responsive versions
+
+Select the frame you designed at the widest breakpoint, then **Analyse layout**.
+
+Values already reflow from the tokens. This proposes the **layout** changes that tokens cannot express, each with the numbers behind it:
+
+| Proposal | When |
+|---|---|
+| stack vertically | a row of unequal children needs more width than it has |
+| drop to *n* columns | a row of equal children — *n* is however many actually fit |
+| fill the available width | a child is wider than its container |
+| hide | a nav with several links in a narrow frame |
+
+Nothing is proposed for the widest breakpoint, because that one *is* the design.
+
+Proposals stay proposals. They appear as a checklist, are saved onto the source layers only when accepted, and are replayed on a later run instead of being re-derived — so regenerating after a design change is one click, not a re-decision.
+
+**A generated frame that has been edited since is reported and left alone, never overwritten.** The fingerprint used to detect that deliberately ignores width and height, since auto layout and the active mode compute those; otherwise a frame would look edited merely because Figma re-settled it. Generating from an already-generated frame is refused rather than quietly nesting.
+
+### Scale presets
+
+| Spacing | Radius |
+|---|---|
+| 4pt grid, 8pt grid, Tailwind, T-shirt (xs–3xl) | Subtle, Rounded, Pill |
+
+Ramps are defined as **multiples of a base**, not fixed pixels, so changing the base retunes the whole scale and keeps it on-grid. Rows can be renamed, deleted and added. Rebuilding from a preset writes nothing — it only replaces the table, which stays a proposal until **Generate**.
+
 ### Preview at a breakpoint
 
 Overrides the selection's mode for the `Responsive` collection. Everything bound moves at once; everything else stays put — which is the quickest way to see how much of a frame is actually on the system.

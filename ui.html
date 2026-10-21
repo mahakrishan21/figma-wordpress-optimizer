@@ -754,6 +754,9 @@
   .uik-prop { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; font-size: 11px; cursor: pointer; }
   .uik-prop-text { min-width: 0; }
   .uik-prop-why { display: block; color: var(--text-muted); }
+  .uik-els { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 12px 2px; }
+  .uik-el { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+            color: var(--text-secondary); cursor: pointer; }
   .sm-screen .uik-note { padding: 0 12px 8px; }
   .sm-card .uik-note { padding: 0; }
 
@@ -4876,6 +4879,7 @@
     preset: 'standard',
     collapsed: {}, expanded: {}, pages: {}, names: {}, editing: null,
     ramp: { spacing: 'grid4', spacingBase: null, radius: 'rounded', radiusBase: null },
+    elements: {},      // element key -> false when unticked
     proposals: null,   // from uikit-infer
     accepted: {},      // proposalKey -> false when unticked
     byNode: null
@@ -5041,6 +5045,7 @@
         body: `<div class="sm-actions">${previews}</div>
                <p class="uik-note">Nothing bound stays where it is. That difference is the quickest way to see how much of a frame is actually on the system.</p>`
       })}
+      ${uikElementsHtml()}
       ${uikResponsiveHtml()}
       ${blockHtml(KS, {
         id: 'uik-scale', title: 'Scale', count: (KS.table || []).length,
@@ -5084,6 +5089,28 @@
     if (p.rule === 'hide') return 'hide';
     if (p.rule === 'show') return 'show';
     return p.rule;
+  }
+
+  function uikElementsHtml() {
+    const defs = (KS.state && KS.state.elements) || [];
+    const chosen = defs.filter(d => KS.elements[d.key] !== false);
+    return blockHtml(KS, {
+      id: 'uik-elements', title: 'Elements', count: defs.length,
+      sub: 'Real components with variant properties, built from the tokens.',
+      body: `
+        <div class="uik-els">
+          ${defs.map(d => `<label class="uik-el">
+            <input type="checkbox" data-uik-el="${escHtml(d.key)}"${KS.elements[d.key] !== false ? ' checked' : ''}>
+            <span>${escHtml(d.label)}</span>
+          </label>`).join('')}
+        </div>
+        <div class="sm-actions" style="padding:4px 12px 6px">
+          <button class="btn btn-sm" data-act="uik-el-all">${chosen.length === defs.length ? 'Clear all' : 'Select all'}</button>
+          <button class="btn btn-sm btn-primary" data-act="uik-elements"${KS.busy || !chosen.length ? ' disabled' : ''}>
+            Generate ${chosen.length} element${chosen.length === 1 ? '' : 's'}</button>
+        </div>
+        <p class="uik-note">One Button with a <b>Variant</b> and a <b>State</b> property, not nine separate Buttons. Padding, gaps and radii are bound to the scale as they are drawn, so the kit is on-system from the start. Colour tokens are created in Primitives and reused on a second run.</p>`
+    });
   }
 
   function uikResponsiveHtml() {
@@ -5175,6 +5202,18 @@
     if (act === 'uik-parse') { sendUiKit({ type: 'uikit-parse' }); return; }
     if (act === 'uik-reseed') { sendUiKit({ type: 'uikit-reseed', options: uikRampOptions() }); return; }
     if (act === 'uik-infer') { sendUiKit({ type: 'uikit-infer' }); return; }
+    if (act === 'uik-elements') {
+      const defs = (KS.state && KS.state.elements) || [];
+      sendUiKit({ type: 'uikit-elements', elements: defs.filter(d => KS.elements[d.key] !== false).map(d => d.key) });
+      return;
+    }
+    if (act === 'uik-el-all') {
+      const defs = (KS.state && KS.state.elements) || [];
+      const allOn = defs.every(d => KS.elements[d.key] !== false);
+      defs.forEach(d => { KS.elements[d.key] = !allOn; });
+      renderUiKit();
+      return;
+    }
     if (act === 'uik-responsive') {
       sendUiKit({ type: 'uikit-responsive', byNode: KS.byNode, accepted: KS.accepted });
       return;
@@ -5227,6 +5266,9 @@
 
     const prop = e.target.closest('[data-uik-prop]');
     if (prop) { KS.accepted[prop.dataset.uikProp] = prop.checked; renderUiKit(); return; }
+
+    const elBox = e.target.closest('[data-uik-el]');
+    if (elBox) { KS.elements[elBox.dataset.uikEl] = elBox.checked; renderUiKit(); return; }
   });
 
   // Commit a rename on Enter or blur; Escape abandons it.

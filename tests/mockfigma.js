@@ -13,7 +13,30 @@ function F(){ return {
       }
       c.parent = this; this.children.push(c);
     } },
-  loadFontAsync: function(){ return Promise.resolve(); },
+  loadFontAsync: function(f){
+    if (figma._fonts && figma._fonts.indexOf(f.family + '|' + f.style) === -1) {
+      return Promise.reject(new Error('Font not available: ' + f.family + ' ' + f.style));
+    }
+    return Promise.resolve();
+  },
+  listAvailableFontsAsync: function(){
+    return Promise.resolve((figma._fonts || []).map(function(k){
+      var p = k.split('|'); return { fontName: { family: p[0], style: p[1] } };
+    }));
+  },
+  viewport: { scrollAndZoomIntoView: function(){} },
+  createFrame: function(){ return mkFrame({}); },
+  createText: function(){ var t = mkText(''); t.textAutoResize = 'NONE'; t.fontSize = 12;
+                          t.fontName = { family:'Inter', style:'Regular' }; return t; },
+  createComponent: function(){ var c = mkFrame({}); c.type = 'COMPONENT'; return c; },
+  createRectangle: function(){ var r = mkFrame({}); r.type = 'RECTANGLE'; return r; },
+  combineAsVariants: function(nodes, parent){
+    var set = mkFrame({ name: 'Component Set' });
+    set.type = 'COMPONENT_SET';
+    for (var i = 0; i < nodes.length; i++) set.appendChild(nodes[i]);
+    if (parent && parent.appendChild) parent.appendChild(set);
+    return set;
+  },
   getLocalPaintStylesAsync: function(){ return Promise.resolve(this._paintStyles.slice()); },
   getLocalTextStylesAsync: function(){ return Promise.resolve(this._textStyles.slice()); },
   getStyleByIdAsync: function(){ return Promise.resolve(null); },
