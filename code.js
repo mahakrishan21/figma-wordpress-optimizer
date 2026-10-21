@@ -4274,19 +4274,86 @@ function modeOf(collection) {
   return collection.modes && collection.modes.length ? collection.modes[0].modeId : null;
 }
 
-// Resolved value of a variable in its collection's default mode, following
-// one level of alias.
-async function variableValue(v) {
+function normModeName(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
+
+// Give a collection exactly these modes, by name.
+//
+// How many modes a collection may hold depends on the team's Figma plan, and
+// the published figures disagree with each other. So don't predict it: ask
+// the file. addMode() throws once the ceiling is reached, and that throw is
+// the only trustworthy source.
+//
+// On hitting the ceiling every mode created in THIS call is rolled back, so
+// the collection is never left half-configured. Modes that already existed
+// are never touched, never renamed away from a name we were asked for, and
+// never removed — they may hold values we know nothing about.
+async function ensureModes(collection, names) {
+  var out = { nameToModeId: {}, created: [], renamed: [], capHit: false, cap: 0 };
+  if (!collection) return out;
+
+  var existing = collection.modes || [];
+  var byName = {};
+  for (var i = 0; i < existing.length; i++) byName[normModeName(existing[i].name)] = existing[i].modeId;
+
+  // A fresh collection arrives with one placeholder mode ("Mode 1"). If the
+  // first name we want isn't present, rename the placeholder rather than
+  // adding beside it — otherwise "Mode 1" lingers forever.
+  var wantFirst = names.length ? normModeName(names[0]) : null;
+  if (existing.length === 1 && wantFirst && !byName[wantFirst]) {
+    try {
+      collection.renameMode(existing[0].modeId, names[0]);
+      out.renamed.push(names[0]);
+      delete byName[normModeName(existing[0].name)];
+      byName[wantFirst] = existing[0].modeId;
+    } catch (e) { /* not renameable; fall through and add instead */ }
+  }
+
+  for (var n = 0; n < names.length; n++) {
+    var key = normModeName(names[n]);
+    if (byName[key]) { out.nameToModeId[names[n]] = byName[key]; continue; }
+    var id = null;
+    try {
+      id = collection.addMode(names[n]);
+    } catch (e) {
+      out.capHit = true;
+      out.cap = (collection.modes || []).length;
+      break;
+    }
+    byName[key] = id;
+    out.created.push(id);
+    out.nameToModeId[names[n]] = id;
+  }
+
+  if (out.capHit) {
+    // Roll back only what this call added. Those modes are new and empty, so
+    // removing them cannot destroy a value anyone set.
+    for (var r = out.created.length - 1; r >= 0; r--) {
+      try { collection.removeMode(out.created[r]); } catch (e) { /* leave it */ }
+    }
+    out.created = [];
+    out.nameToModeId = {};
+  }
+  return out;
+}
+
+// Resolved value of a variable, following one level of alias.
+// wantModeId is optional: omitted (every pre-UI-Kit caller) it reads the
+// collection's default mode, which is what the Colors and Typography tabs
+// have always done. An alias is followed in the SAME mode only when the
+// target shares the collection; across collections the target has its own
+// mode set, so its default is the only sane answer.
+async function variableValue(v, wantModeId) {
   try {
     var col = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
-    var modeId = modeOf(col);
+    var modeId = (wantModeId && v.valuesByMode[wantModeId] !== undefined) ? wantModeId : modeOf(col);
     var val = (modeId && v.valuesByMode[modeId] !== undefined)
       ? v.valuesByMode[modeId]
       : v.valuesByMode[Object.keys(v.valuesByMode)[0]];
     if (val && val.type === 'VARIABLE_ALIAS') {
       var target = await figma.variables.getVariableByIdAsync(val.id);
       if (!target) return null;
-      return await variableValue(target);
+      var sameCollection = target.variableCollectionId === v.variableCollectionId;
+      return await variableValue(target, sameCollection ? modeId : null);
     }
     return val;
   } catch (e) { return null; }
@@ -4305,6 +4372,35 @@ async function localVariablesWithValues(type) {
   return list;
 }
 
+// Every local variable of a type, resolved in EVERY mode of its collection.
+//
+// Deliberately a sibling of localVariablesWithValues rather than a change to
+// it: that one has ~25 callers across Colors and Typography, all of which
+// mean "the default mode", and all of which must keep meaning that.
+async function localVariablesAllModes(type) {
+  var list = [];
+  var vars = await figma.variables.getLocalVariablesAsync(type);
+  var colCache = {};
+  for (var i = 0; i < vars.length; i++) {
+    var v = vars[i];
+    if (v.remote) continue;
+    var col = colCache[v.variableCollectionId];
+    if (col === undefined) {
+      col = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId);
+      colCache[v.variableCollectionId] = col;
+    }
+    if (!col) continue;
+    var modes = col.modes || [];
+    var resolved = {};
+    for (var m = 0; m < modes.length; m++) {
+      var rv = await variableValue(v, modes[m].modeId);
+      if (rv !== null && rv !== undefined) resolved[modes[m].modeId] = rv;
+    }
+    list.push({ variable: v, collection: col, modes: modes, resolved: resolved, raw: v.valuesByMode });
+  }
+  return list;
+}
+
 function sameColorValue(val, hex, opacity) {
   if (!val || typeof val.r !== 'number') return false;
   if (rgbToHexStr(val) !== String(hex).toUpperCase()) return false;
@@ -4317,10 +4413,10 @@ function hasScope(v, scope) {
   return sc.length === 0 || sc.indexOf('ALL_SCOPES') !== -1 || sc.indexOf(scope) !== -1;
 }
 
-async function setVarValue(variable, collection, value) {
-  var modeId = modeOf(collection);
-  if (!modeId) throw new Error('That variable collection has no mode to write to.');
-  variable.setValueForMode(modeId, value);
+async function setVarValue(variable, collection, value, modeId) {
+  var id = modeId || modeOf(collection);
+  if (!id) throw new Error('That variable collection has no mode to write to.');
+  variable.setValueForMode(id, value);
 }
 
 // Find a local COLOR variable already holding this value.
