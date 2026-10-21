@@ -1,0 +1,132 @@
+// ── Minimal Figma sandbox mock, enough to exercise the token reuse logic ──
+var _id = 0; function nid(p){ return p + (++_id); }
+function F(){ return {
+  mixed: Symbol('mixed'),
+  _paintStyles: [], _textStyles: [], _vars: [], _cols: [],
+  showUI: function(){}, on: function(){}, commitUndo: function(){},
+  notify: function(){},
+  ui: { postMessage: function(m){ (globalThis.__posted = globalThis.__posted || []).push(m); }, resize: function(){}, onmessage: null },
+  currentPage: { id:'p1', selection: [], children: [] },
+  loadFontAsync: function(){ return Promise.resolve(); },
+  getLocalPaintStylesAsync: function(){ return Promise.resolve(this._paintStyles.slice()); },
+  getLocalTextStylesAsync: function(){ return Promise.resolve(this._textStyles.slice()); },
+  getStyleByIdAsync: function(){ return Promise.resolve(null); },
+  getNodeByIdAsync: function(){ return Promise.resolve(null); },
+  createPaintStyle: function(){ var st={id:nid('S'),name:'',paints:[],
+      remove:function(){ var i=figma._paintStyles.indexOf(this); if(i>=0) figma._paintStyles.splice(i,1); }};
+    this._paintStyles.push(st); return st; },
+  createTextStyle: function(){ var st={id:nid('T'),name:'',fontName:{family:'',style:''},fontSize:0,
+      lineHeight:{unit:'AUTO'},letterSpacing:{unit:'PERCENT',value:0},boundVars:{},
+      setBoundVariable:function(f,v){ this.boundVars[f]=v.id; },
+      remove:function(){ var i=figma._textStyles.indexOf(this); if(i>=0) figma._textStyles.splice(i,1); }};
+    this._textStyles.push(st); return st; },
+  variables: {
+    getLocalVariableCollectionsAsync: function(){ return Promise.resolve(figma._cols.slice()); },
+    createVariableCollection: function(name){
+      var c = { id:nid('C'), name:name, modes:[], defaultModeId:null,
+        // The real API throws once the plan's ceiling is reached. figma._modeCap
+        // makes that ceiling settable so a test can exercise both outcomes.
+        addMode: function(mname){
+          if (this.modes.length >= (figma._modeCap == null ? 4 : figma._modeCap)) {
+            throw new Error('Limited to ' + (figma._modeCap == null ? 4 : figma._modeCap) + ' modes');
+          }
+          var id = nid('m'); this.modes.push({ modeId:id, name:mname });
+          if (!this.defaultModeId) this.defaultModeId = id;
+          return id;
+        },
+        renameMode: function(mid, mname){
+          for (var i=0;i<this.modes.length;i++) if (this.modes[i].modeId===mid) { this.modes[i].name = mname; return; }
+          throw new Error('No such mode');
+        },
+        removeMode: function(mid){
+          if (this.modes.length <= 1) throw new Error('A collection needs at least one mode');
+          for (var i=0;i<this.modes.length;i++) if (this.modes[i].modeId===mid) {
+            this.modes.splice(i,1);
+            if (this.defaultModeId===mid) this.defaultModeId = this.modes[0].modeId;
+            return;
+          }
+          throw new Error('No such mode');
+        }
+      };
+      c.addMode('Mode 1');
+      figma._cols.push(c); return c; },
+    createVariableAlias: function(v){ return { type:'VARIABLE_ALIAS', id:v.id }; },
+    createVariable: function(name, col, type){
+      if (!col || !col.id) throw new Error('createVariable needs a collection OBJECT');
+      var v={id:nid('V'),name:name,variableCollectionId:col.id,resolvedType:type,valuesByMode:{},scopes:[],remote:false,
+             setValueForMode:function(m,val){ this.valuesByMode[m]=val; },
+             remove:function(){ var i=figma._vars.indexOf(this); if(i>=0) figma._vars.splice(i,1); }};
+      figma._vars.push(v); return v; },
+    getVariableByIdAsync: function(id){ return Promise.resolve(figma._vars.filter(function(v){return v.id===id;})[0]||null); },
+    getVariableCollectionByIdAsync: function(id){ return Promise.resolve(figma._cols.filter(function(c){return c.id===id;})[0]||null); },
+    getLocalVariablesAsync: function(type){ return Promise.resolve(figma._vars.filter(function(v){ return !type || v.resolvedType===type; })); },
+    setBoundVariableForPaint: function(paint, field, v){ var p=JSON.parse(JSON.stringify(paint)); p.boundVariables={};
+      p.boundVariables[field]={type:'VARIABLE_ALIAS',id:v.id};
+      // MEASURED IN FIGMA: the variable's alpha overwrites paint.opacity on write.
+      var val=null; for (var i=0;i<figma._vars.length;i++) if (figma._vars[i].id===v.id) val=v.valuesByMode[Object.keys(v.valuesByMode)[0]];
+      if (val && typeof val.a==='number') p.opacity = val.a;
+      return p; }
+  }
+}; }
+function resetFigma(){
+  globalThis.figma = F();
+  figma._modeCap = 4;
+  figma.root = { id:'root', children: [], _plugin: {},
+    setPluginData: function(k,v){ this._plugin[k]=String(v); },
+    getPluginData: function(k){ return this._plugin[k]||''; } };
+  return figma;
+}
+globalThis.resetFigma = resetFigma;
+resetFigma();
+
+// ── Node factory, enough to exercise binding and breakpoint preview ────────
+// Only what the UI Kit code touches: auto-layout fields, bindable numeric
+// fields, explicit mode overrides, and plugin data.
+function mkFrame(o){
+  o = o || {};
+  var n = {
+    id: nid('N'), type: 'FRAME', name: o.name || 'Frame', visible: true, locked: false,
+    children: o.children || [], parent: null,
+    layoutMode: o.layoutMode || 'NONE', layoutWrap: o.layoutWrap || 'NO_WRAP',
+    layoutSizingHorizontal: o.layoutSizingHorizontal || 'FIXED',
+    layoutSizingVertical: o.layoutSizingVertical || 'FIXED',
+    primaryAxisSizingMode: 'FIXED', counterAxisSizingMode: 'FIXED',
+    width: o.width == null ? 100 : o.width, height: o.height == null ? 100 : o.height,
+    minWidth: null, maxWidth: null,
+    paddingLeft: o.paddingLeft || 0, paddingRight: o.paddingRight || 0,
+    paddingTop: o.paddingTop || 0, paddingBottom: o.paddingBottom || 0,
+    itemSpacing: o.itemSpacing || 0, counterAxisSpacing: o.counterAxisSpacing || 0,
+    cornerRadius: o.cornerRadius || 0,
+    fills: [], strokes: [],
+    boundVariables: {}, explicitModes: {}, _plugin: {},
+    setBoundVariable: function(field, v){
+      if (v === null) { delete this.boundVariables[field]; return; }
+      if (!v || !v.id) throw new Error('setBoundVariable needs a variable');
+      this.boundVariables[field] = { type:'VARIABLE_ALIAS', id: v.id };
+    },
+    setExplicitVariableModeForCollection: function(col, modeId){
+      if (!col || !col.id) throw new Error('Pass the collection OBJECT, not its id');
+      var ok = (col.modes||[]).some(function(m){ return m.modeId === modeId; });
+      if (!ok) throw new Error('That mode is not in that collection');
+      this.explicitModes[col.id] = modeId;
+    },
+    clearExplicitVariableModeForCollection: function(col){ delete this.explicitModes[col.id]; },
+    setPluginData: function(k, val){ this._plugin[k] = String(val); },
+    getPluginData: function(k){ return this._plugin[k] || ''; },
+    appendChild: function(c){ c.parent = this; this.children.push(c); },
+    resize: function(w,h){ this.width = w; this.height = h; }
+  };
+  for (var i=0;i<n.children.length;i++) n.children[i].parent = n;
+  return n;
+}
+globalThis.mkFrame = mkFrame;
+
+function mkText(characters, name){
+  return { id: nid('T'), type:'TEXT', name: name || characters, characters: characters,
+           visible:true, locked:false, parent:null, boundVariables:{}, _plugin:{},
+           setPluginData:function(k,v){ this._plugin[k]=String(v); },
+           getPluginData:function(k){ return this._plugin[k]||''; } };
+}
+globalThis.mkText = mkText;
+
+globalThis.__html__ = "<html></html>";
