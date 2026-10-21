@@ -6023,6 +6023,299 @@ async function buildDesignSystem(spec) {
   return result;
 }
 
+// ── Export ─────────────────────────────────────────────────────────────────
+// The system is only worth building once it can leave Figma. Everything is
+// read back out of the variables that actually exist, not out of the wizard's
+// answers, so what is exported is what the file holds.
+
+var EXPORT_FORMATS = [
+  { key: 'css', label: 'CSS custom properties', ext: 'css' },
+  { key: 'theme-json', label: 'WordPress theme.json', ext: 'json' },
+  { key: 'dtcg', label: 'Design Tokens (W3C DTCG)', ext: 'json' },
+  { key: 'tailwind', label: 'Tailwind config', ext: 'js' }
+];
+
+function cssVarName(tokenName) {
+  return '--' + String(tokenName).replace(/[\/\s]+/g, '-').replace(/[^a-zA-Z0-9-]/g, '').toLowerCase();
+}
+
+function rgbaToCss(v) {
+  if (!v || typeof v.r !== 'number') return null;
+  var a = (typeof v.a === 'number') ? v.a : 1;
+  var hex = rgbToHexStr(v);
+  if (a >= 0.999) return hex.toLowerCase();
+  return 'rgba(' + Math.round(v.r * 255) + ', ' + Math.round(v.g * 255) + ', ' +
+         Math.round(v.b * 255) + ', ' + Math.round(a * 1000) / 1000 + ')';
+}
+
+function numberUnit(tokenName, n) {
+  var name = String(tokenName);
+  if (name.indexOf('opacity/') === 0) return String(n);
+  if (name.indexOf('grid/columns') === 0) return String(n);
+  if (name.indexOf('text/leading/') === 0) return (n / 100) + '';
+  return n + 'px';
+}
+
+// Everything the file holds, grouped the way an export needs it.
+async function collectSystem() {
+  var cols = await getUiKitCollections(false);
+  var cfg = readBreakpointConfig();
+  var out = { cfg: cfg, primitives: [], responsive: [], theme: [], bpNames: [], modeIds: {} };
+  if (cfg) out.bpNames = breakpointNames(cfg);
+
+  if (cols.responsive) {
+    var ms = cols.responsive.modes || [];
+    for (var i = 0; i < ms.length; i++) out.modeIds[ms[i].name] = ms[i].modeId;
+  }
+
+  var types = ['FLOAT', 'COLOR', 'STRING'];
+  for (var t = 0; t < types.length; t++) {
+    var all = await localVariablesAllModes(types[t]);
+    for (var k = 0; k < all.length; k++) {
+      var e = all[k];
+      var entry = { name: e.variable.name, type: types[t], resolved: e.resolved, modes: e.modes };
+      if (cols.primitives && e.variable.variableCollectionId === cols.primitives.id) out.primitives.push(entry);
+      else if (cols.responsive && e.variable.variableCollectionId === cols.responsive.id) out.responsive.push(entry);
+      else if (cols.theme && e.variable.variableCollectionId === cols.theme.id) out.theme.push(entry);
+    }
+  }
+  function byName(a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); }
+  out.primitives.sort(byName); out.responsive.sort(byName); out.theme.sort(byName);
+  return out;
+}
+
+function valueFor(entry, modeId) {
+  if (modeId && entry.resolved[modeId] !== undefined) return entry.resolved[modeId];
+  var keys = Object.keys(entry.resolved);
+  return keys.length ? entry.resolved[keys[0]] : null;
+}
+
+function formatValue(entry, v) {
+  if (v === null || v === undefined) return null;
+  if (entry.type === 'COLOR') return rgbaToCss(v);
+  if (entry.type === 'STRING') return String(v);
+  return numberUnit(entry.name, v);
+}
+
+function exportCss(sys) {
+  var lines = [':root {'];
+  var i;
+  for (i = 0; i < sys.primitives.length; i++) {
+    var p = sys.primitives[i];
+    var pv = formatValue(p, valueFor(p, null));
+    if (pv !== null) lines.push('  ' + cssVarName(p.name) + ': ' + pv + ';');
+  }
+  // The widest canvas size is the base; the rest are overrides below it.
+  var widest = sys.bpNames.length ? sys.bpNames[0] : null;
+  for (i = 0; i < sys.responsive.length; i++) {
+    var r = sys.responsive[i];
+    var rv = formatValue(r, valueFor(r, sys.modeIds[widest]));
+    if (rv !== null) lines.push('  ' + cssVarName(r.name) + ': ' + rv + ';');
+  }
+  for (i = 0; i < sys.theme.length; i++) {
+    var th = sys.theme[i];
+    var tv = formatValue(th, valueFor(th, null));
+    if (tv !== null) lines.push('  ' + cssVarName(th.name) + ': ' + tv + ';');
+  }
+  lines.push('}');
+
+  for (var b = 1; b < sys.bpNames.length; b++) {
+    var bpName = sys.bpNames[b];
+    var width = sys.cfg.breakpoints[b] ? sys.cfg.breakpoints[b].width : null;
+    var block = [];
+    for (i = 0; i < sys.responsive.length; i++) {
+      var rr = sys.responsive[i];
+      var here = formatValue(rr, valueFor(rr, sys.modeIds[bpName]));
+      var above = formatValue(rr, valueFor(rr, sys.modeIds[sys.bpNames[b - 1]]));
+      if (here !== null && here !== above) block.push('    ' + cssVarName(rr.name) + ': ' + here + ';');
+    }
+    if (!block.length) continue;
+    lines.push('');
+    lines.push('@media (max-width: ' + ((width || 0) + 'px') + ') {');
+    lines.push('  :root {');
+    Array.prototype.push.apply(lines, block);
+    lines.push('  }');
+    lines.push('}');
+  }
+  return lines.join('\n') + '\n';
+}
+
+// WordPress block themes read theme.json, which IS a token file — the four
+// canvas sizes collapse into fluid typography for free.
+function exportThemeJson(sys) {
+  var palette = [], i;
+  function slug(name) { return String(name).replace(/[\/\s]+/g, '-').toLowerCase(); }
+
+  for (i = 0; i < sys.theme.length; i++) {
+    var th = sys.theme[i];
+    var c = formatValue(th, valueFor(th, null));
+    if (c) palette.push({ slug: slug(th.name), color: c, name: th.name });
+  }
+  for (i = 0; i < sys.primitives.length; i++) {
+    var p = sys.primitives[i];
+    if (p.type !== 'COLOR') continue;
+    var pc = formatValue(p, valueFor(p, null));
+    if (pc) palette.push({ slug: slug(p.name), color: pc, name: p.name });
+  }
+
+  var widest = sys.bpNames.length ? sys.bpNames[0] : null;
+  var narrowest = sys.bpNames.length ? sys.bpNames[sys.bpNames.length - 1] : null;
+  var fontSizes = [];
+  for (i = 0; i < sys.responsive.length; i++) {
+    var r = sys.responsive[i];
+    if (r.name.indexOf('text/size/') !== 0) continue;
+    var max = valueFor(r, sys.modeIds[widest]);
+    var min = valueFor(r, sys.modeIds[narrowest]);
+    if (typeof max !== 'number') continue;
+    var entry = { slug: slug(r.name.replace('text/size/', '')), size: max + 'px', name: r.name.replace('text/size/', '') };
+    if (typeof min === 'number' && min !== max) entry.fluid = { min: min + 'px', max: max + 'px' };
+    fontSizes.push(entry);
+  }
+
+  var spacingSizes = [];
+  for (i = 0; i < sys.primitives.length; i++) {
+    var sp = sys.primitives[i];
+    if (sp.name.indexOf('space/') !== 0 || sp.type !== 'FLOAT') continue;
+    var sv = valueFor(sp, null);
+    if (typeof sv !== 'number') continue;
+    spacingSizes.push({ slug: slug(sp.name.replace('space/', '')), size: sv + 'px', name: sp.name.replace('space/', '') });
+  }
+
+  var layout = {};
+  for (i = 0; i < sys.responsive.length; i++) {
+    if (sys.responsive[i].name === 'canvas/content') {
+      var cw = valueFor(sys.responsive[i], sys.modeIds[widest]);
+      if (typeof cw === 'number') layout.contentSize = cw + 'px';
+    }
+    if (sys.responsive[i].name === 'canvas/width') {
+      var ww = valueFor(sys.responsive[i], sys.modeIds[widest]);
+      if (typeof ww === 'number') layout.wideSize = ww + 'px';
+    }
+  }
+
+  var theme = {
+    $schema: 'https://schemas.wp.org/trunk/theme.json',
+    version: 3,
+    settings: {
+      color: { palette: palette, custom: false, defaultPalette: false },
+      typography: { fluid: fontSizes.some(function (f) { return !!f.fluid; }), fontSizes: fontSizes },
+      spacing: { spacingSizes: spacingSizes, units: ['px', 'rem', '%', 'vw'] }
+    }
+  };
+  if (layout.contentSize) theme.settings.layout = layout;
+  return JSON.stringify(theme, null, 2) + '\n';
+}
+
+// The W3C Design Tokens interchange format, which Style Dictionary and the
+// rest of the toolchain read.
+function exportDtcg(sys) {
+  var root = {};
+  function put(path, node) {
+    var parts = String(path).split('/');
+    var at = root;
+    for (var i = 0; i < parts.length - 1; i++) {
+      if (!at[parts[i]] || typeof at[parts[i]] !== 'object') at[parts[i]] = {};
+      at = at[parts[i]];
+    }
+    at[parts[parts.length - 1]] = node;
+  }
+  function dtcgType(entry) {
+    if (entry.type === 'COLOR') return 'color';
+    if (entry.name.indexOf('opacity/') === 0) return 'number';
+    if (entry.name.indexOf('grid/columns') === 0) return 'number';
+    if (entry.name.indexOf('text/leading/') === 0) return 'number';
+    if (entry.type === 'STRING') return 'fontFamily';
+    return 'dimension';
+  }
+
+  var i;
+  for (i = 0; i < sys.primitives.length; i++) {
+    var p = sys.primitives[i];
+    var pv = formatValue(p, valueFor(p, null));
+    if (pv !== null) put(p.name, { $type: dtcgType(p), $value: pv });
+  }
+  for (i = 0; i < sys.theme.length; i++) {
+    var th = sys.theme[i];
+    var tv = formatValue(th, valueFor(th, null));
+    if (tv !== null) put(th.name, { $type: dtcgType(th), $value: tv, $description: 'Semantic, Light mode' });
+  }
+  for (i = 0; i < sys.responsive.length; i++) {
+    var r = sys.responsive[i];
+    var ext = {};
+    for (var b = 0; b < sys.bpNames.length; b++) {
+      var bv = formatValue(r, valueFor(r, sys.modeIds[sys.bpNames[b]]));
+      if (bv !== null) ext[sys.bpNames[b]] = bv;
+    }
+    var widestVal = formatValue(r, valueFor(r, sys.modeIds[sys.bpNames[0]]));
+    if (widestVal === null) continue;
+    put(r.name, { $type: dtcgType(r), $value: widestVal, $extensions: { 'com.figma.modes': ext } });
+  }
+  return JSON.stringify(root, null, 2) + '\n';
+}
+
+function exportTailwind(sys) {
+  var spacing = {}, colors = {}, fontSize = {}, borderRadius = {}, screens = {}, i;
+  function leaf(name, prefix) { return String(name).slice(prefix.length).replace(/\//g, '-'); }
+
+  for (i = 0; i < sys.primitives.length; i++) {
+    var p = sys.primitives[i];
+    var v = valueFor(p, null);
+    if (p.name.indexOf('space/') === 0 && typeof v === 'number') spacing[leaf(p.name, 'space/')] = v + 'px';
+    else if (p.name.indexOf('radius/') === 0 && typeof v === 'number') borderRadius[leaf(p.name, 'radius/')] = v + 'px';
+    else if (p.type === 'COLOR') {
+      var parts = p.name.split('/');
+      if (parts.length >= 2) {
+        if (!colors[parts[0]]) colors[parts[0]] = {};
+        colors[parts[0]][parts.slice(1).join('-')] = rgbaToCss(v);
+      }
+    }
+  }
+  var widest = sys.bpNames.length ? sys.bpNames[0] : null;
+  for (i = 0; i < sys.responsive.length; i++) {
+    var r = sys.responsive[i];
+    if (r.name.indexOf('text/size/') !== 0) continue;
+    var rv = valueFor(r, sys.modeIds[widest]);
+    if (typeof rv === 'number') fontSize[leaf(r.name, 'text/size/')] = rv + 'px';
+  }
+  // Tailwind screens are min-width, so they run the other way to the canvas
+  // sizes, which are listed widest first.
+  if (sys.cfg) {
+    for (i = sys.cfg.breakpoints.length - 1; i >= 0; i--) {
+      var bp = sys.cfg.breakpoints[i];
+      if (bp.width) screens[slugTailwind(bp.name)] = bp.width + 'px';
+    }
+  }
+
+  return '/** Generated from the Figma design system. */\n' +
+    'module.exports = ' + JSON.stringify({
+      theme: { extend: { screens: screens, spacing: spacing, borderRadius: borderRadius,
+                         colors: colors, fontSize: fontSize } }
+    }, null, 2) + ';\n';
+}
+
+function slugTailwind(name) {
+  return String(name).trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+}
+
+async function exportDesignSystem(format) {
+  var sys = await collectSystem();
+  if (!sys.primitives.length && !sys.responsive.length && !sys.theme.length) {
+    return { text: '', empty: true, format: format };
+  }
+  var text;
+  if (format === 'theme-json') text = exportThemeJson(sys);
+  else if (format === 'dtcg') text = exportDtcg(sys);
+  else if (format === 'tailwind') text = exportTailwind(sys);
+  else { format = 'css'; text = exportCss(sys); }
+
+  var def = EXPORT_FORMATS.filter(function (f) { return f.key === format; })[0] || EXPORT_FORMATS[0];
+  return {
+    text: text, format: format, label: def.label,
+    filename: 'design-system.' + def.ext,
+    counts: { primitives: sys.primitives.length, responsive: sys.responsive.length, theme: sys.theme.length }
+  };
+}
+
 // ── UI Kit: state and the message handler ──────────────────────────────────
 
 // Read the scale back out of the file, so re-opening the tab shows what is
@@ -6083,6 +6376,7 @@ async function uiKitState() {
     elements: KIT_ELEMENTS.map(function (d) { return { key: d.key, label: d.label }; }),
     typeRatios: TYPE_RATIOS,
     themeModes: THEME_MODES,
+    exportFormats: EXPORT_FORMATS,
     valueKey: UIKIT_VALUE_KEY,
     collections: {
       primitives: !!cols.primitives,
@@ -6230,6 +6524,15 @@ async function handleUiKitMessage(msg) {
         if (r.grids && r.grids.created) bits.push(r.grids.created + ' grid styles');
         if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
         summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
+      }
+    } else if (msg.type === 'uikit-export') {
+      r = await exportDesignSystem(msg.format);
+      if (r.empty) {
+        summary = 'There is no design system in this file to export yet.';
+        tone = 'warning';
+      } else {
+        summary = r.label + ' \u2014 ' +
+          (r.counts.primitives + r.counts.responsive + r.counts.theme) + ' tokens.';
       }
     } else if (msg.type === 'uikit-elements') {
       var ecfg = readBreakpointConfig();
@@ -7169,7 +7472,8 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-preview' || msg.type === 'uikit-parse' ||
         msg.type === 'uikit-reseed' || msg.type === 'uikit-infer' ||
         msg.type === 'uikit-responsive' || msg.type === 'uikit-elements' ||
-        msg.type === 'uikit-build' || msg.type === 'uikit-preview-table') {
+        msg.type === 'uikit-build' || msg.type === 'uikit-preview-table' ||
+        msg.type === 'uikit-export') {
       await handleUiKitMessage(msg);
       return;
     }

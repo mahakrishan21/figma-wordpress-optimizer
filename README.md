@@ -374,6 +374,19 @@ It opens with a choice, the way the Colors tab does:
 
 Semantic colour aliasing per mode is what makes a dark theme one edit rather than a repaint.
 
+Every step is editable row by row — name, a value per canvas size, a preview, and rename/remove on each row, with **+ Add** per family. Editing a cell keeps it; only changing a preset, base or ratio rebuilds the rows.
+
+### Export
+
+| Format | Notes |
+|---|---|
+| CSS custom properties | one `:root` block plus a `@media (max-width: …)` per canvas size, carrying only what changes |
+| WordPress `theme.json` | `color.palette`, `spacing.spacingSizes`, and **fluid** `typography.fontSizes` — the narrowest canvas becomes `fluid.min`, the widest `fluid.max` |
+| W3C DTCG tokens | nested by path, typed, with every mode carried in `$extensions["com.figma.modes"]` |
+| Tailwind config | `screens` reversed to min-width the way Tailwind reads them, plus spacing, radius, colours and font sizes |
+
+Everything is read back out of the variables that actually exist, so what is exported is what the file holds. The plugin is fully offline, so the result appears as text to copy.
+
 **Shadows are absent on purpose.** A variable cannot hold an effect, and an effect style has no modes, so per-breakpoint elevation has no clean answer in Figma today.
 
 ### Collections

@@ -808,6 +808,39 @@
   .uik-griddiag i { flex: 1; background: rgba(239,68,68,.16); border-radius: 1px; }
   .uik-total { font-size: 11px; font-weight: 600; color: var(--text-secondary);
                text-align: right; margin-top: 6px; }
+
+  /* The editable table shared by every step */
+  .uik-et { display: flex; flex-direction: column; margin: 8px 0 0; }
+  .uik-et-head, .uik-et-row { display: grid; gap: 6px; align-items: center; }
+  .uik-et-head { font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+                 color: var(--text-muted); padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .uik-et-head span { text-align: center; }
+  .uik-et-head span:first-child, .uik-et-head .uik-et-pv { text-align: left; }
+  .uik-et-row { padding: 3px 0; border-bottom: 1px solid var(--gray-100); }
+  .uik-et-row:last-child { border-bottom: none; }
+  .uik-et-row:hover { background: var(--gray-50); }
+  .uik-et-name { font-size: 11px; color: var(--text-primary); font-family: ui-monospace, Menlo, monospace;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .uik-et-name-in { font-size: 11px; padding: 2px 5px; font-family: ui-monospace, Menlo, monospace; }
+  .uik-et-val { padding: 2px 5px; text-align: right; font-variant-numeric: tabular-nums; height: 24px; }
+  .uik-et-color { width: 100%; height: 24px; padding: 0; border: 1px solid var(--border);
+                  border-radius: var(--radius-sm); background: none; cursor: pointer; }
+  .uik-et-pv { min-width: 0; overflow: hidden; display: flex; align-items: center; }
+  .uik-et-chip { display: inline-block; width: 44px; height: 14px; border-radius: 3px;
+                 border: 1px solid rgba(0,0,0,.12); }
+  .uik-sep { height: 1px; background: var(--border); margin: 14px 0 2px; }
+  .uik-subhead { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+                 color: var(--text-muted); margin: 8px 0 0; }
+  .uik-exp { padding: 4px 12px 10px; }
+  .uik-exp-head { display: flex; align-items: center; justify-content: space-between;
+                  gap: 8px; margin-bottom: 5px; }
+  .uik-exp-head span { font-size: 10px; color: var(--text-muted);
+                       font-family: ui-monospace, Menlo, monospace; }
+  .uik-exp-box { width: 100%; height: 220px; resize: vertical; box-sizing: border-box;
+                 border: 1px solid var(--border); border-radius: var(--radius-sm);
+                 padding: 8px; font: 10px/1.5 ui-monospace, Menlo, monospace;
+                 color: var(--text-secondary); background: var(--gray-50); outline: none; }
+  .uik-exp-box:focus { border-color: var(--blue-400); box-shadow: 0 0 0 2px var(--blue-50); }
   .uik-pv-empty { font-size: 11px; color: var(--text-muted); margin: 8px 0; }
   .uik-colorrow { display: flex; gap: 6px; align-items: center; }
   .uik-colorbox { width: 32px; height: 28px; padding: 0; border: 1px solid var(--border);
@@ -4945,7 +4978,11 @@
     screen: 'entry',   // entry | wizard | main
     step: 0,
     spec: null,        // the wizard's answers; written only at the end
-    previewRows: null, // what the current answers WOULD produce
+    previewRows: null, // the live table inside the wizard
+    tableDirty: false, // true once a row has been edited by hand
+    rowEditing: null,  // name of the row being renamed
+    exportFormat: 'css',
+    exportText: null,
     elements: {},      // element key -> false when unticked
     proposals: null,   // from uikit-infer
     accepted: {},      // proposalKey -> false when unticked
@@ -5047,6 +5084,97 @@
   function uikCss(v) {
     const to255 = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
     return `rgb(${to255(v.r)},${to255(v.g)},${to255(v.b)})`;
+  }
+
+  // ── The editable table every step shares ────────────────────────────────
+  // Name, value per canvas size, a preview of the thing itself, and row
+  // actions — the same shape as the Create Text Styles screen, so a step is
+  // somewhere you tune the system rather than just look at it.
+  function uikEditTable(family, o) {
+    o = o || {};
+    const rows = uikRows(family);
+    const responsive = o.tier === 'responsive';
+    const bps = responsive ? KS.spec.breakpoints : [{ name: '*' }];
+    const maxVal = Math.max.apply(null, rows.map(r =>
+      Number(uikValueAt(r, bps[0].name === '*' ? null : bps[0].name)) || 0).concat([1]));
+
+    const cols = `minmax(0,88px) repeat(${bps.length}, ${responsive ? 54 : 62}px) minmax(0,1fr) 46px`;
+    const head = `<div class="uik-et-head" style="grid-template-columns:${cols}">
+      <span>Name</span>
+      ${bps.map(b => `<span>${escHtml(b.name === '*' ? 'Value' : b.name)}</span>`).join('')}
+      <span class="uik-et-pv">Preview</span><span>Actions</span>
+    </div>`;
+
+    const body = rows.map(r => {
+      const nameCell = KS.rowEditing === r.name
+        ? `<input class="sm-input uik-et-name-in" data-uik-wname data-name="${escHtml(r.name)}" value="${escHtml(r.name)}">`
+        : `<span class="uik-et-name" title="${escHtml(r.name)}">${escHtml(uikShortName(r.name))}</span>`;
+
+      const valueCells = bps.map(b => {
+        const key = b.name === '*' ? '*' : b.name;
+        const v = (r.values || {})[key];
+        if (o.kind === 'swatch') {
+          const hex = (v && typeof v.r === 'number') ? uikHex(v) : '#000000';
+          return `<input type="color" class="uik-et-color" data-uik-wval data-name="${escHtml(r.name)}" data-key="${escHtml(key)}" value="${escHtml(hex)}">`;
+        }
+        return `<input class="sm-input uik-et-val" type="number" step="any"
+                  data-uik-wval data-name="${escHtml(r.name)}" data-key="${escHtml(key)}"
+                  value="${v === undefined || v === null ? '' : escHtml(String(v))}">`;
+      }).join('');
+
+      return `<div class="uik-et-row" style="grid-template-columns:${cols}">
+        ${nameCell}${valueCells}
+        <span class="uik-et-pv">${uikRowPreview(r, o, maxVal, bps[0].name)}</span>
+        <span class="uik-acts">
+          <button class="uik-icon" data-act="uik-wrow-edit" data-name="${escHtml(r.name)}" title="Rename">${SI.pencil}</button>
+          <button class="uik-icon" data-act="uik-wrow-del" data-name="${escHtml(r.name)}" title="Remove">&times;</button>
+        </span>
+      </div>`;
+    }).join('');
+
+    const add = `<div class="uik-add" style="padding:6px 0 0">
+      <button class="btn btn-sm" data-act="uik-wrow-add"
+        data-family="${escHtml(family)}" data-tier="${escHtml(o.tier || 'primitive')}"
+        data-scopes="${escHtml((o.scopes || []).join(','))}"${o.type ? ` data-type="${escHtml(o.type)}"` : ''}>+ Add ${escHtml(o.noun || 'token')}</button>
+    </div>`;
+
+    if (!rows.length) return `<div class="uik-pv-empty">Nothing here yet.</div>${add}`;
+    return `<div class="uik-et">${head}${body}</div>${add}`;
+  }
+
+  function uikHexToRgb(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return { r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255, a: 1 };
+  }
+
+  function uikRowByName(name) {
+    return (KS.previewRows || []).filter(r => r.name === name)[0] || null;
+  }
+
+  function uikHex(v) {
+    const to255 = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
+    const h = (c) => to255(c).toString(16).padStart(2, '0');
+    return '#' + h(v.r) + h(v.g) + h(v.b);
+  }
+
+  function uikRowPreview(r, o, maxVal, firstBp) {
+    const key = firstBp === '*' ? null : firstBp;
+    const v = uikValueAt(r, key);
+    if (o.kind === 'swatch') {
+      return (v && typeof v.r === 'number')
+        ? `<i class="uik-et-chip" style="background:${uikCss(v)}"></i>` : '';
+    }
+    if (o.kind === 'type') {
+      const n = Number(v) || 0;
+      const biggest = Math.max(maxVal, 1);
+      const scale = biggest > 30 ? 30 / biggest : 1;
+      return `<span class="uik-typespec" style="font-size:${Math.max(7, n * scale)}px">Ag</span>`;
+    }
+    const n = Number(v) || 0;
+    const w = Math.max(1, Math.round((n / Math.max(maxVal, 1)) * (o.cap || 150)));
+    return `<i class="uik-bar" style="width:${w}px"></i>`;
   }
 
   // Spacing and radius, drawn at their real width.
@@ -5167,8 +5295,9 @@
           <label class="uik-field"><span>Radius</span><select class="sm-input" data-uik-spec="ramp.radius">${o(rdP, sp.ramp.radius)}</select></label>
           <label class="uik-field uik-field-sm"><span>Base</span><input class="sm-input" type="number" min="0" data-uik-spec="ramp.radiusBase" value="${escHtml(String(rdBase))}"></label>
         </div>
-        ${uikBarsFor('space/', 190)}
-        ${uikBarsFor('radius/', 60)}`;
+        ${uikEditTable('space/', { kind: 'bar', cap: 150, tier: 'primitive', scopes: ['GAP', 'WIDTH_HEIGHT'], noun: 'space step' })}
+        <div class="uik-sep"></div>
+        ${uikEditTable('radius/', { kind: 'bar', cap: 60, tier: 'primitive', scopes: ['CORNER_RADIUS'], noun: 'radius' })}`;
     }
 
     if (key === 'type') {
@@ -5181,8 +5310,10 @@
             </select></label>
           <label class="uik-field uik-field-sm"><span>Base</span><input class="sm-input" type="number" min="8" data-uik-spec="type.base" value="${escHtml(String(sp.type.base))}"></label>
         </div>
-        ${uikTypeSpecimen()}
-        <p class="uik-note" style="padding:0">Shown at ${escHtml((sp.breakpoints[0] || {}).name || 'the widest size')}. The ratio tightens on smaller canvases; the base holds.</p>`;
+        ${uikEditTable('text/size/', { kind: 'type', tier: 'responsive', scopes: ['FONT_SIZE'], noun: 'size' })}
+        <div class="uik-sep"></div>
+        ${uikEditTable('text/leading/', { kind: 'bar', cap: 90, tier: 'primitive', scopes: ['LINE_HEIGHT'], noun: 'leading' })}
+        <p class="uik-note" style="padding:0">Preview at ${escHtml((sp.breakpoints[0] || {}).name || 'the widest size')}. Editing any cell keeps it; changing the scale or base rebuilds them all.</p>`;
     }
 
     if (key === 'colour') {
@@ -5207,7 +5338,10 @@
         <label class="uik-el" style="padding:4px 0">
           <input type="checkbox" data-uik-spec="colors.theme"${sp.colors.theme ? ' checked' : ''}>
           <span>Light and Dark semantic names</span>
-        </label>`;
+        </label>
+        <div class="uik-sep"></div>
+        <div class="uik-subhead">Brand ramp &mdash; every step is editable</div>
+        ${uikEditTable('brand/', { kind: 'swatch', tier: 'primitive', type: 'COLOR', noun: 'step' })}`;
     }
 
     if (key === 'extras') {
@@ -5374,6 +5508,7 @@
                <p class="uik-note">Nothing bound stays where it is. That difference is the quickest way to see how much of a frame is actually on the system.</p>`
       })}
       ${uikElementsHtml()}
+      ${uikExportHtml()}
       ${uikResponsiveHtml()}
       ${blockHtml(KS, {
         id: 'uik-scale', title: 'Scale', count: (KS.table || []).length,
@@ -5417,6 +5552,27 @@
     if (p.rule === 'hide') return 'hide';
     if (p.rule === 'show') return 'show';
     return p.rule;
+  }
+
+  function uikExportHtml() {
+    const formats = (KS.state && KS.state.exportFormats) || [];
+    return blockHtml(KS, {
+      id: 'uik-export', title: 'Export', count: 0,
+      sub: 'Take the system out of Figma.',
+      body: `
+        <div class="sm-actions" style="padding:8px 12px 4px">
+          ${formats.map(f => `<button class="btn btn-sm${KS.exportFormat === f.key ? ' btn-primary' : ''}"
+            data-act="uik-export" data-format="${escHtml(f.key)}"${KS.busy ? ' disabled' : ''}>${escHtml(f.label)}</button>`).join('')}
+        </div>
+        ${KS.exportText ? `
+          <div class="uik-exp">
+            <div class="uik-exp-head">
+              <span>${escHtml(KS.exportText.filename || '')}</span>
+              <button class="btn btn-sm" data-act="uik-copy">Copy</button>
+            </div>
+            <textarea class="uik-exp-box" readonly spellcheck="false">${escHtml(KS.exportText.text || '')}</textarea>
+          </div>` : '<p class="uik-note">Pick a format. The plugin is fully offline, so the result is yours to copy.</p>'}`
+    });
   }
 
   function uikElementsHtml() {
@@ -5496,13 +5652,20 @@
       // A preview writes nothing and must not disturb the table, the busy
       // state or the screen — it only refreshes what the step is showing.
       if (String(msg.requestId || '').charAt(0) === 'p') {
-        KS.previewRows = (msg.state && msg.state.table) ? msg.state.table : null;
-        if (KS.screen === 'wizard') renderUiKit();
+        // Once a row has been edited by hand the table is the designer's,
+        // not the preset's. Only an explicit preset change takes it back.
+        if (!KS.tableDirty) {
+          KS.previewRows = (msg.state && msg.state.table) ? msg.state.table : null;
+          if (KS.screen === 'wizard') renderUiKit();
+        }
         return true;
       }
       KS.busy = false;
       setScopeBusy(KS, false);
-      if (msg.builtSystem) { KS.screen = 'main'; KS.spec = null; KS.previewRows = null; }
+      if (msg.builtSystem) { KS.screen = 'main'; KS.spec = null; KS.previewRows = null; KS.tableDirty = false; }
+      if (msg.result && typeof msg.result.text === 'string' && msg.result.format) {
+        KS.exportText = msg.result.empty ? null : msg.result;
+      }
       if (msg.result && msg.result.proposals) {
         KS.proposals = msg.result.proposals;
         KS.byNode = msg.result.byNode || null;
@@ -5533,6 +5696,13 @@
 
   // Previews are read-only, so they never set the busy state — typing in a
   // field must not lock the field being typed into.
+  // Re-derive from the presets, discarding hand edits. Called only when a
+  // preset, base or ratio changes — the one thing that should.
+  function reseedFromPresets() {
+    KS.tableDirty = false;
+    previewUiKit();
+  }
+
   function previewUiKit() {
     if (!KS.spec) return;
     parent.postMessage({ pluginMessage: {
@@ -5563,7 +5733,8 @@
     if (act === 'uik-reset') { KS.screen = 'entry'; renderUiKit(); return; }
     if (act === 'uik-wizard') {
       KS.spec = uikDefaultSpec();
-      KS.step = 0; KS.screen = 'wizard'; KS.previewRows = null;
+      KS.step = 0; KS.screen = 'wizard';
+      KS.previewRows = null; KS.tableDirty = false; KS.rowEditing = null;
       renderUiKit(); previewUiKit(); return;
     }
     if (act === 'uik-use-existing') {
@@ -5578,7 +5749,37 @@
     }
     if (act === 'uik-wiz-next') { KS.step++; renderUiKit(); previewUiKit(); return; }
     if (act === 'uik-wiz-build') {
-      sendUiKit({ type: 'uikit-build', spec: KS.spec });
+      // Send the table that is actually on screen, edits and all.
+      const spec = Object.assign({}, KS.spec, { table: KS.previewRows || null });
+      sendUiKit({ type: 'uikit-build', spec: spec });
+      return;
+    }
+
+    if (act === 'uik-wrow-edit') { KS.rowEditing = el.dataset.name; renderUiKit(); return; }
+    if (act === 'uik-wrow-del') {
+      const i = (KS.previewRows || []).map(r => r.name).indexOf(el.dataset.name);
+      if (i !== -1) { KS.previewRows.splice(i, 1); KS.tableDirty = true; KS.rowEditing = null; renderUiKit(); }
+      return;
+    }
+    if (act === 'uik-wrow-add') {
+      if (!KS.previewRows) KS.previewRows = [];
+      const fam = el.dataset.family;          // e.g. "space/"
+      const tier = el.dataset.tier || 'primitive';
+      const scopes = (el.dataset.scopes || '').split(',').filter(Boolean);
+      let n = 1, name;
+      do { name = fam + 'new' + (n > 1 ? ('-' + n) : ''); n++; }
+      while (KS.previewRows.some(r => r.name === name));
+      const row = { name, tier, scopes, values: {} };
+      if (el.dataset.type) row.type = el.dataset.type;
+      // Put it with its family rather than at the very end.
+      let at = -1;
+      KS.previewRows.forEach((r, i) => { if (r.name.indexOf(fam) === 0) at = i; });
+      if (at === -1) KS.previewRows.push(row); else KS.previewRows.splice(at + 1, 0, row);
+      KS.tableDirty = true;
+      KS.rowEditing = name;
+      renderUiKit();
+      const inp = $('uikitScreen').querySelector('[data-uik-wname]');
+      if (inp) { inp.focus(); inp.select(); }
       return;
     }
     if (act === 'uik-parse') { sendUiKit({ type: 'uikit-parse' }); return; }
@@ -5587,6 +5788,22 @@
     if (act === 'uik-elements') {
       const defs = (KS.state && KS.state.elements) || [];
       sendUiKit({ type: 'uikit-elements', elements: defs.filter(d => KS.elements[d.key] !== false).map(d => d.key) });
+      return;
+    }
+    if (act === 'uik-export') {
+      KS.exportFormat = el.dataset.format;
+      KS.exportText = null;
+      sendUiKit({ type: 'uikit-export', format: KS.exportFormat });
+      return;
+    }
+    if (act === 'uik-copy') {
+      const box = $('uikitScreen').querySelector('.uik-exp-box');
+      if (!box) return;
+      box.select();
+      let done = false;
+      try { done = document.execCommand('copy'); } catch (err) { done = false; }
+      showToast(done ? 'Copied to the clipboard.' : 'Select the text and copy it with Cmd-C.',
+                done ? 'success' : 'info');
       return;
     }
     if (act === 'uik-el-all') {
@@ -5672,7 +5889,7 @@
       const bp = KS.spec.breakpoints.filter(b => b.name === bpw.dataset.uikBpw)[0];
       if (bp && !isNaN(n) && n > 0) bp.width = n;
       renderUiKit();
-      previewUiKit();
+      reseedFromPresets();
       return;
     }
 
@@ -5684,7 +5901,7 @@
       if (gridIn.value.trim() === '' || isNaN(n)) delete KS.spec.grid[field][bpName];
       else KS.spec.grid[field][bpName] = n;
       renderUiKit();
-      previewUiKit();
+      reseedFromPresets();
       return;
     }
 
@@ -5714,19 +5931,37 @@
         if (path === 'ramp.radius') KS.spec.ramp.radiusBase = null;
       }
       renderUiKit();
-      previewUiKit();
+      reseedFromPresets();
       return;
     }
   });
 
   // Commit a rename on Enter or blur; Escape abandons it.
   $('tab-uikit').addEventListener('keydown', e => {
+    const wname = e.target.closest('[data-uik-wname]');
+    if (wname) {
+      if (e.key === 'Enter') { e.preventDefault(); wname.blur(); }
+      if (e.key === 'Escape') { KS.rowEditing = null; renderUiKit(); }
+      return;
+    }
     const inp = e.target.closest('[data-uik-name]');
     if (!inp) return;
     if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
     if (e.key === 'Escape') { KS.editing = null; renderUiKit(); }
   });
   $('tab-uikit').addEventListener('focusout', e => {
+    const wname = e.target.closest('[data-uik-wname]');
+    if (wname) {
+      const row = uikRowByName(wname.dataset.name);
+      const v = wname.value.trim();
+      // A duplicate name would collide on generate, where reuse is by name.
+      const clash = v && (KS.previewRows || []).some(r => r.name === v && r !== row);
+      if (row && v && !clash) { row.name = v; KS.tableDirty = true; }
+      KS.rowEditing = null;
+      renderUiKit();
+      if (clash) showToast('“' + v + '” is already taken.', 'warning');
+      return;
+    }
     const inp = e.target.closest('[data-uik-name]');
     if (!inp || !KS.table) return;
     const row = KS.table[Number(inp.dataset.row)];
@@ -5742,11 +5977,34 @@
     const spec = e.target.closest('[data-uik-spec]');
     if (spec && KS.spec && spec.type === 'color') {
       uikSetSpec(spec.dataset.uikSpec, spec.value);
-      previewUiKit();
+      reseedFromPresets();
       // Keep the paired hex field in step without re-rendering the picker.
       const twin = $('uikitScreen').querySelector(
         'input.sm-input[data-uik-spec="' + spec.dataset.uikSpec + '"]');
       if (twin) twin.value = spec.value;
+      return;
+    }
+
+    // A wizard cell. Patch the row in place — re-rendering on every
+    // keystroke would throw focus out of the field being typed into.
+    const wval = e.target.closest('[data-uik-wval]');
+    if (wval) {
+      const row = uikRowByName(wval.dataset.name);
+      if (!row) return;
+      row.values = row.values || {};
+      const key = wval.dataset.key;
+      if (wval.type === 'color') {
+        const rgb = uikHexToRgb(wval.value);
+        if (rgb) row.values[key] = rgb;
+      } else {
+        const raw = wval.value.trim();
+        if (raw === '') delete row.values[key];
+        else {
+          const n = Number(raw);
+          if (!isNaN(n) && isFinite(n)) row.values[key] = n;
+        }
+      }
+      KS.tableDirty = true;
       return;
     }
 
