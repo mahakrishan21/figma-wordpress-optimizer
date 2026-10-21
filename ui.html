@@ -771,7 +771,7 @@
   .uik-wiz-count { margin-left: auto; font-size: 10px; font-weight: 600; color: var(--text-muted);
                    text-transform: uppercase; letter-spacing: .04em; }
   .uik-wiz-nav { display: flex; gap: 8px; justify-content: flex-end; }
-  .uik-q { font-size: 12px; color: var(--text-secondary); margin: 2px 0 12px; }
+  .uik-q { font-size: 11px; color: var(--text-muted); margin: 1px 0 10px; }
   .uik-pv { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
   .uik-pv-chip { font-size: 10px; padding: 2px 7px; border-radius: var(--radius-full);
                  background: var(--surface-raised); border: 1px solid var(--border);
@@ -779,6 +779,41 @@
   .uik-pv-chip b { color: var(--text-secondary); font-weight: 600; }
   .uik-pv-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
                 margin-right: 5px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.12); }
+
+  /* Visual previews — the point of a design system is that it is looked at. */
+  .uik-barname { font-size: 10px; color: var(--text-muted); width: 68px; flex: 0 0 68px;
+                 font-family: ui-monospace, Menlo, monospace; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+  .uik-barval { font-size: 10px; color: var(--text-muted); margin-left: auto;
+                font-variant-numeric: tabular-nums; }
+  .uik-bars { display: flex; flex-direction: column; gap: 3px; margin: 10px 0 4px; }
+  .uik-barrow { display: flex; align-items: center; gap: 8px; }
+  .uik-bar { height: 8px; border-radius: 2px; background: var(--blue-600); opacity: .8; }
+  .uik-type { display: flex; flex-direction: column; gap: 2px; margin: 10px 0 4px; }
+  .uik-typerow { display: flex; align-items: baseline; gap: 8px; }
+  .uik-typespec { color: var(--text-primary); line-height: 1.1; }
+  .uik-ramps { display: flex; flex-direction: column; gap: 5px; margin: 10px 0 6px; }
+  .uik-ramprow { display: flex; align-items: center; gap: 8px; }
+  .uik-ramp { display: flex; flex: 1; height: 18px; border-radius: var(--radius-sm);
+              overflow: hidden; border: 1px solid var(--border); }
+  .uik-ramp i { flex: 1; }
+  .uik-bps-edit { display: flex; flex-direction: column; gap: 5px; margin: 10px 0 2px; }
+  .uik-bprow { display: flex; align-items: center; gap: 8px; }
+  .uik-screen { height: 14px; border-radius: 2px; background: var(--surface-raised);
+                border: 1px solid var(--border-strong); }
+  .uik-wid { width: 74px; flex: 0 0 74px; text-align: right; padding: 3px 6px;
+             font-variant-numeric: tabular-nums; }
+  .uik-gridtable { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; }
+  .uik-gt-head, .uik-gt-row { display: grid; grid-template-columns: 68px 52px 52px 52px 1fr;
+                              gap: 6px; align-items: center; }
+  .uik-gt-head span { font-size: 9px; font-weight: 600; color: var(--text-muted);
+                      text-transform: uppercase; letter-spacing: .04em; text-align: center; }
+  .uik-gt-in { padding: 3px 5px; text-align: right; font-variant-numeric: tabular-nums; }
+  .uik-griddiag { display: flex; height: 16px; background: var(--surface-raised);
+                  border-radius: 2px; border: 1px solid var(--border); min-width: 0; }
+  .uik-griddiag i { flex: 1; background: rgba(239,68,68,.16); border-radius: 1px; }
+  .uik-total { font-size: 11px; font-weight: 600; color: var(--text-secondary);
+               text-align: right; margin-top: 6px; }
   .uik-pv-empty { font-size: 11px; color: var(--text-muted); margin: 8px 0; }
   .uik-colorrow { display: flex; gap: 6px; align-items: center; }
   .uik-colorbox { width: 32px; height: 28px; padding: 0; border: 1px solid var(--border);
@@ -4974,20 +5009,22 @@
 
   // ── Wizard ──────────────────────────────────────────────────────────────
   const UIK_STEPS = [
-    { key: 'breakpoints', title: 'Breakpoints', q: 'Which widths are you designing for?' },
-    { key: 'spacing',     title: 'Spacing & radius', q: 'How should space and corners be measured?' },
-    { key: 'type',        title: 'Typography', q: 'How should the type scale step?' },
-    { key: 'colour',      title: 'Colour', q: 'What is the brand colour?' },
-    { key: 'extras',      title: 'Everything else', q: 'Which other token families do you want?' },
-    { key: 'elements',    title: 'Elements', q: 'Which components should be built?' },
-    { key: 'review',      title: 'Review', q: 'Here is the whole system. Nothing has been written yet.' }
+    { key: 'breakpoints', title: 'Canvas sizes', q: 'The widths you design at.' },
+    { key: 'grid',        title: 'Grid', q: 'Columns, gutter and margin.' },
+    { key: 'spacing',     title: 'Spacing & radius', q: 'Multiples of a base.' },
+    { key: 'type',        title: 'Type scale', q: 'How each size steps up.' },
+    { key: 'colour',      title: 'Colour', q: 'One hex becomes a ramp.' },
+    { key: 'extras',      title: 'Extras', q: 'Other families to include.' },
+    { key: 'elements',    title: 'Elements', q: 'Components to build.' },
+    { key: 'review',      title: 'Review', q: 'Nothing written yet.' }
   ];
 
   function uikDefaultSpec() {
     const presets = (KS.state && KS.state.presets) || {};
     return {
       preset: 'standard',
-      breakpoints: presets.standard || [],
+      breakpoints: (presets.standard || []).map(b => ({ name: b.name, width: b.width })),
+      grid: { columns: {}, gutter: {}, margin: {} },
       ramp: { spacing: 'grid4', spacingBase: null, radius: 'rounded', radiusBase: null },
       type: { base: 16, ratio: 1.25 },
       colors: { brandHex: '#2563EB', neutralHex: '#6B7280', theme: true },
@@ -4996,38 +5033,129 @@
     };
   }
 
-  function uikPreviewFor(prefix) {
-    if (!KS.previewRows) return '<div class="uik-pv-empty">…</div>';
-    const rows = KS.previewRows.filter(r => r.name.indexOf(prefix) === 0).slice(0, 10);
-    if (!rows.length) return '<div class="uik-pv-empty">Nothing in this family.</div>';
-    const bp = KS.spec.breakpoints[0];
-    return `<div class="uik-pv">${rows.map(r => {
-      const label = escHtml(r.name.split('/').slice(1).join('/'));
-      const v = r.tier === 'primitive' ? r.values['*'] : (r.values[bp && bp.name]);
-      // A colour is an RGBA object, so show the colour rather than printing
-      // "[object Object]" at the designer.
-      if (v && typeof v === 'object' && typeof v.r === 'number') {
-        const to255 = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
-        const css = `rgb(${to255(v.r)},${to255(v.g)},${to255(v.b)})`;
-        return `<span class="uik-pv-chip"><i class="uik-pv-dot" style="background:${css}"></i><b>${label}</b></span>`;
-      }
-      return `<span class="uik-pv-chip"><b>${label}</b> ${escHtml(v === undefined ? '—' : String(v))}</span>`;
+  // ── Visual previews ─────────────────────────────────────────────────────
+  // A design system is looked at, not read. Each step shows the thing it is
+  // about at its real size wherever that fits on screen.
+
+  function uikRows(prefix) {
+    if (!KS.previewRows) return [];
+    return KS.previewRows.filter(r => r.name.indexOf(prefix) === 0);
+  }
+  function uikShortName(name) { return name.split('/').slice(1).join('/'); }
+  function uikValueAt(r, bpName) {
+    return r.tier === 'primitive' ? (r.values || {})['*'] : (r.values || {})[bpName];
+  }
+  function uikCss(v) {
+    const to255 = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
+    return `rgb(${to255(v.r)},${to255(v.g)},${to255(v.b)})`;
+  }
+
+  // Spacing and radius, drawn at their real width.
+  function uikBarsFor(prefix, cap) {
+    const rows = uikRows(prefix);
+    if (!rows.length) return '<div class="uik-pv-empty">…</div>';
+    const max = Math.max.apply(null, rows.map(r => Number(uikValueAt(r, null)) || 0)) || 1;
+    return `<div class="uik-bars">${rows.map(r => {
+      const v = Number(uikValueAt(r, null)) || 0;
+      const w = Math.max(2, Math.round((v / max) * (cap || 200)));
+      return `<div class="uik-barrow">
+        <span class="uik-barname">${escHtml(uikShortName(r.name))}</span>
+        <span class="uik-bar" style="width:${w}px"></span>
+        <span class="uik-barval">${escHtml(String(v))}</span>
+      </div>`;
     }).join('')}</div>`;
+  }
+
+  // Type, set at its real size, scaled down only where it would not fit.
+  function uikTypeSpecimen() {
+    const rows = uikRows('text/size/');
+    if (!rows.length) return '<div class="uik-pv-empty">…</div>';
+    const bp = (KS.spec.breakpoints[0] || {}).name;
+    const sizes = rows.map(r => Number(uikValueAt(r, bp)) || 0);
+    const biggest = Math.max.apply(null, sizes) || 1;
+    const scale = biggest > 34 ? 34 / biggest : 1;
+    return `<div class="uik-type">${rows.map((r, i) => `
+      <div class="uik-typerow">
+        <span class="uik-barname">${escHtml(uikShortName(r.name))}</span>
+        <span class="uik-typespec" style="font-size:${Math.max(7, sizes[i] * scale)}px">Ag</span>
+        <span class="uik-barval">${escHtml(String(sizes[i]))}</span>
+      </div>`).join('')}</div>`;
+  }
+
+  // A ramp as a continuous strip, which is how a ramp is judged.
+  function uikRampStrip(prefix) {
+    const rows = uikRows(prefix);
+    if (!rows.length) return '';
+    return `<div class="uik-ramprow">
+      <span class="uik-barname">${escHtml(prefix.replace('/', ''))}</span>
+      <span class="uik-ramp">${rows.map(r => {
+        const v = uikValueAt(r, null);
+        if (!v || typeof v.r !== 'number') return '';
+        return `<i style="background:${uikCss(v)}" title="${escHtml(uikShortName(r.name))}"></i>`;
+      }).join('')}</span>
+    </div>`;
+  }
+
+  // The grid, drawn as columns.
+  function uikGridDiagram(bpName) {
+    const cols = Number((KS.spec.grid.columns || {})[bpName]) || uikGridDefault('columns', bpName);
+    const gutter = Number((KS.spec.grid.gutter || {})[bpName]) || uikGridDefault('gutter', bpName);
+    const margin = Number((KS.spec.grid.margin || {})[bpName]) || uikGridDefault('margin', bpName);
+    const n = Math.max(1, Math.min(24, cols));
+    return `<span class="uik-griddiag" style="padding:0 ${Math.min(14, margin / 3)}px; gap:${Math.min(6, gutter / 5)}px">
+      ${Array.apply(null, { length: n }).map(() => '<i></i>').join('')}
+    </span>`;
+  }
+
+  // Mirrors defaultColumnsFor / defaultGutterFor / defaultMarginFor in
+  // code.js, so an untouched field shows the number it will actually get.
+  function uikGridDefault(field, bpName) {
+    const bp = KS.spec.breakpoints.filter(b => b.name === bpName)[0];
+    const w = (bp && bp.width) || 1440;
+    if (field === 'columns') return w >= 900 ? 12 : (w >= 700 ? 8 : (w >= 480 ? 6 : 4));
+    if (field === 'gutter') return w >= 900 ? 24 : (w >= 600 ? 20 : 16);
+    return w >= 1200 ? 32 : (w >= 700 ? 24 : 16);
   }
 
   function uikStepBody(key) {
     const st = KS.state || {};
     const sp = KS.spec;
+
     if (key === 'breakpoints') {
       const names = st.presetNames || [];
-      const presets = st.presets || {};
+      const widest = Math.max.apply(null, sp.breakpoints.map(b => b.width || 0)) || 1440;
       return `
         <select class="sm-input" data-uik-spec="preset">
           ${names.map(n => `<option value="${escHtml(n)}"${n === sp.preset ? ' selected' : ''}>${escHtml(UIK_PRESET_LABELS[n] || n)}</option>`).join('')}
         </select>
-        ${uikChipsHtml(sp.breakpoints)}
-        <p class="uik-note" style="padding:0">Each becomes a mode on the <b>Responsive</b> collection. How many modes a file allows depends on the Figma plan, so this asks the file rather than guessing — if it will not take them all, nothing is written and the last step says so.</p>`;
+        <div class="uik-bps-edit">
+          ${sp.breakpoints.map(b => `
+            <div class="uik-bprow">
+              <span class="uik-barname">${escHtml(b.name)}</span>
+              <span class="uik-screen" style="width:${Math.max(10, Math.round((b.width / widest) * 150))}px"></span>
+              <input class="sm-input uik-wid" type="number" min="200" step="1"
+                     data-uik-bpw="${escHtml(b.name)}" value="${escHtml(String(b.width || ''))}">
+            </div>`).join('')}
+        </div>`;
     }
+
+    if (key === 'grid') {
+      return `
+        <div class="uik-gridtable">
+          <div class="uik-gt-head"><span></span><span>Cols</span><span>Gutter</span><span>Margin</span><span></span></div>
+          ${sp.breakpoints.map(b => `
+            <div class="uik-gt-row">
+              <span class="uik-barname">${escHtml(b.name)}</span>
+              ${['columns', 'gutter', 'margin'].map(f => `
+                <input class="sm-input uik-gt-in" type="number" min="0"
+                       data-uik-grid="${f}" data-bp="${escHtml(b.name)}"
+                       value="${escHtml(String((sp.grid[f] || {})[b.name] !== undefined ? sp.grid[f][b.name] : uikGridDefault(f, b.name)))}">`).join('')}
+              ${uikGridDiagram(b.name)}
+            </div>`).join('')}
+        </div>
+        <p class="uik-note" style="padding:0">One grid style per canvas size — a grid style cannot carry modes. The numbers are tokens too.</p>`;
+    }
+
     if (key === 'spacing') {
       const spP = st.spacingPresets || {}, rdP = st.radiusPresets || {};
       const o = (m, c) => Object.keys(m).map(k => `<option value="${escHtml(k)}"${k === c ? ' selected' : ''}>${escHtml(m[k].label || k)}</option>`).join('');
@@ -5040,10 +5168,10 @@
           <label class="uik-field"><span>Radius</span><select class="sm-input" data-uik-spec="ramp.radius">${o(rdP, sp.ramp.radius)}</select></label>
           <label class="uik-field uik-field-sm"><span>Base</span><input class="sm-input" type="number" min="0" data-uik-spec="ramp.radiusBase" value="${escHtml(String(rdBase))}"></label>
         </div>
-        ${uikPreviewFor('space/')}
-        ${uikPreviewFor('radius/')}
-        <p class="uik-note" style="padding:0">The ramp is multiples of the base, so changing the base retunes the whole scale and keeps it on-grid.</p>`;
+        ${uikBarsFor('space/', 190)}
+        ${uikBarsFor('radius/', 60)}`;
     }
+
     if (key === 'type') {
       const ratios = st.typeRatios || [];
       return `
@@ -5054,9 +5182,10 @@
             </select></label>
           <label class="uik-field uik-field-sm"><span>Base</span><input class="sm-input" type="number" min="8" data-uik-spec="type.base" value="${escHtml(String(sp.type.base))}"></label>
         </div>
-        ${uikPreviewFor('text/size/')}
-        <p class="uik-note" style="padding:0">Sizes shown at <b>${escHtml((sp.breakpoints[0] || {}).name || 'the widest')}</b>. The ratio tightens as the canvas narrows — a desktop ratio on a phone gives headings that eat the screen — while the base stays put, so body copy never shrinks below comfort.</p>`;
+        ${uikTypeSpecimen()}
+        <p class="uik-note" style="padding:0">Shown at ${escHtml((sp.breakpoints[0] || {}).name || 'the widest size')}. The ratio tightens on smaller canvases; the base holds.</p>`;
     }
+
     if (key === 'colour') {
       const swatch = (label, field, val) => `
         <label class="uik-field"><span>${escHtml(label)}</span>
@@ -5069,23 +5198,31 @@
           ${swatch('Brand', 'brandHex', sp.colors.brandHex)}
           ${swatch('Neutral', 'neutralHex', sp.colors.neutralHex)}
         </div>
-        ${uikPreviewFor('brand/')}
-        <label class="uik-el" style="padding:6px 0">
+        <div class="uik-ramps">
+          ${uikRampStrip('brand/')}
+          ${uikRampStrip('neutral/')}
+          ${uikRampStrip('success/')}
+          ${uikRampStrip('warning/')}
+          ${uikRampStrip('danger/')}
+        </div>
+        <label class="uik-el" style="padding:4px 0">
           <input type="checkbox" data-uik-spec="colors.theme"${sp.colors.theme ? ' checked' : ''}>
-          <span>Also create <b>Light</b> and <b>Dark</b> semantic names</span>
-        </label>
-        <p class="uik-note" style="padding:0">Each ramp runs 50&ndash;900. The semantic names (<code>color/text/primary</code>, <code>color/bg/surface</code>) <b>alias</b> a ramp step and alias a different one in Dark — which is what makes a dark theme one edit rather than a repaint.</p>`;
+          <span>Light and Dark semantic names</span>
+        </label>`;
     }
+
     if (key === 'extras') {
       const fams = [['typography', 'Type sizes & line heights'], ['borders', 'Border widths'],
-                    ['icons', 'Icon sizes'], ['opacity', 'Opacity steps'], ['breakpointWidths', 'Breakpoint widths']];
+                    ['icons', 'Icon sizes'], ['opacity', 'Opacity steps'],
+                    ['breakpointWidths', 'Canvas width tokens'], ['grid', 'Grid styles']];
       return `<div class="uik-els" style="padding:0">
         ${fams.map(f => `<label class="uik-el">
           <input type="checkbox" data-uik-spec="families.${f[0]}"${sp.families[f[0]] !== false ? ' checked' : ''}>
           <span>${escHtml(f[1])}</span></label>`).join('')}
       </div>
-      <p class="uik-note" style="padding:0">Shadows are missing on purpose: a variable cannot hold an effect and an effect style has no modes, so per-breakpoint elevation has no clean answer in Figma today.</p>`;
+      <p class="uik-note" style="padding:0">No shadows: a variable cannot hold an effect, and an effect style has no modes.</p>`;
     }
+
     if (key === 'elements') {
       const defs = st.elements || [];
       return `<div class="uik-els" style="padding:0">
@@ -5093,24 +5230,25 @@
           <input type="checkbox" data-uik-el="${escHtml(d.key)}"${sp.elements.indexOf(d.key) !== -1 ? ' checked' : ''}>
           <span>${escHtml(d.label)}</span></label>`).join('')}
       </div>
-      <p class="uik-note" style="padding:0">Real components with variant properties — one Button with a <b>Variant</b> and a <b>State</b>, not nine Buttons. Padding, gaps and radii are bound to the scale as they are drawn.</p>`;
+      <p class="uik-note" style="padding:0">One Button with a <b>Variant</b> and a <b>State</b>, not nine Buttons.</p>`;
     }
+
     // review
     const rows = KS.previewRows || [];
     const count = (prefix) => rows.filter(r => r.name.indexOf(prefix) === 0).length;
     const lines = [
-      [sp.breakpoints.length + ' breakpoints', sp.breakpoints.map(b => b.name).join(', ')],
-      [count('space/') + ' spacing tokens', (st.spacingPresets || {})[sp.ramp.spacing] ? st.spacingPresets[sp.ramp.spacing].label : sp.ramp.spacing],
-      [count('radius/') + ' radius tokens', (st.radiusPresets || {})[sp.ramp.radius] ? st.radiusPresets[sp.ramp.radius].label : sp.ramp.radius],
-      [count('text/') + ' type tokens', 'ratio ' + sp.type.ratio + ', base ' + sp.type.base + 'px'],
-      [rows.filter(r => r.type === 'COLOR' && r.tier === 'primitive').length + ' colour tokens', sp.colors.brandHex + ' + neutrals'],
-      [rows.filter(r => r.tier === 'theme').length + ' semantic names', sp.colors.theme ? 'Light and Dark' : 'theme off'],
-      [sp.elements.length + ' elements', sp.elements.join(', ') || 'none']
+      ['Canvas sizes', sp.breakpoints.map(b => b.name + ' ' + b.width).join('  ·  ')],
+      ['Grid', sp.breakpoints.map(b => (sp.grid.columns[b.name] || uikGridDefault('columns', b.name)) + ' col').join('  ·  ')],
+      ['Spacing', count('space/') + ' tokens'],
+      ['Radius', count('radius/') + ' tokens'],
+      ['Type', count('text/size/') + ' sizes, ratio ' + sp.type.ratio],
+      ['Colour', rows.filter(r => r.type === 'COLOR' && r.tier === 'primitive').length + ' steps' + (sp.colors.theme ? ' + Light/Dark' : '')],
+      ['Elements', sp.elements.length ? sp.elements.length + ' components' : 'none']
     ];
     return `<div class="uik-review">
       ${lines.map(l => `<div class="uik-rev-row"><b>${escHtml(l[0])}</b><span>${escHtml(l[1])}</span></div>`).join('')}
     </div>
-    <p class="uik-note" style="padding:0">${rows.length} tokens in total. Everything is written in one go, inside a single undo.</p>`;
+    <div class="uik-total">${rows.length} tokens &middot; one undo</div>`;
   }
 
   function uikWizardHtml() {
@@ -5527,6 +5665,30 @@
       return;
     }
 
+    // Canvas width, and the grid numbers, live per breakpoint rather than
+    // on a single path, so they get their own handlers.
+    const bpw = e.target.closest('[data-uik-bpw]');
+    if (bpw && KS.spec) {
+      const n = Number(bpw.value);
+      const bp = KS.spec.breakpoints.filter(b => b.name === bpw.dataset.uikBpw)[0];
+      if (bp && !isNaN(n) && n > 0) bp.width = n;
+      renderUiKit();
+      previewUiKit();
+      return;
+    }
+
+    const gridIn = e.target.closest('[data-uik-grid]');
+    if (gridIn && KS.spec) {
+      const field = gridIn.dataset.uikGrid, bpName = gridIn.dataset.bp;
+      const n = Number(gridIn.value);
+      KS.spec.grid[field] = KS.spec.grid[field] || {};
+      if (gridIn.value.trim() === '' || isNaN(n)) delete KS.spec.grid[field][bpName];
+      else KS.spec.grid[field][bpName] = n;
+      renderUiKit();
+      previewUiKit();
+      return;
+    }
+
     const specEl = e.target.closest('[data-uik-spec]');
     if (specEl && KS.spec) {
       const path = specEl.dataset.uikSpec;
@@ -5539,7 +5701,11 @@
 
       if (path === 'preset') {
         KS.spec.preset = value;
-        KS.spec.breakpoints = ((KS.state && KS.state.presets) || {})[value] || [];
+        // Copy, so editing a width here cannot mutate the shared preset.
+        KS.spec.breakpoints = (((KS.state && KS.state.presets) || {})[value] || [])
+          .map(b => ({ name: b.name, width: b.width }));
+        // Grid overrides are keyed by breakpoint name, so they no longer apply.
+        KS.spec.grid = { columns: {}, gutter: {}, margin: {} };
       } else if (path === 'type.ratio') {
         uikSetSpec(path, Number(value));
       } else {

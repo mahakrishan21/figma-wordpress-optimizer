@@ -2,7 +2,7 @@
 var _id = 0; function nid(p){ return p + (++_id); }
 function F(){ return {
   mixed: Symbol('mixed'),
-  _paintStyles: [], _textStyles: [], _vars: [], _cols: [], _nodes: {},
+  _paintStyles: [], _textStyles: [], _vars: [], _cols: [], _nodes: {}, _gridStyles: [],
   showUI: function(){}, on: function(){}, commitUndo: function(){},
   notify: function(){},
   ui: { postMessage: function(m){ (globalThis.__posted = globalThis.__posted || []).push(m); }, resize: function(){}, onmessage: null },
@@ -39,6 +39,14 @@ function F(){ return {
   },
   getLocalPaintStylesAsync: function(){ return Promise.resolve(this._paintStyles.slice()); },
   getLocalTextStylesAsync: function(){ return Promise.resolve(this._textStyles.slice()); },
+  getLocalGridStylesAsync: function(){ return Promise.resolve((figma._gridStyles || []).slice()); },
+  createGridStyle: function(){
+    var st = { id: nid('G'), name: '', layoutGrids: [],
+      remove: function(){ var i = figma._gridStyles.indexOf(this); if (i>=0) figma._gridStyles.splice(i,1); } };
+    figma._gridStyles = figma._gridStyles || [];
+    figma._gridStyles.push(st);
+    return st;
+  },
   getStyleByIdAsync: function(){ return Promise.resolve(null); },
   getNodeByIdAsync: function(id){ return Promise.resolve(figma._nodes[id] || null); },
   createPaintStyle: function(){ var st={id:nid('S'),name:'',paints:[],

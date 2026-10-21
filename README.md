@@ -357,13 +357,15 @@ It opens with a choice, the way the Colors tab does:
 
 | | |
 |---|---|
-| **Generate from scratch** | A wizard: breakpoints → spacing & radius → typography → colour → other families → elements → review. One question at a time, each showing what the answer produces. **Nothing is written until the last step**, and everything then lands in a single undo |
+| **Generate from scratch** | A wizard: canvas sizes → grid → spacing & radius → type scale → colour → extras → elements → review. One question at a time, each **showing** what the answer produces — spacing as bars at real width, the type scale set in actual type, colour as continuous ramps, the grid drawn as columns. **Nothing is written until the last step**, and everything then lands in a single undo |
 | **Use what's in this file** | Open a system the file already has, or read a scale documented on the canvas |
 
 ### Token families
 
 | Family | Tier | Notes |
 |---|---|---|
+| Canvas width & content width | Responsive | each breakpoint's width is editable |
+| Grid — columns, gutter, margin | Responsive | plus **one grid style per canvas size**, since a grid style cannot carry modes |
 | Spacing, radius | Primitive | multiples of an editable base |
 | Type sizes | Responsive | the ratio tightens as the canvas narrows; the base holds, so body copy never shrinks |
 | Line heights, border widths, icon sizes, opacity, breakpoint widths | Primitive | |

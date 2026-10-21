@@ -131,6 +131,64 @@ async function run() {
   eq(d.tone, 'success', 'and succeeds');
   ok(d.message.indexOf('One undo reverses all of it') !== -1, 'promising a single undo: ' + d.message);
 
+  // ── 9 ── canvas, columns, gutter, margin ──────────────────────────────
+  var gr = gridRows(CFG, {});
+  eq(row(gr, 'grid/columns').values['Desktop'], 12, '1440px gets 12 columns');
+  eq(row(gr, 'grid/columns').values['Mobile'], 4, '375px gets 4');
+  eq(row(gr, 'grid/gutter').values['Desktop'], 24, 'wide gutter on desktop');
+  ok(row(gr, 'grid/gutter').values['Mobile'] < 24, 'tighter on mobile');
+  eq(row(gr, 'canvas/width').values['Desktop'], 1440, 'canvas width is the breakpoint width');
+  eq(row(gr, 'canvas/content').values['Desktop'], 1440 - 64, 'content width is the canvas minus both margins');
+
+  // overrides win
+  var custom = gridRows(CFG, { grid: { columns: { Desktop: 16 }, gutter: { Desktop: 40 } } });
+  eq(row(custom, 'grid/columns').values['Desktop'], 16, 'an override is respected');
+  eq(row(custom, 'grid/gutter').values['Desktop'], 40, 'and so is a gutter override');
+  eq(row(custom, 'grid/columns').values['Mobile'], 4, 'while the rest keep their defaults');
+
+  // ── 10 ── grid STYLES, one per breakpoint ─────────────────────────────
+  fresh4();
+  writeBreakpointConfig(CFG);
+  var gs = await createGridStyles(CFG, {});
+  eq(gs.created, 3, 'one grid style per breakpoint — a grid style cannot carry modes');
+  eq(figma._gridStyles.length, 3, 'and they really exist');
+  var deskStyle = figma._gridStyles.filter(function (s2) { return s2.name === 'Grid / Desktop'; })[0];
+  ok(!!deskStyle, 'named per breakpoint');
+  eq(deskStyle.layoutGrids[0].count, 12, 'with 12 columns');
+  eq(deskStyle.layoutGrids[0].gutterSize, 24, 'the gutter');
+  eq(deskStyle.layoutGrids[0].offset, 32, 'and the margin as the offset');
+  eq(deskStyle.layoutGrids[0].pattern, 'COLUMNS', 'as a column grid');
+
+  var again = await createGridStyles(CFG, {});
+  eq(again.created, 0, 'a second run creates none');
+  eq(again.reused, 3, 'and reuses all three');
+  eq(figma._gridStyles.length, 3, 'no duplicates');
+
+  // ── 11 ── the grid comes through a full build ─────────────────────────
+  fresh4();
+  var gspec = { preset: 'custom', breakpoints: BPS, ramp: {}, type: {}, colors: {}, families: {},
+                grid: { columns: { Desktop: 16 } }, elements: [] };
+  var gb = await buildDesignSystem(gspec);
+  eq(gb.grids.created, 3, 'the build created the grid styles');
+  var gfloats = await localVariablesAllModes('FLOAT');
+  var colVar = gfloats.filter(function (e) { return e.variable.name === 'grid/columns'; })[0];
+  ok(!!colVar, 'grid/columns is a token too');
+  var cols2 = await getUiKitCollections(false);
+  var deskMode = null;
+  for (var q = 0; q < cols2.responsive.modes.length; q++) {
+    if (cols2.responsive.modes[q].name === 'Desktop') deskMode = cols2.responsive.modes[q].modeId;
+  }
+  eq(await variableValue(colVar.variable, deskMode), 16, 'carrying the override');
+
+  // grid can be switched off
+  fresh4();
+  var noGrid = await buildDesignSystem({ preset: 'custom', breakpoints: BPS, ramp: {}, type: {},
+                                         colors: {}, families: { grid: false }, elements: [] });
+  eq(noGrid.grids, undefined, 'no grid styles when the family is off');
+  eq(figma._gridStyles.length, 0, 'and none created');
+  var ngf = await localVariablesAllModes('FLOAT');
+  eq(ngf.filter(function (e) { return e.variable.name === 'grid/columns'; }).length, 0, 'nor the tokens');
+
   print('');
   print(fail === 0 ? ('ALL PASS (' + pass + ' assertions)') : (pass + ' passed, ' + fail + ' FAILED'));
 }

@@ -4566,6 +4566,97 @@ function breakpointWidthRows(cfg) {
   return rows;
 }
 
+// ── Canvas, columns, gutter, margin ────────────────────────────────────────
+// The layout grid is the one part of a design system that Figma stores
+// OUTSIDE variables: a grid style has no modes, so a responsive grid is one
+// style per breakpoint. The numbers behind it are still tokens, so a
+// container can be built from them.
+
+function defaultColumnsFor(width) {
+  if (width >= 1200) return 12;
+  if (width >= 900) return 12;
+  if (width >= 700) return 8;
+  if (width >= 480) return 6;
+  return 4;
+}
+function defaultGutterFor(width) { return width >= 900 ? 24 : (width >= 600 ? 20 : 16); }
+function defaultMarginFor(width) { return width >= 1200 ? 32 : (width >= 700 ? 24 : 16); }
+
+// Fill in whatever the designer has not overridden.
+function resolveGridSpec(cfg, grid) {
+  grid = grid || {};
+  var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  var out = { columns: {}, gutter: {}, margin: {} };
+  for (var i = 0; i < bps.length; i++) {
+    var n = bps[i].name, w = bps[i].width || 1440;
+    out.columns[n] = (grid.columns && typeof grid.columns[n] === 'number') ? grid.columns[n] : defaultColumnsFor(w);
+    out.gutter[n] = (grid.gutter && typeof grid.gutter[n] === 'number') ? grid.gutter[n] : defaultGutterFor(w);
+    out.margin[n] = (grid.margin && typeof grid.margin[n] === 'number') ? grid.margin[n] : defaultMarginFor(w);
+  }
+  return out;
+}
+
+function gridRows(cfg, opts) {
+  opts = opts || {};
+  var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  if (!bps.length) return [];
+  var g = resolveGridSpec(cfg, opts.grid);
+
+  var cols = {}, gut = {}, mar = {}, canvas = {}, content = {};
+  for (var i = 0; i < bps.length; i++) {
+    var n = bps[i].name, w = bps[i].width || 1440;
+    cols[n] = g.columns[n];
+    gut[n] = g.gutter[n];
+    mar[n] = g.margin[n];
+    canvas[n] = w;
+    content[n] = Math.max(0, w - 2 * g.margin[n]);
+  }
+  return [
+    { name: 'grid/columns', tier: 'responsive', scopes: [], values: cols },
+    { name: 'grid/gutter', tier: 'responsive', scopes: ['GAP'], values: gut },
+    { name: 'grid/margin', tier: 'responsive', scopes: ['GAP'], values: mar },
+    { name: 'canvas/width', tier: 'responsive', scopes: ['WIDTH_HEIGHT'], values: canvas },
+    { name: 'canvas/content', tier: 'responsive', scopes: ['WIDTH_HEIGHT'], values: content }
+  ];
+}
+
+// One grid style per breakpoint, because a grid style cannot carry modes.
+async function createGridStyles(cfg, opts) {
+  opts = opts || {};
+  var out = { created: 0, reused: 0, reasons: [] };
+  var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  if (!bps.length) return out;
+  var g = resolveGridSpec(cfg, opts.grid);
+
+  var existing = {};
+  try {
+    var all = await figma.getLocalGridStylesAsync();
+    for (var i = 0; i < all.length; i++) existing[all[i].name] = all[i];
+  } catch (e) {
+    out.reasons.push('This Figma build does not expose grid styles, so the grid was written as tokens only.');
+    return out;
+  }
+
+  for (var b = 0; b < bps.length; b++) {
+    var name = 'Grid / ' + bps[b].name;
+    var style = existing[name];
+    if (style) { out.reused++; } else {
+      try { style = figma.createGridStyle(); style.name = name; out.created++; }
+      catch (e2) { out.reasons.push('Could not create "' + name + '".'); continue; }
+    }
+    try {
+      style.layoutGrids = [{
+        pattern: 'COLUMNS', alignment: 'STRETCH', visible: true,
+        count: g.columns[bps[b].name],
+        gutterSize: g.gutter[bps[b].name],
+        offset: g.margin[bps[b].name],
+        color: { r: 1, g: 0, b: 0, a: 0.08 }
+      }];
+    } catch (e3) { out.reasons.push('"' + name + '" was created but Figma refused the column settings.'); }
+  }
+  return out;
+}
+
 // ── Colour, as a tier rather than a list ───────────────────────────────────
 // Primitives hold the ramps. Theme holds the names a designer actually
 // reaches for, each ALIASING a ramp step — and aliasing differently per
@@ -4645,6 +4736,7 @@ function defaultScaleTable(cfg, opts) {
   if (opts.opacity !== false) rows = rows.concat(opacityRows());
   if (opts.breakpointWidths !== false) rows = rows.concat(breakpointWidthRows(cfg));
   if (opts.colors !== false) rows = rows.concat(colorSystemRows(opts));
+  if (opts.grid !== false) rows = rows.concat(gridRows(cfg, opts));
   return rows;
 }
 
@@ -5886,7 +5978,8 @@ function buildOptionsFrom(spec) {
     icons: fams.icons !== false,
     opacity: fams.opacity !== false,
     breakpointWidths: fams.breakpointWidths !== false,
-    colors: fams.colors !== false
+    colors: fams.colors !== false,
+    grid: fams.grid === false ? false : (spec.grid || {})
   };
 }
 
@@ -5916,6 +6009,12 @@ async function buildDesignSystem(spec) {
   result.tokens = await generateScaleVariables(cfg, table);
   result.created += result.tokens.created;
   Array.prototype.push.apply(result.reasons, result.tokens.reasons);
+
+  var fams = spec.families || {};
+  if (fams.grid !== false) {
+    result.grids = await createGridStyles(cfg, { grid: spec.grid });
+    Array.prototype.push.apply(result.reasons, result.grids.reasons);
+  }
 
   if (spec.elements && spec.elements.length) {
     result.elements = await generateKitElements(cfg, { elements: spec.elements });
@@ -6115,6 +6214,7 @@ async function handleUiKitMessage(msg) {
       } else {
         var bits = [r.tokens.created + ' tokens'];
         if (r.tokens.aliased) bits.push(r.tokens.aliased + ' aliased');
+        if (r.grids && r.grids.created) bits.push(r.grids.created + ' grid styles');
         if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
         summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
       }
