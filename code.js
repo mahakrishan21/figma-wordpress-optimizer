@@ -4363,6 +4363,175 @@ async function getUiKitCollections(create) {
   return out;
 }
 
+// ── UI Kit: the scale table and what it generates ──────────────────────────
+// A table row is one token:
+//   { name, tier: 'primitive'|'responsive', scopes: [...], values: { <bpName>: n } }
+// A primitive row carries a single value under the key VALUE_KEY, because a
+// primitive doesn't vary by breakpoint — that is the whole point of the tier.
+var UIKIT_VALUE_KEY = '*';
+
+// Figma rejects a scope string it doesn't know, and the accepted set has
+// grown over API versions. Assigning scopes is a nicety, never a reason to
+// fail a generate, so every assignment is attempted and shrugged off.
+function applyVarScopes(variable, scopes) {
+  if (!scopes || !scopes.length) return;
+  try { variable.scopes = scopes.slice(); } catch (e) { /* older API, or an unknown scope */ }
+}
+
+var SPACING_SCOPES = ['GAP', 'WIDTH_HEIGHT'];
+var RADIUS_SCOPES = ['CORNER_RADIUS'];
+
+// The 4pt ramp, with a 2px micro-step. Breakpoint-invariant by definition:
+// a ramp is a set of raw values, so it lives in Primitives with one mode.
+function defaultPrimitiveRamp() {
+  var steps = [[25, 2], [50, 4], [100, 8], [150, 12], [200, 16], [250, 20], [300, 24],
+               [400, 32], [500, 40], [600, 48], [700, 64], [800, 80], [900, 96], [950, 112]];
+  var rows = [];
+  for (var i = 0; i < steps.length; i++) {
+    var vals = {};
+    vals[UIKIT_VALUE_KEY] = steps[i][1];
+    rows.push({ name: 'space/' + steps[i][0], tier: 'primitive', scopes: SPACING_SCOPES, values: vals });
+  }
+  var radii = [['none', 0], ['sm', 4], ['md', 8], ['lg', 16], ['full', 999]];
+  for (var r = 0; r < radii.length; r++) {
+    var rv = {};
+    rv[UIKIT_VALUE_KEY] = radii[r][1];
+    rows.push({ name: 'radius/' + radii[r][0], tier: 'primitive', scopes: RADIUS_SCOPES, values: rv });
+  }
+  return rows;
+}
+
+// The semantic tokens that genuinely differ per breakpoint. Seeded by
+// scaling against the widest breakpoint, which gives a usable starting
+// table on any preset — the designer then edits it.
+function defaultResponsiveRows(cfg) {
+  var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  if (!bps.length) return [];
+  var widest = bps[0].width || 1440;
+
+  function ramp(base, floor) {
+    var out = {};
+    for (var i = 0; i < bps.length; i++) {
+      var f = (bps[i].width || widest) / widest;
+      var v = Math.round((base * f) / 4) * 4;
+      out[bps[i].name] = Math.max(floor, v);
+    }
+    return out;
+  }
+
+  var rows = [
+    { name: 'space/section/sm', tier: 'responsive', scopes: SPACING_SCOPES, values: ramp(64, 32) },
+    { name: 'space/section/md', tier: 'responsive', scopes: SPACING_SCOPES, values: ramp(96, 40) },
+    { name: 'space/section/lg', tier: 'responsive', scopes: SPACING_SCOPES, values: ramp(120, 48) },
+    { name: 'space/section/xl', tier: 'responsive', scopes: SPACING_SCOPES, values: ramp(180, 80) },
+    { name: 'space/section/2xl', tier: 'responsive', scopes: SPACING_SCOPES, values: ramp(240, 96) },
+    { name: 'space/gutter', tier: 'responsive', scopes: SPACING_SCOPES, values: ramp(32, 16) }
+  ];
+
+  var container = {};
+  for (var c = 0; c < bps.length; c++) {
+    container[bps[c].name] = Math.max(0, (bps[c].width || widest) - 2 * (ramp(32, 16)[bps[c].name] || 16));
+  }
+  rows.push({ name: 'container/max', tier: 'responsive', scopes: ['WIDTH_HEIGHT'], values: container });
+  return rows;
+}
+
+function defaultScaleTable(cfg) {
+  return defaultPrimitiveRamp().concat(defaultResponsiveRows(cfg));
+}
+
+// Index local variables of a collection by name, so a re-run reuses rather
+// than duplicating. Matching is by exact name: that is the contract the
+// Colors and Typography tabs already use for idempotency.
+async function variablesByNameIn(collection) {
+  var map = {};
+  if (!collection) return map;
+  var vars = await figma.variables.getLocalVariablesAsync();
+  for (var i = 0; i < vars.length; i++) {
+    if (vars[i].remote) continue;
+    if (vars[i].variableCollectionId !== collection.id) continue;
+    if (!map[vars[i].name]) map[vars[i].name] = vars[i];
+  }
+  return map;
+}
+
+// Generate the table into the two collections.
+//
+// Responsive values alias a Primitive whenever one holds exactly that
+// number — that is what makes the tiers worth having, because retuning the
+// ramp then moves every semantic token with it. Where no primitive matches,
+// the raw number is written and the row is reported under `raw`.
+async function generateScaleVariables(cfg, table) {
+  var result = { created: 0, reused: 0, aliased: 0, raw: 0, skipped: 0, reasons: [], modes: null, unit: 'token' };
+  var names = breakpointNames(cfg);
+  if (!names.length) { result.reasons.push('No breakpoints are configured.'); return result; }
+  if (!table || !table.length) { result.reasons.push('The scale table is empty.'); return result; }
+
+  var cols = await getUiKitCollections(true);
+  var modes = await ensureModes(cols.responsive, names);
+  result.modes = modes;
+  if (modes.capHit) {
+    result.reasons.push('This file allows ' + modes.cap + ' modes per collection, but ' + names.length +
+      ' breakpoints were asked for. Nothing was changed. Remove ' + (names.length - modes.cap) + ' breakpoint(s) and run again.');
+    return result;
+  }
+
+  var primMap = await variablesByNameIn(cols.primitives);
+  var respMap = await variablesByNameIn(cols.responsive);
+  var primValue = {};   // number -> primitive variable, for aliasing
+
+  // Primitives first, so the responsive pass can alias them.
+  for (var i = 0; i < table.length; i++) {
+    var row = table[i];
+    if (row.tier !== 'primitive') continue;
+    var n = row.values ? row.values[UIKIT_VALUE_KEY] : null;
+    if (typeof n !== 'number' || !isFinite(n)) { result.skipped++; result.reasons.push(row.name + ': no value.'); continue; }
+    var pv = primMap[row.name];
+    if (pv) { result.reused++; } else {
+      pv = figma.variables.createVariable(row.name, cols.primitives, 'FLOAT');
+      primMap[row.name] = pv;
+      result.created++;
+    }
+    applyVarScopes(pv, row.scopes);
+    await setVarValue(pv, cols.primitives, n);
+    if (primValue[n] === undefined) primValue[n] = pv;
+  }
+
+  // Responsive second.
+  for (var r = 0; r < table.length; r++) {
+    var rrow = table[r];
+    if (rrow.tier === 'primitive') continue;
+    var rv = respMap[rrow.name];
+    if (rv) { result.reused++; } else {
+      rv = figma.variables.createVariable(rrow.name, cols.responsive, 'FLOAT');
+      respMap[rrow.name] = rv;
+      result.created++;
+    }
+    applyVarScopes(rv, rrow.scopes);
+
+    var wrote = 0;
+    for (var m = 0; m < names.length; m++) {
+      var bp = names[m];
+      var val = rrow.values ? rrow.values[bp] : null;
+      if (typeof val !== 'number' || !isFinite(val)) continue;
+      var modeId = modes.nameToModeId[bp];
+      if (!modeId) continue;
+      var target = primValue[val];
+      if (target && target.id !== rv.id) {
+        await setVarValue(rv, cols.responsive, figma.variables.createVariableAlias(target), modeId);
+        result.aliased++;
+      } else {
+        await setVarValue(rv, cols.responsive, val, modeId);
+        result.raw++;
+      }
+      wrote++;
+    }
+    if (!wrote) { result.skipped++; result.reasons.push(rrow.name + ': no value at any breakpoint.'); }
+  }
+
+  return result;
+}
+
 function modeOf(collection) {
   if (!collection) return null;
   if (collection.defaultModeId) return collection.defaultModeId;
