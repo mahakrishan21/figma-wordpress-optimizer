@@ -4664,6 +4664,157 @@ async function previewBreakpoint(bpName) {
   return result;
 }
 
+// ── UI Kit: reading a scale off the canvas ─────────────────────────────────
+// A documented scale is just labelled text, so this is pattern matching and
+// it will not be right every time. That is why it only ever PROPOSES a
+// table: the grid in the UI is the source of truth, and anything this
+// misreads is a visible wrong number rather than a silent one.
+
+// "Frame 98", "Group 1", "Rectangle 143" carry no meaning.
+function isGenericLayerName(name) {
+  return /^(frame|group|rectangle|ellipse|vector|line|slice|component)\s*\d*$/i.test(String(name || '').trim());
+}
+
+function slugToken(text) {
+  var t = String(text == null ? '' : text).toLowerCase().trim();
+  t = t.replace(/[\s_]+/g, '-');
+  t = t.replace(/[^a-z0-9/\-.]/g, '');
+  t = t.replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
+  return t;
+}
+
+function matchBreakpoint(text, names) {
+  var t = String(text || '').toLowerCase();
+  if (!t) return null;
+  for (var i = 0; i < names.length; i++) {
+    if (t.indexOf(String(names[i]).toLowerCase()) !== -1) return names[i];
+  }
+  return null;
+}
+
+function stripBreakpoint(text, bpName) {
+  var cleaned = String(text || '');
+  if (bpName) cleaned = cleaned.replace(new RegExp(bpName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), '');
+  return cleaned.replace(/[\/\-–—]+\s*$/, '').replace(/^\s*[\/\-–—]+/, '');
+}
+
+// Where a value sits: which breakpoint, and which group of tokens.
+//
+// Both can come from two places, and real files use both. "Component
+// Padding - Desktop" puts them in a FRAME NAME; "Spacing/ Desktop" is a
+// heading TEXT sitting beside the rows it introduces. Walking outward and
+// checking each ancestor's own name AND its direct text children covers
+// both, and nearest-wins keeps an outer container from swallowing an inner
+// section.
+function uiKitContext(node, names) {
+  var cur = node.parent;
+  var bp = matchBreakpoint(node.name, names);
+  var group = '';
+
+  while (cur && cur.type !== 'PAGE' && cur.type !== 'DOCUMENT') {
+    var ownName = String(cur.name || '').trim();
+
+    if (!bp) bp = matchBreakpoint(ownName, names);
+    if (!bp && cur.children) {
+      for (var c = 0; c < cur.children.length; c++) {
+        var ch = cur.children[c];
+        if (ch.type !== 'TEXT') continue;
+        var hit = matchBreakpoint(ch.characters, names);
+        if (hit) { bp = hit; if (!group) group = slugToken(stripBreakpoint(ch.characters, hit)); break; }
+      }
+    }
+
+    if (!group && ownName && !isGenericLayerName(ownName)) {
+      group = slugToken(stripBreakpoint(ownName, bp));
+    }
+
+    if (bp && group) break;
+    cur = cur.parent;
+  }
+  return { bp: bp || null, group: group || '' };
+}
+
+var PX_ONLY = /^(-?\d+(?:\.\d+)?)\s*px$/i;
+var LABEL_PX = /^(.*?)[\s]*[-–—][\s]*(-?\d+(?:\.\d+)?)\s*px$/i;
+
+// Read a scale from frames on the canvas.
+async function scanUiKit(roots, cfg) {
+  var names = breakpointNames(cfg);
+  var out = { rows: [], parsed: 0, unparsed: [] };
+  if (!roots || !roots.length) return out;
+
+  var nodes = styleScanNodes(roots);
+  var byName = {};   // token name -> row
+
+  function addValue(tokenName, bpName, value) {
+    var key = tokenName;
+    if (!byName[key]) {
+      byName[key] = {
+        name: tokenName,
+        tier: bpName ? 'responsive' : 'primitive',
+        scopes: tokenName.indexOf('radius') === 0 ? RADIUS_SCOPES : SPACING_SCOPES,
+        values: {}
+      };
+    }
+    var row = byName[key];
+    // A token seen under any breakpoint is responsive, even if it was first
+    // met outside one.
+    if (bpName && row.tier !== 'responsive') { row.tier = 'responsive'; row.values = {}; }
+    row.values[bpName || UIKIT_VALUE_KEY] = value;
+    out.parsed++;
+  }
+
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    if (node.type !== 'TEXT') continue;
+    var text = String(node.characters == null ? '' : node.characters).trim();
+    if (!text) continue;
+
+    var ctx = uiKitContext(node, names);
+    var bp = ctx.bp;
+
+    // Case 1: "Component Padding - lg - 120px" — label and value in one run.
+    var m = LABEL_PX.exec(text);
+    if (m && slugToken(m[1])) {
+      var group1 = ctx.group;
+      var label1 = slugToken(m[1]);
+      if (group1 && label1.indexOf(group1 + '-') === 0) label1 = label1.slice(group1.length + 1);
+      addValue(group1 ? (group1 + '/' + label1) : label1, bp, Number(m[2]));
+      continue;
+    }
+
+    // Case 2: a bare "2px" whose sibling text is its name — the two-column
+    // way a spacing ramp is normally documented.
+    var only = PX_ONLY.exec(text);
+    if (only) {
+      var parent = node.parent;
+      var label2 = null;
+      if (parent && parent.children) {
+        for (var c = 0; c < parent.children.length; c++) {
+          var sib = parent.children[c];
+          if (sib === node || sib.type !== 'TEXT') continue;
+          var st = String(sib.characters == null ? '' : sib.characters).trim();
+          if (!st || PX_ONLY.test(st)) continue;
+          label2 = st;
+          break;
+        }
+      }
+      if (label2 === null) { out.unparsed.push(text); continue; }
+      var group2 = ctx.group;
+      var slug2 = slugToken(label2);
+      if (group2 && slug2.indexOf(group2 + '-') === 0) slug2 = slug2.slice(group2.length + 1);
+      addValue(group2 ? (group2 + '/' + slug2) : slug2, bp, Number(only[1]));
+      continue;
+    }
+
+    if (/\d\s*px/i.test(text)) out.unparsed.push(text);
+  }
+
+  for (var k in byName) out.rows.push(byName[k]);
+  out.rows.sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+  return out;
+}
+
 // ── UI Kit: state and the message handler ──────────────────────────────────
 
 // Read the scale back out of the file, so re-opening the tab shows what is
@@ -4794,6 +4945,23 @@ async function handleUiKitMessage(msg) {
       summary = uiKitSummary('generate', r);
       if (r.modes && r.modes.capHit) tone = 'warning';
       else if (!r.created && !r.reused) tone = 'warning';
+    } else if (msg.type === 'uikit-parse') {
+      var pcfg = readBreakpointConfig();
+      if (!pcfg) throw new Error('Set up breakpoints first.');
+      var roots = (figma.currentPage.selection && figma.currentPage.selection.length)
+        ? figma.currentPage.selection
+        : figma.currentPage.children;
+      r = await scanUiKit(roots, pcfg);
+      if (!r.rows.length) {
+        tone = 'warning';
+        summary = 'Found no "<label> 24px" pairs to read. Select the frames that document the scale and try again.';
+      } else {
+        summary = 'Read ' + r.rows.length + ' token' + (r.rows.length === 1 ? '' : 's') +
+          ' from ' + r.parsed + ' labelled value' + (r.parsed === 1 ? '' : 's') +
+          (r.unparsed.length ? ('; ' + r.unparsed.length + ' label(s) could not be read.') : '.') +
+          ' Check the table before generating.';
+        if (r.unparsed.length) tone = 'warning';
+      }
     } else if (msg.type === 'uikit-bind') {
       r = await bindScaleToSelection(msg);
       summary = uiKitSummary('bind', r);
@@ -4807,9 +4975,17 @@ async function handleUiKitMessage(msg) {
     }
 
     figma.commitUndo();
+    var state = await uiKitState();
+    // A parse PROPOSES a table and writes nothing, so the state must carry
+    // the proposal rather than what is currently in the file — otherwise
+    // the reply would immediately overwrite what was just read.
+    if (msg.type === 'uikit-parse' && r && r.rows && r.rows.length) {
+      state.table = r.rows;
+      state.tableFromFile = false;
+    }
     figma.ui.postMessage({
       type: 'uikit-done', requestId: msg.requestId, tone: tone,
-      message: summary, result: r, state: await uiKitState()
+      message: summary, result: r, state: state
     });
     if (summary) figma.notify(summary, { timeout: 3000 });
   } catch (e) {
@@ -5708,7 +5884,7 @@ figma.ui.onmessage = async (msg) => {
     }
     if (msg.type === 'uikit-scan' || msg.type === 'uikit-save-breakpoints' ||
         msg.type === 'uikit-generate' || msg.type === 'uikit-bind' ||
-        msg.type === 'uikit-preview') {
+        msg.type === 'uikit-preview' || msg.type === 'uikit-parse') {
       await handleUiKitMessage(msg);
       return;
     }

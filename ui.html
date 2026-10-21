@@ -4978,6 +4978,7 @@
     return `
       <div class="toolbar">
         <button class="btn" data-act="uik-rescan"${KS.busy ? ' disabled' : ''}>${SI.refresh} Re-scan</button>
+        <button class="btn" data-act="uik-parse"${KS.busy ? ' disabled' : ''}>Read from canvas</button>
         <button class="btn btn-primary" data-act="uik-generate"${KS.busy ? ' disabled' : ''}>${SI.wand} Generate scale</button>
         <button class="btn" data-act="uik-bind"${KS.busy || !sel ? ' disabled' : ''}>Bind selection</button>
         <button class="btn btn-sm" data-act="uik-reset"${KS.busy ? ' disabled' : ''}>Change breakpoints</button>
@@ -4991,7 +4992,7 @@
       })}
       ${blockHtml(KS, {
         id: 'uik-scale', title: 'Scale', count: (KS.table || []).length,
-        sub: st.tableFromFile ? 'Read from the variables in this file.' : 'A starting point — edit any value, then Generate.',
+        sub: st.tableFromFile ? 'Read from the variables in this file.' : 'A proposal — check every value, then Generate.',
         body: uikTableHtml()
       })}`;
   }
@@ -5059,6 +5060,7 @@
       return;
     }
     if (act === 'uik-reset') { KS.state = Object.assign({}, KS.state, { config: null }); renderUiKit(); return; }
+    if (act === 'uik-parse') { sendUiKit({ type: 'uikit-parse' }); return; }
     if (act === 'uik-generate') { sendUiKit({ type: 'uikit-generate', table: KS.table }); return; }
     if (act === 'uik-bind') { sendUiKit({ type: 'uikit-bind' }); return; }
     if (act === 'uik-preview') { sendUiKit({ type: 'uikit-preview', breakpoint: el.dataset.bp }); return; }
