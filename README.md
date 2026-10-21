@@ -25,7 +25,7 @@ A Figma plugin that audits designs against a WordPress conversion SOP (Standard 
 - [Colors](#colors)
 - [Typography](#typography)
 - [Styles or variables](#styles-or-variables)
-- [UI Kit & Design System](#ui-kit--design-system)
+- [Build design system](#build-design-system)
 - [Spelling & Grammar](#spelling--grammar)
 - [Automated Actions](#automated-actions)
 - [Issue Categories](#issue-categories)
@@ -88,7 +88,7 @@ Chrome that is always present, whichever tab you are on:
 | Element | Description |
 |---|---|
 | Header | Plugin icon, name, one-line description, and an **i** button that opens the [rules reference popup](#rules-reference-popup) — all 24 audit rules grouped by category |
-| Tab bar | **Audit** · **Spelling & Grammar** · **Colors** · **Typography** · **UI Kit**. The strip wraps, so every tab stays reachable at the minimum window width |
+| Tab bar | **Audit** · **Spelling & Grammar** · **Colors** · **Typography** · **Build design system**. The strip wraps, so every tab stays reachable at the minimum window width |
 | Toasts | Every status message, action result, warning and error slides in at the top of the panel and auto-dismisses; hovering pauses the timer |
 | Footer | Help text that follows the active tab, the selection and the scan results, plus the **Close** button |
 | Resize handles | Right edge, bottom edge, and bottom-right corner. The size is clamped to 400–1200 × 400–960 px |
@@ -347,11 +347,32 @@ Binding is best-effort — if a particular Figma build rejects a field, the styl
 
 ---
 
-## UI Kit & Design System
+## Build design system
 
 A design system documented as frames and labels is a *picture* of a system. A designer reads "Spacing / Desktop → 300 = 24px" and types `24` into a padding field; nothing enforces the scale, nothing updates when it changes, and every breakpoint is produced by duplicating a frame and resizing it by hand.
 
-The **UI Kit** tab turns that documentation into the system itself.
+The **Build design system** tab turns that documentation into the system itself.
+
+It opens with a choice, the way the Colors tab does:
+
+| | |
+|---|---|
+| **Generate from scratch** | A wizard: breakpoints → spacing & radius → typography → colour → other families → elements → review. One question at a time, each showing what the answer produces. **Nothing is written until the last step**, and everything then lands in a single undo |
+| **Use what's in this file** | Open a system the file already has, or read a scale documented on the canvas |
+
+### Token families
+
+| Family | Tier | Notes |
+|---|---|---|
+| Spacing, radius | Primitive | multiples of an editable base |
+| Type sizes | Responsive | the ratio tightens as the canvas narrows; the base holds, so body copy never shrinks |
+| Line heights, border widths, icon sizes, opacity, breakpoint widths | Primitive | |
+| Colour ramps — brand, neutral, success, warning, danger | Primitive | 50–900 from one hex |
+| Semantic colour — `color/text/primary`, `color/bg/surface` … | Theme | **aliases** a ramp step, a different one per Light/Dark |
+
+Semantic colour aliasing per mode is what makes a dark theme one edit rather than a repaint.
+
+**Shadows are absent on purpose.** A variable cannot hold an effect, and an effect style has no modes, so per-breakpoint elevation has no clean answer in Figma today.
 
 ### Collections
 

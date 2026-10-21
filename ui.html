@@ -757,6 +757,38 @@
   .uik-els { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 12px 2px; }
   .uik-el { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
             color: var(--text-secondary); cursor: pointer; }
+  .uik-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 620px) { .uik-choices { grid-template-columns: 1fr; } }
+  .uik-choice { border: 1px solid var(--border); border-radius: var(--radius-lg);
+                padding: 16px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+  .uik-choice-title { font-size: 13px; font-weight: 600; color: var(--text-primary);
+                      display: flex; align-items: center; gap: 8px; }
+  .uik-wiz { display: flex; flex-direction: column; gap: 12px; }
+  .uik-wiz-rail { display: flex; align-items: center; gap: 6px; }
+  .uik-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+  .uik-dot.on { background: var(--blue-600); transform: scale(1.3); }
+  .uik-dot.done { background: var(--blue-300, var(--blue-600)); opacity: .55; }
+  .uik-wiz-count { margin-left: auto; font-size: 10px; font-weight: 600; color: var(--text-muted);
+                   text-transform: uppercase; letter-spacing: .04em; }
+  .uik-wiz-nav { display: flex; gap: 8px; justify-content: flex-end; }
+  .uik-q { font-size: 12px; color: var(--text-secondary); margin: 2px 0 12px; }
+  .uik-pv { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+  .uik-pv-chip { font-size: 10px; padding: 2px 7px; border-radius: var(--radius-full);
+                 background: var(--surface-raised); border: 1px solid var(--border);
+                 color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .uik-pv-chip b { color: var(--text-secondary); font-weight: 600; }
+  .uik-pv-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+                margin-right: 5px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.12); }
+  .uik-pv-empty { font-size: 11px; color: var(--text-muted); margin: 8px 0; }
+  .uik-colorrow { display: flex; gap: 6px; align-items: center; }
+  .uik-colorbox { width: 32px; height: 28px; padding: 0; border: 1px solid var(--border);
+                  border-radius: var(--radius-sm); background: none; cursor: pointer; flex: 0 0 auto; }
+  .uik-review { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 8px; }
+  .uik-rev-row { display: flex; justify-content: space-between; gap: 12px; font-size: 11px;
+                 padding: 5px 0; border-bottom: 1px solid var(--border); }
+  .uik-rev-row b { color: var(--text-primary); font-weight: 600; }
+  .uik-rev-row span { color: var(--text-muted); text-align: right; min-width: 0;
+                      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sm-screen .uik-note { padding: 0 12px 8px; }
   .sm-card .uik-note { padding: 0; }
 
@@ -1098,7 +1130,7 @@
     <button class="tab"        data-tab="spelling" aria-selected="false" role="tab">Spelling &amp; Grammar</button>
     <button class="tab"        data-tab="colors"     aria-selected="false" role="tab">Colors</button>
     <button class="tab"        data-tab="typography" aria-selected="false" role="tab">Typography</button>
-    <button class="tab"        data-tab="uikit"      aria-selected="false" role="tab">UI Kit</button>
+    <button class="tab"        data-tab="uikit"      aria-selected="false" role="tab">Build design system</button>
   </div>
 </div>
 
@@ -2619,7 +2651,7 @@
     spelling: 'Select a frame and scan its text layers for spelling, grammar and readability.',
     colors: 'Select a frame to scan its colors, or generate color styles.',
     typography: 'Select a frame to scan its text styles, or generate text styles.',
-    uikit: 'Turn the design system into variables, then bind frames to it and preview them at any breakpoint.'
+    uikit: 'Build the design system once, then apply it to existing designs and generate their responsive versions.'
   };
   function entryFooter(what, gen) {
     return hasSelection
@@ -4879,6 +4911,10 @@
     preset: 'standard',
     collapsed: {}, expanded: {}, pages: {}, names: {}, editing: null,
     ramp: { spacing: 'grid4', spacingBase: null, radius: 'rounded', radiusBase: null },
+    screen: 'entry',   // entry | wizard | main
+    step: 0,
+    spec: null,        // the wizard's answers; written only at the end
+    previewRows: null, // what the current answers WOULD produce
     elements: {},      // element key -> false when unticked
     proposals: null,   // from uikit-infer
     accepted: {},      // proposalKey -> false when unticked
@@ -4906,33 +4942,195 @@
     ).join('')}</div>`;
   }
 
-  // ── Entry: no breakpoints configured yet ────────────────────────────────
+  // ── Entry: start fresh, or work with what the file already has ──────────
   function uikEntryHtml() {
-    const names = (KS.state && KS.state.presetNames) || [];
-    const presets = (KS.state && KS.state.presets) || {};
-    const chosen = presets[KS.preset] || [];
+    const st = KS.state || {};
+    const cols = st.collections || {};
+    const has = cols.responsive || cols.primitives || !!st.config;
     return `
-      <div class="sm-card">
-        <div class="sm-card-title">UI Kit &amp; Design System</div>
-        <p class="uik-note">
-          A design system documented as frames and labels is a picture of a system. This turns it into
-          the system: one set of tokens with a value per breakpoint, so a frame reflows by switching
-          mode instead of being duplicated and resized by hand.
-        </p>
-        <label class="sm-target" style="margin-top:12px;display:block">
-          <span>Breakpoints</span>
-          <select class="sm-input" data-uik-preset>
-            ${names.map(n => `<option value="${escHtml(n)}"${n === KS.preset ? ' selected' : ''}>${escHtml(UIK_PRESET_LABELS[n] || n)}</option>`).join('')}
-          </select>
+      <div class="uik-choices">
+        <div class="uik-choice">
+          <div class="uik-choice-title">${SI.wand} Generate from scratch</div>
+          <p class="uik-note" style="padding:0">
+            Answer one question at a time — breakpoints, spacing, type, colour, elements — and see what
+            each answer produces. <b>Nothing is written until the last step</b>, and everything then lands
+            in a single undo.
+          </p>
+          <div class="sm-actions"><button class="btn btn-primary" data-act="uik-wizard"${KS.busy ? ' disabled' : ''}>Start</button></div>
+        </div>
+        <div class="uik-choice">
+          <div class="uik-choice-title">${SI.search} Use what&rsquo;s in this file</div>
+          <p class="uik-note" style="padding:0">
+            ${has
+              ? 'This file already has a design system. Open it to edit the scale, build the elements, bind existing designs to it and generate their responsive versions.'
+              : 'Read a scale that is documented on the canvas as labelled frames, or adopt variables that already exist, instead of starting over.'}
+          </p>
+          <div class="sm-actions">
+            <button class="btn" data-act="uik-use-existing"${KS.busy ? ' disabled' : ''}>${has ? 'Open it' : 'Read from canvas'}</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // ── Wizard ──────────────────────────────────────────────────────────────
+  const UIK_STEPS = [
+    { key: 'breakpoints', title: 'Breakpoints', q: 'Which widths are you designing for?' },
+    { key: 'spacing',     title: 'Spacing & radius', q: 'How should space and corners be measured?' },
+    { key: 'type',        title: 'Typography', q: 'How should the type scale step?' },
+    { key: 'colour',      title: 'Colour', q: 'What is the brand colour?' },
+    { key: 'extras',      title: 'Everything else', q: 'Which other token families do you want?' },
+    { key: 'elements',    title: 'Elements', q: 'Which components should be built?' },
+    { key: 'review',      title: 'Review', q: 'Here is the whole system. Nothing has been written yet.' }
+  ];
+
+  function uikDefaultSpec() {
+    const presets = (KS.state && KS.state.presets) || {};
+    return {
+      preset: 'standard',
+      breakpoints: presets.standard || [],
+      ramp: { spacing: 'grid4', spacingBase: null, radius: 'rounded', radiusBase: null },
+      type: { base: 16, ratio: 1.25 },
+      colors: { brandHex: '#2563EB', neutralHex: '#6B7280', theme: true },
+      families: { typography: true, borders: true, icons: true, opacity: true, breakpointWidths: true, colors: true },
+      elements: ((KS.state && KS.state.elements) || []).map(d => d.key)
+    };
+  }
+
+  function uikPreviewFor(prefix) {
+    if (!KS.previewRows) return '<div class="uik-pv-empty">…</div>';
+    const rows = KS.previewRows.filter(r => r.name.indexOf(prefix) === 0).slice(0, 10);
+    if (!rows.length) return '<div class="uik-pv-empty">Nothing in this family.</div>';
+    const bp = KS.spec.breakpoints[0];
+    return `<div class="uik-pv">${rows.map(r => {
+      const label = escHtml(r.name.split('/').slice(1).join('/'));
+      const v = r.tier === 'primitive' ? r.values['*'] : (r.values[bp && bp.name]);
+      // A colour is an RGBA object, so show the colour rather than printing
+      // "[object Object]" at the designer.
+      if (v && typeof v === 'object' && typeof v.r === 'number') {
+        const to255 = (c) => Math.round(Math.max(0, Math.min(1, c)) * 255);
+        const css = `rgb(${to255(v.r)},${to255(v.g)},${to255(v.b)})`;
+        return `<span class="uik-pv-chip"><i class="uik-pv-dot" style="background:${css}"></i><b>${label}</b></span>`;
+      }
+      return `<span class="uik-pv-chip"><b>${label}</b> ${escHtml(v === undefined ? '—' : String(v))}</span>`;
+    }).join('')}</div>`;
+  }
+
+  function uikStepBody(key) {
+    const st = KS.state || {};
+    const sp = KS.spec;
+    if (key === 'breakpoints') {
+      const names = st.presetNames || [];
+      const presets = st.presets || {};
+      return `
+        <select class="sm-input" data-uik-spec="preset">
+          ${names.map(n => `<option value="${escHtml(n)}"${n === sp.preset ? ' selected' : ''}>${escHtml(UIK_PRESET_LABELS[n] || n)}</option>`).join('')}
+        </select>
+        ${uikChipsHtml(sp.breakpoints)}
+        <p class="uik-note" style="padding:0">Each becomes a mode on the <b>Responsive</b> collection. How many modes a file allows depends on the Figma plan, so this asks the file rather than guessing — if it will not take them all, nothing is written and the last step says so.</p>`;
+    }
+    if (key === 'spacing') {
+      const spP = st.spacingPresets || {}, rdP = st.radiusPresets || {};
+      const o = (m, c) => Object.keys(m).map(k => `<option value="${escHtml(k)}"${k === c ? ' selected' : ''}>${escHtml(m[k].label || k)}</option>`).join('');
+      const spBase = sp.ramp.spacingBase != null ? sp.ramp.spacingBase : ((spP[sp.ramp.spacing] || {}).base || 4);
+      const rdBase = sp.ramp.radiusBase != null ? sp.ramp.radiusBase : ((rdP[sp.ramp.radius] || {}).base || 4);
+      return `
+        <div class="uik-presets" style="padding:0">
+          <label class="uik-field"><span>Spacing</span><select class="sm-input" data-uik-spec="ramp.spacing">${o(spP, sp.ramp.spacing)}</select></label>
+          <label class="uik-field uik-field-sm"><span>Base</span><input class="sm-input" type="number" min="1" data-uik-spec="ramp.spacingBase" value="${escHtml(String(spBase))}"></label>
+          <label class="uik-field"><span>Radius</span><select class="sm-input" data-uik-spec="ramp.radius">${o(rdP, sp.ramp.radius)}</select></label>
+          <label class="uik-field uik-field-sm"><span>Base</span><input class="sm-input" type="number" min="0" data-uik-spec="ramp.radiusBase" value="${escHtml(String(rdBase))}"></label>
+        </div>
+        ${uikPreviewFor('space/')}
+        ${uikPreviewFor('radius/')}
+        <p class="uik-note" style="padding:0">The ramp is multiples of the base, so changing the base retunes the whole scale and keeps it on-grid.</p>`;
+    }
+    if (key === 'type') {
+      const ratios = st.typeRatios || [];
+      return `
+        <div class="uik-presets" style="padding:0">
+          <label class="uik-field"><span>Scale</span>
+            <select class="sm-input" data-uik-spec="type.ratio">
+              ${ratios.map(r => `<option value="${r.value}"${Number(sp.type.ratio) === r.value ? ' selected' : ''}>${escHtml(r.label)}</option>`).join('')}
+            </select></label>
+          <label class="uik-field uik-field-sm"><span>Base</span><input class="sm-input" type="number" min="8" data-uik-spec="type.base" value="${escHtml(String(sp.type.base))}"></label>
+        </div>
+        ${uikPreviewFor('text/size/')}
+        <p class="uik-note" style="padding:0">Sizes shown at <b>${escHtml((sp.breakpoints[0] || {}).name || 'the widest')}</b>. The ratio tightens as the canvas narrows — a desktop ratio on a phone gives headings that eat the screen — while the base stays put, so body copy never shrinks below comfort.</p>`;
+    }
+    if (key === 'colour') {
+      const swatch = (label, field, val) => `
+        <label class="uik-field"><span>${escHtml(label)}</span>
+          <span class="uik-colorrow">
+            <input type="color" class="uik-colorbox" data-uik-spec="colors.${field}" value="${escHtml(val)}">
+            <input class="sm-input" data-uik-spec="colors.${field}" value="${escHtml(val)}">
+          </span></label>`;
+      return `
+        <div class="uik-presets" style="padding:0">
+          ${swatch('Brand', 'brandHex', sp.colors.brandHex)}
+          ${swatch('Neutral', 'neutralHex', sp.colors.neutralHex)}
+        </div>
+        ${uikPreviewFor('brand/')}
+        <label class="uik-el" style="padding:6px 0">
+          <input type="checkbox" data-uik-spec="colors.theme"${sp.colors.theme ? ' checked' : ''}>
+          <span>Also create <b>Light</b> and <b>Dark</b> semantic names</span>
         </label>
-        ${uikChipsHtml(chosen)}
-        <p class="uik-note">
-          Each breakpoint becomes a mode on a <b>Responsive</b> collection. How many modes a file allows
-          depends on the Figma plan, so this asks the file rather than guessing — if the preset asks for
-          more than it allows, nothing is changed and it says so.
-        </p>
-        <div class="sm-actions" style="margin-top:12px">
-          <button class="btn btn-primary" data-act="uik-setup"${KS.busy ? ' disabled' : ''}>Set up breakpoints</button>
+        <p class="uik-note" style="padding:0">Each ramp runs 50&ndash;900. The semantic names (<code>color/text/primary</code>, <code>color/bg/surface</code>) <b>alias</b> a ramp step and alias a different one in Dark — which is what makes a dark theme one edit rather than a repaint.</p>`;
+    }
+    if (key === 'extras') {
+      const fams = [['typography', 'Type sizes & line heights'], ['borders', 'Border widths'],
+                    ['icons', 'Icon sizes'], ['opacity', 'Opacity steps'], ['breakpointWidths', 'Breakpoint widths']];
+      return `<div class="uik-els" style="padding:0">
+        ${fams.map(f => `<label class="uik-el">
+          <input type="checkbox" data-uik-spec="families.${f[0]}"${sp.families[f[0]] !== false ? ' checked' : ''}>
+          <span>${escHtml(f[1])}</span></label>`).join('')}
+      </div>
+      <p class="uik-note" style="padding:0">Shadows are missing on purpose: a variable cannot hold an effect and an effect style has no modes, so per-breakpoint elevation has no clean answer in Figma today.</p>`;
+    }
+    if (key === 'elements') {
+      const defs = st.elements || [];
+      return `<div class="uik-els" style="padding:0">
+        ${defs.map(d => `<label class="uik-el">
+          <input type="checkbox" data-uik-el="${escHtml(d.key)}"${sp.elements.indexOf(d.key) !== -1 ? ' checked' : ''}>
+          <span>${escHtml(d.label)}</span></label>`).join('')}
+      </div>
+      <p class="uik-note" style="padding:0">Real components with variant properties — one Button with a <b>Variant</b> and a <b>State</b>, not nine Buttons. Padding, gaps and radii are bound to the scale as they are drawn.</p>`;
+    }
+    // review
+    const rows = KS.previewRows || [];
+    const count = (prefix) => rows.filter(r => r.name.indexOf(prefix) === 0).length;
+    const lines = [
+      [sp.breakpoints.length + ' breakpoints', sp.breakpoints.map(b => b.name).join(', ')],
+      [count('space/') + ' spacing tokens', (st.spacingPresets || {})[sp.ramp.spacing] ? st.spacingPresets[sp.ramp.spacing].label : sp.ramp.spacing],
+      [count('radius/') + ' radius tokens', (st.radiusPresets || {})[sp.ramp.radius] ? st.radiusPresets[sp.ramp.radius].label : sp.ramp.radius],
+      [count('text/') + ' type tokens', 'ratio ' + sp.type.ratio + ', base ' + sp.type.base + 'px'],
+      [rows.filter(r => r.type === 'COLOR' && r.tier === 'primitive').length + ' colour tokens', sp.colors.brandHex + ' + neutrals'],
+      [rows.filter(r => r.tier === 'theme').length + ' semantic names', sp.colors.theme ? 'Light and Dark' : 'theme off'],
+      [sp.elements.length + ' elements', sp.elements.join(', ') || 'none']
+    ];
+    return `<div class="uik-review">
+      ${lines.map(l => `<div class="uik-rev-row"><b>${escHtml(l[0])}</b><span>${escHtml(l[1])}</span></div>`).join('')}
+    </div>
+    <p class="uik-note" style="padding:0">${rows.length} tokens in total. Everything is written in one go, inside a single undo.</p>`;
+  }
+
+  function uikWizardHtml() {
+    const step = UIK_STEPS[KS.step] || UIK_STEPS[0];
+    const last = KS.step === UIK_STEPS.length - 1;
+    return `
+      <div class="uik-wiz">
+        <div class="uik-wiz-rail">
+          ${UIK_STEPS.map((s, i) => `<span class="uik-dot${i === KS.step ? ' on' : (i < KS.step ? ' done' : '')}" title="${escHtml(s.title)}"></span>`).join('')}
+          <span class="uik-wiz-count">Step ${KS.step + 1} of ${UIK_STEPS.length}</span>
+        </div>
+        <div class="sm-card">
+          <div class="sm-card-title">${escHtml(step.title)}</div>
+          <p class="uik-q">${escHtml(step.q)}</p>
+          ${uikStepBody(step.key)}
+        </div>
+        <div class="uik-wiz-nav">
+          <button class="btn btn-sm" data-act="uik-wiz-back"${KS.busy ? ' disabled' : ''}>${KS.step === 0 ? 'Cancel' : 'Back'}</button>
+          <button class="btn btn-sm btn-primary" data-act="${last ? 'uik-wiz-build' : 'uik-wiz-next'}"${KS.busy ? ' disabled' : ''}>
+            ${last ? 'Build design system' : 'Next'}</button>
         </div>
       </div>`;
   }
@@ -5020,12 +5218,6 @@
     const selLabel = sel === 0 ? 'Nothing selected'
       : (sel === 1 ? (st.selectionName || '1 layer') : sel + ' layers selected');
 
-    const stats = statCards([
-      { v: (KS.table || []).length, l: 'Tokens', sub: st.tableFromFile ? 'in this file' : 'not generated yet' },
-      { v: (cols.responsiveModes || []).length, l: 'Modes', sub: cols.responsive ? 'on Responsive' : 'no collection yet' },
-      { v: bps.length, l: 'Breakpoints', sub: (st.config && st.config.preset) || 'custom' }
-    ]);
-
     const previews = bps.map(b =>
       `<button class="btn btn-sm" data-act="uik-preview" data-bp="${escHtml(b.name)}"${KS.busy || !cols.responsive ? ' disabled' : ''}>${escHtml(b.name)}</button>`
     ).join('');
@@ -5038,7 +5230,6 @@
         <button class="btn" data-act="uik-bind"${KS.busy || !sel ? ' disabled' : ''}>Bind selection</button>
         <button class="btn btn-sm" data-act="uik-reset"${KS.busy ? ' disabled' : ''}>Change breakpoints</button>
       </div>
-      ${stats}
       ${blockHtml(KS, {
         id: 'uik-preview-block', title: 'Preview at a breakpoint',
         sub: `${escHtml(selLabel)} — everything bound to a Responsive token moves at once.`,
@@ -5142,7 +5333,9 @@
       setFooter('uikit', footerTexts.uikit);
       return;
     }
-    el.innerHTML = KS.state.config ? uikMainHtml() : uikEntryHtml();
+    if (KS.screen === 'wizard' && KS.spec) el.innerHTML = uikWizardHtml();
+    else if (KS.screen === 'main' && KS.state.config) el.innerHTML = uikMainHtml();
+    else el.innerHTML = uikEntryHtml();
     setFooter('uikit', footerTexts.uikit);
   }
 
@@ -5154,10 +5347,25 @@
   }
 
   function handleUiKitUiMessage(msg) {
-    if (msg.type === 'uikit-state') { uikApplyState(msg); renderUiKit(); return true; }
+    if (msg.type === 'uikit-state') {
+      uikApplyState(msg);
+      // Land on the system if the file already has one, otherwise offer the
+      // choice. Never jump past a wizard the designer is partway through.
+      if (KS.screen !== 'wizard') KS.screen = msg.config ? 'main' : 'entry';
+      renderUiKit();
+      return true;
+    }
     if (msg.type === 'uikit-done') {
+      // A preview writes nothing and must not disturb the table, the busy
+      // state or the screen — it only refreshes what the step is showing.
+      if (String(msg.requestId || '').charAt(0) === 'p') {
+        KS.previewRows = (msg.state && msg.state.table) ? msg.state.table : null;
+        if (KS.screen === 'wizard') renderUiKit();
+        return true;
+      }
       KS.busy = false;
       setScopeBusy(KS, false);
+      if (msg.builtSystem) { KS.screen = 'main'; KS.spec = null; KS.previewRows = null; }
       if (msg.result && msg.result.proposals) {
         KS.proposals = msg.result.proposals;
         KS.byNode = msg.result.byNode || null;
@@ -5186,6 +5394,23 @@
     parent.postMessage({ pluginMessage: msg }, '*');
   }
 
+  // Previews are read-only, so they never set the busy state — typing in a
+  // field must not lock the field being typed into.
+  function previewUiKit() {
+    if (!KS.spec) return;
+    parent.postMessage({ pluginMessage: {
+      type: 'uikit-preview-table', requestId: 'p' + (++uikReqSeq), spec: KS.spec
+    } }, '*');
+  }
+
+  function uikSetSpec(path, value) {
+    if (!KS.spec) return;
+    const parts = path.split('.');
+    let node = KS.spec;
+    for (let i = 0; i < parts.length - 1; i++) node = node[parts[i]] = node[parts[i]] || {};
+    node[parts[parts.length - 1]] = value;
+  }
+
   // ── Events ──────────────────────────────────────────────────────────────
   $('tab-uikit').addEventListener('click', e => {
     const el = e.target.closest('[data-act]');
@@ -5198,7 +5423,27 @@
       sendUiKit({ type: 'uikit-save-breakpoints', preset: KS.preset, breakpoints: presets[KS.preset] || [] });
       return;
     }
-    if (act === 'uik-reset') { KS.state = Object.assign({}, KS.state, { config: null }); renderUiKit(); return; }
+    if (act === 'uik-reset') { KS.screen = 'entry'; renderUiKit(); return; }
+    if (act === 'uik-wizard') {
+      KS.spec = uikDefaultSpec();
+      KS.step = 0; KS.screen = 'wizard'; KS.previewRows = null;
+      renderUiKit(); previewUiKit(); return;
+    }
+    if (act === 'uik-use-existing') {
+      if (KS.state && KS.state.config) { KS.screen = 'main'; renderUiKit(); }
+      else sendUiKit({ type: 'uikit-parse' });
+      return;
+    }
+    if (act === 'uik-wiz-back') {
+      if (KS.step === 0) { KS.screen = 'entry'; KS.spec = null; }
+      else KS.step--;
+      renderUiKit(); return;
+    }
+    if (act === 'uik-wiz-next') { KS.step++; renderUiKit(); previewUiKit(); return; }
+    if (act === 'uik-wiz-build') {
+      sendUiKit({ type: 'uikit-build', spec: KS.spec });
+      return;
+    }
     if (act === 'uik-parse') { sendUiKit({ type: 'uikit-parse' }); return; }
     if (act === 'uik-reseed') { sendUiKit({ type: 'uikit-reseed', options: uikRampOptions() }); return; }
     if (act === 'uik-infer') { sendUiKit({ type: 'uikit-infer' }); return; }
@@ -5268,7 +5513,45 @@
     if (prop) { KS.accepted[prop.dataset.uikProp] = prop.checked; renderUiKit(); return; }
 
     const elBox = e.target.closest('[data-uik-el]');
-    if (elBox) { KS.elements[elBox.dataset.uikEl] = elBox.checked; renderUiKit(); return; }
+    if (elBox) {
+      if (KS.screen === 'wizard' && KS.spec) {
+        const key = elBox.dataset.uikEl;
+        const at = KS.spec.elements.indexOf(key);
+        if (elBox.checked && at === -1) KS.spec.elements.push(key);
+        if (!elBox.checked && at !== -1) KS.spec.elements.splice(at, 1);
+        renderUiKit();
+        return;
+      }
+      KS.elements[elBox.dataset.uikEl] = elBox.checked;
+      renderUiKit();
+      return;
+    }
+
+    const specEl = e.target.closest('[data-uik-spec]');
+    if (specEl && KS.spec) {
+      const path = specEl.dataset.uikSpec;
+      let value;
+      if (specEl.type === 'checkbox') value = specEl.checked;
+      else if (specEl.type === 'number') {
+        const n = Number(specEl.value);
+        value = (!isNaN(n) && isFinite(n)) ? n : null;
+      } else value = specEl.value;
+
+      if (path === 'preset') {
+        KS.spec.preset = value;
+        KS.spec.breakpoints = ((KS.state && KS.state.presets) || {})[value] || [];
+      } else if (path === 'type.ratio') {
+        uikSetSpec(path, Number(value));
+      } else {
+        uikSetSpec(path, value);
+        // Choosing a new ramp preset brings its own base, so drop the override.
+        if (path === 'ramp.spacing') KS.spec.ramp.spacingBase = null;
+        if (path === 'ramp.radius') KS.spec.ramp.radiusBase = null;
+      }
+      renderUiKit();
+      previewUiKit();
+      return;
+    }
   });
 
   // Commit a rename on Enter or blur; Escape abandons it.
@@ -5291,6 +5574,17 @@
   // Patch one cell in place. Re-rendering on every keystroke would move focus
   // out of the input being typed into — the same reason syncPalRow exists.
   $('tab-uikit').addEventListener('input', e => {
+    const spec = e.target.closest('[data-uik-spec]');
+    if (spec && KS.spec && spec.type === 'color') {
+      uikSetSpec(spec.dataset.uikSpec, spec.value);
+      previewUiKit();
+      // Keep the paired hex field in step without re-rendering the picker.
+      const twin = $('uikitScreen').querySelector(
+        'input.sm-input[data-uik-spec="' + spec.dataset.uikSpec + '"]');
+      if (twin) twin.value = spec.value;
+      return;
+    }
+
     const cell = e.target.closest('[data-uik-cell]');
     if (!cell || !KS.table) return;
     const row = KS.table[Number(cell.dataset.row)];

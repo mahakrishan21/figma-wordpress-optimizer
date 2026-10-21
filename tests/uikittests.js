@@ -157,7 +157,7 @@ async function run() {
   eq(g.modes.capHit, false, 'four breakpoints fit');
   eq(g.created, table.length, 'every row created a variable');
   eq(g.reused, 0, 'nothing reused on a first run');
-  eq(g.skipped, 0, 'nothing skipped');
+  eq(g.skipped, 0, 'nothing skipped: ' + g.reasons.slice(0, 3).join(' | '));
 
   var gcols = await getUiKitCollections(false);
   ok(!!gcols.primitives && !!gcols.responsive, 'both collections exist after generate');
@@ -169,7 +169,11 @@ async function run() {
   eq(g2.created, 0, 'second run creates nothing');
   eq(g2.reused, table.length, 'second run reuses every row');
   var allFloat = await localVariablesAllModes('FLOAT');
-  eq(allFloat.length, table.length, 'and the file still holds exactly one variable per row');
+  var floatRows = table.filter(function (t) { return (t.type || 'FLOAT') === 'FLOAT'; }).length;
+  eq(allFloat.length, floatRows, 'and the file still holds exactly one FLOAT variable per numeric row');
+  var allColor = await localVariablesAllModes('COLOR');
+  var colorRows = table.filter(function (t) { return t.type === 'COLOR'; }).length;
+  eq(allColor.length, colorRows, 'and one COLOR variable per colour row');
 
   // 11c ── aliasing: section/sm at Desktop is 64, and space/700 is 64
   var names4 = breakpointNames(gcfg);

@@ -5,7 +5,12 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
-- **UI Kit & Design System tab.** A design system documented as frames and labels is a picture of a system; this turns it into the system itself
+- **Build design system tab** (the tab formerly called UI Kit). A design system documented as frames and labels is a picture of a system; this turns it into the system itself
+  - It opens the way the Colors tab does, with a choice: **Generate from scratch**, or **use what's already in this file**
+  - **From scratch is a wizard** — breakpoints, spacing and radius, typography, colour, the other token families, then elements — asking one question at a time and showing what each answer produces. **Nothing is written until the last step**, and everything then lands inside a single undo
+  - **More families**: type sizes (responsive, with the ratio tightening as the canvas narrows while the base holds, so body copy never shrinks below comfort), line heights, border widths, icon sizes, opacity steps and the breakpoint widths themselves
+  - **Colour as a tier.** Brand, neutral, success, warning and danger each get a 50–900 ramp in `Primitives`, and the semantic names (`color/text/primary`, `color/bg/surface`) live in `Theme` and **alias** a ramp step — aliasing a different one in Dark, which is what makes a dark theme one edit instead of a repaint
+  - Shadows are absent on purpose: a variable cannot hold an effect and an effect style has no modes, so per-breakpoint elevation has no clean answer in Figma today
   - **Tiered collections** — `Primitives` (raw values, one mode), `Theme` (Light/Dark) and `Responsive` (one mode per breakpoint). Each collection carries its own mode budget, which is what makes breakpoints and theming possible at the same time
   - **Breakpoint presets** for standard, Tailwind, Bootstrap, Material and WordPress/Gutenberg, so nobody types four numbers. How many modes a file allows depends on the Figma plan and the published figures contradict each other, so the plugin asks the file rather than guessing — if a preset asks for more than the file allows, **nothing is changed** and the message names the real ceiling
   - **An editable scale table** — rows are tokens, columns are breakpoints. **Read from canvas** proposes a table by reading labelled text, handling both the `"Component Padding - lg - 120px"` form and the `"Spacing/ Desktop"` heading above label/value pairs. It only ever proposes: the table stays the source of truth, so a misread is a visible wrong number rather than a silent one

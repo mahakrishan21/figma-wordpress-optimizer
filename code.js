@@ -4316,6 +4316,7 @@ var BREAKPOINT_PRESETS = {
               { name: 'Small', width: 600 }, { name: 'Mobile', width: 480 }]
 };
 
+var THEME_MODES = ['Light', 'Dark'];
 var UIKIT_CONFIG_KEY = 'uikit.breakpoints';
 
 // Breakpoint config lives on the document, not in the UI: ui.html has no
@@ -4457,8 +4458,194 @@ function defaultResponsiveRows(cfg) {
   return rows;
 }
 
+// ── More token families ────────────────────────────────────────────────────
+// Everything a layout actually reaches for, not just spacing. Each family is
+// a pure function from its settings to table rows, so the wizard can preview
+// a step before anything is written.
+
+var TYPE_RATIOS = [
+  { value: 1.125, label: '1.125 — Major Second' },
+  { value: 1.2,   label: '1.200 — Minor Third' },
+  { value: 1.25,  label: '1.250 — Major Third' },
+  { value: 1.333, label: '1.333 — Perfect Fourth' },
+  { value: 1.414, label: '1.414 — Augmented Fourth' },
+  { value: 1.5,   label: '1.500 — Perfect Fifth' },
+  { value: 1.618, label: '1.618 — Golden Ratio' }
+];
+
+var TYPE_STEPS = [
+  ['display', 7], ['h1', 6], ['h2', 5], ['h3', 4], ['h4', 3], ['h5', 2], ['h6', 1],
+  ['body-lg', 0.5], ['body', 0], ['body-sm', -0.5], ['caption', -1]
+];
+
+// A type scale that holds at every width. The ratio TIGHTENS as the canvas
+// narrows — keeping the desktop ratio on a phone gives headings that eat the
+// screen — and the base stays put so body copy never shrinks below comfort.
+function typeScaleRows(cfg, opts) {
+  opts = opts || {};
+  var base = (typeof opts.typeBase === 'number' && opts.typeBase > 0) ? opts.typeBase : 16;
+  var ratio = (typeof opts.typeRatio === 'number' && opts.typeRatio > 1) ? opts.typeRatio : 1.25;
+  var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  if (!bps.length) return [];
+
+  var widest = bps[0].width || 1440;
+  var narrowest = bps[bps.length - 1].width || widest;
+  var tightest = Math.max(1.1, ratio - 0.125);
+
+  var rows = [];
+  for (var i = 0; i < TYPE_STEPS.length; i++) {
+    var name = TYPE_STEPS[i][0], step = TYPE_STEPS[i][1];
+    var values = {};
+    for (var b = 0; b < bps.length; b++) {
+      var w = bps[b].width || widest;
+      var t = (widest === narrowest) ? 0 : (widest - w) / (widest - narrowest);
+      var r = ratio + (tightest - ratio) * Math.max(0, Math.min(1, t));
+      values[bps[b].name] = Math.round(base * Math.pow(r, step));
+    }
+    rows.push({ name: 'text/size/' + name, tier: 'responsive', scopes: ['FONT_SIZE'], values: values });
+  }
+  return rows;
+}
+
+function lineHeightRows() {
+  var steps = [['tight', 120], ['snug', 135], ['normal', 150], ['relaxed', 165], ['loose', 180]];
+  var rows = [];
+  for (var i = 0; i < steps.length; i++) {
+    var v = {};
+    v[UIKIT_VALUE_KEY] = steps[i][1];
+    rows.push({ name: 'text/leading/' + steps[i][0], tier: 'primitive', scopes: ['LINE_HEIGHT'], values: v });
+  }
+  return rows;
+}
+
+function borderRows() {
+  var steps = [['none', 0], ['thin', 1], ['medium', 2], ['thick', 4]];
+  var rows = [];
+  for (var i = 0; i < steps.length; i++) {
+    var v = {};
+    v[UIKIT_VALUE_KEY] = steps[i][1];
+    rows.push({ name: 'border/' + steps[i][0], tier: 'primitive', scopes: ['STROKE_FLOAT'], values: v });
+  }
+  return rows;
+}
+
+function iconSizeRows() {
+  var steps = [['xs', 12], ['sm', 16], ['md', 20], ['lg', 24], ['xl', 32], ['2xl', 48]];
+  var rows = [];
+  for (var i = 0; i < steps.length; i++) {
+    var v = {};
+    v[UIKIT_VALUE_KEY] = steps[i][1];
+    rows.push({ name: 'icon/' + steps[i][0], tier: 'primitive', scopes: ['WIDTH_HEIGHT'], values: v });
+  }
+  return rows;
+}
+
+function opacityRows() {
+  var steps = [['disabled', 0.4], ['muted', 0.6], ['subtle', 0.8], ['full', 1]];
+  var rows = [];
+  for (var i = 0; i < steps.length; i++) {
+    var v = {};
+    v[UIKIT_VALUE_KEY] = steps[i][1];
+    rows.push({ name: 'opacity/' + steps[i][0], tier: 'primitive', scopes: ['OPACITY'], values: v });
+  }
+  return rows;
+}
+
+// The breakpoint widths themselves, so a container can be sized from a
+// token instead of a number somebody remembered.
+function breakpointWidthRows(cfg) {
+  var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  var rows = [];
+  for (var i = 0; i < bps.length; i++) {
+    if (!bps[i].width) continue;
+    var v = {};
+    v[UIKIT_VALUE_KEY] = bps[i].width;
+    rows.push({ name: 'breakpoint/' + slugToken(bps[i].name), tier: 'primitive',
+                scopes: ['WIDTH_HEIGHT'], values: v });
+  }
+  return rows;
+}
+
+// ── Colour, as a tier rather than a list ───────────────────────────────────
+// Primitives hold the ramps. Theme holds the names a designer actually
+// reaches for, each ALIASING a ramp step — and aliasing differently per
+// mode, which is what makes a dark theme one edit instead of a repaint.
+
+function mixTo(rgb, target, t) {
+  return {
+    r: rgb.r + (target - rgb.r) * t,
+    g: rgb.g + (target - rgb.g) * t,
+    b: rgb.b + (target - rgb.b) * t
+  };
+}
+
+var COLOR_RAMP_STEPS = [
+  [50, 0.95], [100, 0.88], [200, 0.74], [300, 0.56], [400, 0.3],
+  [500, 0], [600, -0.14], [700, -0.3], [800, -0.46], [900, -0.62]
+];
+
+function colorRampRows(prefix, hex) {
+  var base = hexToRgb01(hex);
+  if (!base) return [];
+  var rows = [];
+  for (var i = 0; i < COLOR_RAMP_STEPS.length; i++) {
+    var step = COLOR_RAMP_STEPS[i][0], t = COLOR_RAMP_STEPS[i][1];
+    var rgb = t >= 0 ? mixTo(base, 1, t) : mixTo(base, 0, -t);
+    var v = {};
+    v[UIKIT_VALUE_KEY] = { r: rgb.r, g: rgb.g, b: rgb.b, a: 1 };
+    rows.push({ name: prefix + '/' + step, tier: 'primitive', type: 'COLOR', scopes: [], values: v });
+  }
+  return rows;
+}
+
+// Semantic names, aliased per theme mode.
+var THEME_SEMANTICS = [
+  ['color/bg/canvas',      'neutral/50',  'neutral/900'],
+  ['color/bg/surface',     'neutral/50',  'neutral/800'],
+  ['color/bg/raised',      'neutral/100', 'neutral/700'],
+  ['color/bg/brand',       'brand/500',   'brand/400'],
+  ['color/bg/brand-subtle','brand/50',    'brand/900'],
+  ['color/border/default', 'neutral/200', 'neutral/700'],
+  ['color/border/strong',  'neutral/300', 'neutral/600'],
+  ['color/text/primary',   'neutral/900', 'neutral/50'],
+  ['color/text/secondary', 'neutral/600', 'neutral/300'],
+  ['color/text/disabled',  'neutral/400', 'neutral/500'],
+  ['color/text/inverse',   'neutral/50',  'neutral/900'],
+  ['color/text/brand',     'brand/600',   'brand/300'],
+  ['color/feedback/success', 'success/600', 'success/400'],
+  ['color/feedback/warning', 'warning/600', 'warning/400'],
+  ['color/feedback/danger',  'danger/600',  'danger/400']
+];
+
+function colorSystemRows(opts) {
+  opts = opts || {};
+  var brand = opts.brandHex || '#2563EB';
+  var neutral = opts.neutralHex || '#6B7280';
+  var rows = colorRampRows('brand', brand)
+    .concat(colorRampRows('neutral', neutral))
+    .concat(colorRampRows('success', opts.successHex || '#16A34A'))
+    .concat(colorRampRows('warning', opts.warningHex || '#D97706'))
+    .concat(colorRampRows('danger', opts.dangerHex || '#DC2626'));
+
+  if (opts.theme === false) return rows;
+  for (var i = 0; i < THEME_SEMANTICS.length; i++) {
+    var sem = THEME_SEMANTICS[i];
+    rows.push({ name: sem[0], tier: 'theme', type: 'COLOR', scopes: [],
+                refs: { Light: sem[1], Dark: sem[2] } });
+  }
+  return rows;
+}
+
 function defaultScaleTable(cfg, opts) {
-  return defaultPrimitiveRamp(opts).concat(defaultResponsiveRows(cfg));
+  opts = opts || {};
+  var rows = defaultPrimitiveRamp(opts).concat(defaultResponsiveRows(cfg));
+  if (opts.typography !== false) rows = rows.concat(typeScaleRows(cfg, opts)).concat(lineHeightRows());
+  if (opts.borders !== false) rows = rows.concat(borderRows());
+  if (opts.icons !== false) rows = rows.concat(iconSizeRows());
+  if (opts.opacity !== false) rows = rows.concat(opacityRows());
+  if (opts.breakpointWidths !== false) rows = rows.concat(breakpointWidthRows(cfg));
+  if (opts.colors !== false) rows = rows.concat(colorSystemRows(opts));
+  return rows;
 }
 
 // Index local variables of a collection by name, so a re-run reuses rather
@@ -4491,6 +4678,15 @@ async function generateScaleVariables(cfg, table) {
   var cols = await getUiKitCollections(true);
   var modes = await ensureModes(cols.responsive, names);
   result.modes = modes;
+
+  var wantsTheme = false;
+  for (var w = 0; w < table.length; w++) if (table[w].tier === 'theme') { wantsTheme = true; break; }
+  var themeModes = wantsTheme ? await ensureModes(cols.theme, THEME_MODES) : null;
+  result.themeModes = themeModes;
+  if (themeModes && themeModes.capHit) {
+    result.reasons.push('This file will not take two modes on the Theme collection, so the light/dark names were skipped. Everything else was written.');
+  }
+
   if (modes.capHit) {
     result.reasons.push('This file allows ' + modes.cap + ' modes per collection, but ' + names.length +
       ' breakpoints were asked for. Nothing was changed. Remove ' + (names.length - modes.cap) + ' breakpoint(s) and run again.');
@@ -4506,25 +4702,58 @@ async function generateScaleVariables(cfg, table) {
     var row = table[i];
     if (row.tier !== 'primitive') continue;
     var n = row.values ? row.values[UIKIT_VALUE_KEY] : null;
-    if (typeof n !== 'number' || !isFinite(n)) { result.skipped++; result.reasons.push(row.name + ': no value.'); continue; }
+    // A colour primitive holds an RGBA object, not a number, so validate by
+    // the row's type rather than assuming everything on this tier is FLOAT.
+    var isColorRow = (row.type || 'FLOAT') === 'COLOR';
+    var usable = isColorRow ? !!(n && typeof n.r === 'number') : (typeof n === 'number' && isFinite(n));
+    if (!usable) { result.skipped++; result.reasons.push(row.name + ': no value.'); continue; }
     var pv = primMap[row.name];
     if (pv) { result.reused++; } else {
-      pv = figma.variables.createVariable(row.name, cols.primitives, 'FLOAT');
+      pv = figma.variables.createVariable(row.name, cols.primitives, row.type || 'FLOAT');
       primMap[row.name] = pv;
       result.created++;
     }
     applyVarScopes(pv, row.scopes);
     await setVarValue(pv, cols.primitives, n);
-    if (primValue[n] === undefined) primValue[n] = pv;
+    if (typeof n === 'number' && primValue[n] === undefined) primValue[n] = pv;
   }
 
-  // Responsive second.
+  // Theme tier: semantic names that alias a primitive, differently per mode.
+  if (themeModes && !themeModes.capHit) {
+    var themeMap = await variablesByNameIn(cols.theme);
+    for (var t2 = 0; t2 < table.length; t2++) {
+      var trow = table[t2];
+      if (trow.tier !== 'theme') continue;
+      var tv = themeMap[trow.name];
+      if (tv) { result.reused++; } else {
+        tv = figma.variables.createVariable(trow.name, cols.theme, trow.type || 'COLOR');
+        themeMap[trow.name] = tv;
+        result.created++;
+      }
+      applyVarScopes(tv, trow.scopes);
+      var wroteTheme = 0;
+      for (var tm = 0; tm < THEME_MODES.length; tm++) {
+        var modeName = THEME_MODES[tm];
+        var refName = trow.refs ? trow.refs[modeName] : null;
+        var modeId2 = themeModes.nameToModeId[modeName];
+        if (!refName || !modeId2) continue;
+        var target2 = primMap[refName];
+        if (!target2) { result.reasons.push(trow.name + ': no primitive named "' + refName + '" to point at.'); continue; }
+        await setVarValue(tv, cols.theme, figma.variables.createVariableAlias(target2), modeId2);
+        result.aliased++;
+        wroteTheme++;
+      }
+      if (!wroteTheme) { result.skipped++; result.reasons.push(trow.name + ': nothing to alias.'); }
+    }
+  }
+
+  // Responsive last.
   for (var r = 0; r < table.length; r++) {
     var rrow = table[r];
-    if (rrow.tier === 'primitive') continue;
+    if (rrow.tier === 'primitive' || rrow.tier === 'theme') continue;
     var rv = respMap[rrow.name];
     if (rv) { result.reused++; } else {
-      rv = figma.variables.createVariable(rrow.name, cols.responsive, 'FLOAT');
+      rv = figma.variables.createVariable(rrow.name, cols.responsive, rrow.type || 'FLOAT');
       respMap[rrow.name] = rv;
       result.created++;
     }
@@ -5635,6 +5864,66 @@ async function scanUiKit(roots, cfg) {
   return out;
 }
 
+// ── Build the whole system in one go ───────────────────────────────────────
+// The wizard asks one question at a time and writes NOTHING until the end.
+// Everything then lands inside a single undo group, so a system you don't
+// like is one Cmd-Z away rather than a dozen.
+function buildOptionsFrom(spec) {
+  spec = spec || {};
+  var ramp = spec.ramp || {};
+  var type = spec.type || {};
+  var colors = spec.colors || {};
+  var fams = spec.families || {};
+  return {
+    spacing: ramp.spacing, spacingBase: ramp.spacingBase,
+    radius: ramp.radius, radiusBase: ramp.radiusBase,
+    typeBase: type.base, typeRatio: type.ratio,
+    brandHex: colors.brandHex, neutralHex: colors.neutralHex,
+    successHex: colors.successHex, warningHex: colors.warningHex, dangerHex: colors.dangerHex,
+    theme: colors.theme !== false,
+    typography: fams.typography !== false,
+    borders: fams.borders !== false,
+    icons: fams.icons !== false,
+    opacity: fams.opacity !== false,
+    breakpointWidths: fams.breakpointWidths !== false,
+    colors: fams.colors !== false
+  };
+}
+
+function previewTable(spec) {
+  var cfg = { preset: (spec && spec.preset) || 'custom', breakpoints: (spec && spec.breakpoints) || [] };
+  if (!cfg.breakpoints.length) return [];
+  return defaultScaleTable(cfg, buildOptionsFrom(spec));
+}
+
+async function buildDesignSystem(spec) {
+  spec = spec || {};
+  var result = { tokens: null, elements: null, reasons: [], created: 0, unit: 'token' };
+  var cfg = { preset: spec.preset || 'custom', breakpoints: spec.breakpoints || [] };
+  if (!cfg.breakpoints.length) { result.reasons.push('No breakpoints were chosen.'); return result; }
+
+  var cols = await getUiKitCollections(true);
+  var modes = await ensureModes(cols.responsive, breakpointNames(cfg));
+  if (modes.capHit) {
+    result.reasons.push('This file allows ' + modes.cap + ' modes per collection, but ' +
+      cfg.breakpoints.length + ' breakpoints were chosen. Nothing was changed — go back and remove ' +
+      (cfg.breakpoints.length - modes.cap) + '.');
+    return result;
+  }
+  writeBreakpointConfig(cfg);
+
+  var table = (spec.table && spec.table.length) ? spec.table : previewTable(spec);
+  result.tokens = await generateScaleVariables(cfg, table);
+  result.created += result.tokens.created;
+  Array.prototype.push.apply(result.reasons, result.tokens.reasons);
+
+  if (spec.elements && spec.elements.length) {
+    result.elements = await generateKitElements(cfg, { elements: spec.elements });
+    Array.prototype.push.apply(result.reasons, result.elements.reasons);
+  }
+  return result;
+}
+
 // ── UI Kit: state and the message handler ──────────────────────────────────
 
 // Read the scale back out of the file, so re-opening the tab shows what is
@@ -5693,6 +5982,8 @@ async function uiKitState() {
     spacingPresets: SPACING_PRESETS,
     radiusPresets: RADIUS_PRESETS,
     elements: KIT_ELEMENTS.map(function (d) { return { key: d.key, label: d.label }; }),
+    typeRatios: TYPE_RATIOS,
+    themeModes: THEME_MODES,
     valueKey: UIKIT_VALUE_KEY,
     collections: {
       primitives: !!cols.primitives,
@@ -5813,6 +6104,20 @@ async function handleUiKitMessage(msg) {
         tone = 'warning';
       }
       if (r.skipped) tone = 'warning';
+    } else if (msg.type === 'uikit-preview-table') {
+      r = { rows: previewTable(msg.spec || {}) };
+      summary = '';
+    } else if (msg.type === 'uikit-build') {
+      r = await buildDesignSystem(msg.spec || {});
+      if (!r.tokens || !r.tokens.created && !r.tokens.reused) {
+        summary = r.reasons.length ? r.reasons[0] : 'Nothing was built.';
+        tone = 'warning';
+      } else {
+        var bits = [r.tokens.created + ' tokens'];
+        if (r.tokens.aliased) bits.push(r.tokens.aliased + ' aliased');
+        if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
+        summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
+      }
     } else if (msg.type === 'uikit-elements') {
       var ecfg = readBreakpointConfig();
       r = await generateKitElements(ecfg, msg);
@@ -5840,13 +6145,16 @@ async function handleUiKitMessage(msg) {
     // A parse PROPOSES a table and writes nothing, so the state must carry
     // the proposal rather than what is currently in the file — otherwise
     // the reply would immediately overwrite what was just read.
-    if ((msg.type === 'uikit-parse' || msg.type === 'uikit-reseed') && r && r.rows && r.rows.length) {
+    if ((msg.type === 'uikit-parse' || msg.type === 'uikit-reseed' ||
+         msg.type === 'uikit-preview-table') && r && r.rows && r.rows.length) {
       state.table = r.rows;
       state.tableFromFile = false;
     }
     figma.ui.postMessage({
       type: 'uikit-done', requestId: msg.requestId, tone: tone,
-      message: summary, result: r, state: state
+      message: summary, result: r, state: state,
+      // Tells the UI the wizard is finished and it can show the system.
+      builtSystem: msg.type === 'uikit-build' && !!(r && r.tokens && (r.tokens.created || r.tokens.reused))
     });
     if (summary) figma.notify(summary, { timeout: 3000 });
   } catch (e) {
@@ -6747,7 +7055,8 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-generate' || msg.type === 'uikit-bind' ||
         msg.type === 'uikit-preview' || msg.type === 'uikit-parse' ||
         msg.type === 'uikit-reseed' || msg.type === 'uikit-infer' ||
-        msg.type === 'uikit-responsive' || msg.type === 'uikit-elements') {
+        msg.type === 'uikit-responsive' || msg.type === 'uikit-elements' ||
+        msg.type === 'uikit-build' || msg.type === 'uikit-preview-table') {
       await handleUiKitMessage(msg);
       return;
     }
