@@ -133,7 +133,10 @@
     .rule-row-desc { font-size: 10px; color: var(--text-muted); line-height: 1.4; margin-top: 1px; }
 
     /* ── Tabs ──────────────────────────────────────────────────────────────── */
-    .tabs { display: flex; gap: 0; }
+    /* Five tabs exceed 760px below roughly 620px of window width, and the
+       window can be dragged down to 400. Without wrap they clip rather than
+       reflow, so a tab becomes unreachable. */
+    .tabs { display: flex; gap: 0; flex-wrap: wrap; }
     .tab {
       padding: 8px 16px; font-size: 12px; font-weight: 500;
       color: var(--text-muted); cursor: pointer;
@@ -720,6 +723,22 @@
     #spellStatsGrid .stat-card { text-align: left; min-width: 0; }
     #spellStatsSection.collapsed #spellStatsBody { display: none; }
 
+    /* ══ V20: UI Kit & Design System tab ══════════════════════════════════ */
+  .uik-table { display: grid; gap: 2px 8px; align-items: center; padding: 4px 12px 10px; }
+  .uik-cell { width: 100%; min-width: 0; text-align: right; padding: 3px 6px; font-variant-numeric: tabular-nums; }
+  .uik-name { font-size: 11px; color: var(--text-secondary); min-width: 0;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Menlo, monospace; }
+  .uik-head { font-size: 10px; font-weight: 600; color: var(--text-muted);
+              text-transform: uppercase; letter-spacing: .04em; text-align: right; padding-bottom: 4px; }
+  .uik-head.first { text-align: left; }
+  .uik-bps { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .uik-bp { font-size: 11px; padding: 3px 8px; border-radius: var(--radius-full);
+            border: 1px solid var(--border); color: var(--text-secondary); background: var(--surface); }
+  .uik-bp b { color: var(--text-primary); font-weight: 600; }
+  .uik-note { font-size: 11px; color: var(--text-muted); line-height: 1.5; margin: 6px 0 0; }
+  .sm-screen .uik-note { padding: 0 12px 8px; }
+  .sm-card .uik-note { padding: 0; }
+
     /* ══ V19: Colors & Typography tabs ════════════════════════════════════
        Built from the same components as the Audit tab: .btn / .btn-sm,
        .toolbar-card, .stats-head, .stat-card, issue-group style sections. */
@@ -1058,6 +1077,7 @@
     <button class="tab"        data-tab="spelling" aria-selected="false" role="tab">Spelling &amp; Grammar</button>
     <button class="tab"        data-tab="colors"     aria-selected="false" role="tab">Colors</button>
     <button class="tab"        data-tab="typography" aria-selected="false" role="tab">Typography</button>
+    <button class="tab"        data-tab="uikit"      aria-selected="false" role="tab">UI Kit</button>
   </div>
 </div>
 
@@ -1324,6 +1344,15 @@
   <div id="textScreen" class="sm-screen"></div>
 </div>
 
+<!-- ═══════════════════ UI KIT & DESIGN SYSTEM TAB ═══════════════════════ -->
+<div id="tab-uikit" class="tab-panel sm-panel" role="tabpanel">
+  <div class="progress-wrap" id="uikitProgressWrap">
+    <div class="progress-meta"><span id="uikitProgressLabel">Working…</span><span id="uikitProgressPct"></span></div>
+    <div class="progress-track"><div class="progress-fill" id="uikitProgressFill"></div></div>
+  </div>
+  <div id="uikitScreen" class="sm-screen"></div>
+</div>
+
 <!-- ═══════════════════ FOOTER ══════════════════════════════════════════════ -->
 <div class="footer">
   <div class="footer-note" id="footerNote">Select a frame and run an audit to check it for WordPress handoff.</div>
@@ -1383,6 +1412,7 @@
     spell: { wrap:'spellProgressWrap', fill:'spellProgressFill', lbl:'spellProgressLabel', pct:'spellProgressPct' },
     colors:{ wrap:'colorsProgressWrap',fill:'colorsProgressFill',lbl:'colorsProgressLabel',pct:'colorsProgressPct'},
     text:  { wrap:'textProgressWrap',  fill:'textProgressFill',  lbl:'textProgressLabel',  pct:'textProgressPct'  },
+    uikit: { wrap:'uikitProgressWrap', fill:'uikitProgressFill', lbl:'uikitProgressLabel', pct:'uikitProgressPct' },
   };
 
   function showProgress(key, label) {
@@ -1891,6 +1921,7 @@
     const msg = event.data.pluginMessage;
     if (!msg) return;
     if (handleStyleUiMessage(msg)) return;
+    if (handleUiKitUiMessage(msg)) return;
     if (msg.type === 'busy') { setAuditBusy(true, msg.stage || 'Running…'); return; }
     if (msg.type === 'progress') { setAuditBusy(true, msg.stage||'Running…', msg.completed||0, msg.total||0); return; }
     if (msg.type === 'idle')  { setAuditBusy(false); return; }
@@ -2546,15 +2577,28 @@
   TS.fontMap = null;     // family -> styles
   TS.fontsRequested = false;
 
-  function scopePanel(S) { return S === CS ? $('tab-colors') : $('tab-typography'); }
-  function pgKeyOf(S)    { return S === CS ? 'colors' : 'text'; }
+  // Dispatch on the scope's NAME, not on object identity: identity worked
+  // while there were exactly two scopes, but anything that wasn't CS fell
+  // through to Typography — so a third scope would dim the wrong panel and
+  // drive the wrong progress bar.
+  function scopePanel(S) {
+    if (S.name === 'colors') return $('tab-colors');
+    if (S.name === 'uikit')  return $('tab-uikit');
+    return $('tab-typography');
+  }
+  function pgKeyOf(S) {
+    if (S.name === 'colors') return 'colors';
+    if (S.name === 'uikit')  return 'uikit';
+    return 'text';
+  }
 
   // ── Footer + tab action button ───────────────────────────────────────────
   const footerTexts = {
     audit: 'Select a frame and run an audit to check it for WordPress handoff.',
     spelling: 'Select a frame and scan its text layers for spelling, grammar and readability.',
     colors: 'Select a frame to scan its colors, or generate color styles.',
-    typography: 'Select a frame to scan its text styles, or generate text styles.'
+    typography: 'Select a frame to scan its text styles, or generate text styles.',
+    uikit: 'Turn the design system into variables, then bind frames to it and preview them at any breakpoint.'
   };
   function entryFooter(what, gen) {
     return hasSelection
@@ -4805,8 +4849,243 @@
     });
   });
 
+  // ══ UI KIT & DESIGN SYSTEM TAB ═══════════════════════════════════════════
+
+  const KS = {
+    name: 'uikit', screen: 'entry', busy: false,
+    state: null,          // last uikit-state from the sandbox
+    table: null,          // the editable scale table
+    preset: 'standard',
+    collapsed: {}, expanded: {}, pages: {}, names: {}, editing: null
+  };
+
+  const UIK_PRESET_LABELS = {
+    standard: 'Standard (Desktop / Tablet Landscape / Tablet / Mobile)',
+    tailwind: 'Tailwind (2xl / xl / lg / md / sm)',
+    bootstrap: 'Bootstrap (xxl / xl / lg / md / sm)',
+    material: 'Material (Large / Expanded / Medium / Compact)',
+    wordpress: 'WordPress (Huge / Wide / Large / Medium / Small / Mobile)'
+  };
+
+  function uikBreakpoints() {
+    const cfg = KS.state && KS.state.config;
+    return (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  }
+  function uikValueKey() { return (KS.state && KS.state.valueKey) || '*'; }
+
+  function uikChipsHtml(bps) {
+    if (!bps.length) return '';
+    return `<div class="uik-bps">${bps.map(b =>
+      `<span class="uik-bp"><b>${escHtml(b.name)}</b> ${b.width ? escHtml(String(b.width)) + 'px' : ''}</span>`
+    ).join('')}</div>`;
+  }
+
+  // ── Entry: no breakpoints configured yet ────────────────────────────────
+  function uikEntryHtml() {
+    const names = (KS.state && KS.state.presetNames) || [];
+    const presets = (KS.state && KS.state.presets) || {};
+    const chosen = presets[KS.preset] || [];
+    return `
+      <div class="sm-card">
+        <div class="sm-card-title">UI Kit &amp; Design System</div>
+        <p class="uik-note">
+          A design system documented as frames and labels is a picture of a system. This turns it into
+          the system: one set of tokens with a value per breakpoint, so a frame reflows by switching
+          mode instead of being duplicated and resized by hand.
+        </p>
+        <label class="sm-target" style="margin-top:12px;display:block">
+          <span>Breakpoints</span>
+          <select class="sm-input" data-uik-preset>
+            ${names.map(n => `<option value="${escHtml(n)}"${n === KS.preset ? ' selected' : ''}>${escHtml(UIK_PRESET_LABELS[n] || n)}</option>`).join('')}
+          </select>
+        </label>
+        ${uikChipsHtml(chosen)}
+        <p class="uik-note">
+          Each breakpoint becomes a mode on a <b>Responsive</b> collection. How many modes a file allows
+          depends on the Figma plan, so this asks the file rather than guessing — if the preset asks for
+          more than it allows, nothing is changed and it says so.
+        </p>
+        <div class="sm-actions" style="margin-top:12px">
+          <button class="btn btn-primary" data-act="uik-setup"${KS.busy ? ' disabled' : ''}>Set up breakpoints</button>
+        </div>
+      </div>`;
+  }
+
+  // ── The scale table ─────────────────────────────────────────────────────
+  function uikRowsHtml(rows, cols, keyFor) {
+    const grid = `grid-template-columns: minmax(0,1fr) repeat(${cols.length}, 74px);`;
+    const head = `<div class="uik-head first">Token</div>` +
+      cols.map(c => `<div class="uik-head">${escHtml(c.label)}</div>`).join('');
+    const body = rows.map(r => {
+      const i = KS.table.indexOf(r);
+      return `<div class="uik-name" title="${escHtml(r.name)}">${escHtml(r.name)}</div>` +
+        cols.map(c => {
+          const k = keyFor(c);
+          const v = r.values ? r.values[k] : '';
+          return `<input class="sm-input uik-cell" type="number" inputmode="decimal"
+                    data-uik-cell data-row="${i}" data-key="${escHtml(k)}"
+                    value="${v === undefined || v === null ? '' : escHtml(String(v))}">`;
+        }).join('');
+    }).join('');
+    return `<div class="uik-table" style="${grid}">${head}${body}</div>`;
+  }
+
+  function uikTableHtml() {
+    if (!KS.table || !KS.table.length) return '<div class="empty">No scale table yet.</div>';
+    const bps = uikBreakpoints();
+    const prims = KS.table.filter(r => r.tier === 'primitive');
+    const resp = KS.table.filter(r => r.tier !== 'primitive');
+    let html = '';
+
+    if (prims.length) {
+      html += subBlockHtml(KS, {
+        id: 'uik-prims', title: 'Primitives', level2: true,
+        sub: 'Raw values. One number each — a ramp does not change per breakpoint.',
+        count: prims.length,
+        body: uikRowsHtml(prims, [{ label: 'Value', key: uikValueKey() }], c => c.key)
+      });
+    }
+    if (resp.length) {
+      html += subBlockHtml(KS, {
+        id: 'uik-resp', title: 'Responsive', level2: true,
+        sub: 'A value per breakpoint. Where a value matches a primitive exactly it is stored as an alias, so retuning the ramp moves these too.',
+        count: resp.length,
+        body: uikRowsHtml(resp, bps.map(b => ({ label: b.name, key: b.name })), c => c.key)
+      });
+    }
+    return html;
+  }
+
+  // ── Main screen ─────────────────────────────────────────────────────────
+  function uikMainHtml() {
+    const st = KS.state || {};
+    const cols = st.collections || {};
+    const bps = uikBreakpoints();
+    const sel = st.selectionCount || 0;
+    const selLabel = sel === 0 ? 'Nothing selected'
+      : (sel === 1 ? (st.selectionName || '1 layer') : sel + ' layers selected');
+
+    const stats = statCards([
+      { v: (KS.table || []).length, l: 'Tokens', sub: st.tableFromFile ? 'in this file' : 'not generated yet' },
+      { v: (cols.responsiveModes || []).length, l: 'Modes', sub: cols.responsive ? 'on Responsive' : 'no collection yet' },
+      { v: bps.length, l: 'Breakpoints', sub: (st.config && st.config.preset) || 'custom' }
+    ]);
+
+    const previews = bps.map(b =>
+      `<button class="btn btn-sm" data-act="uik-preview" data-bp="${escHtml(b.name)}"${KS.busy || !cols.responsive ? ' disabled' : ''}>${escHtml(b.name)}</button>`
+    ).join('');
+
+    return `
+      <div class="toolbar">
+        <button class="btn" data-act="uik-rescan"${KS.busy ? ' disabled' : ''}>${SI.refresh} Re-scan</button>
+        <button class="btn btn-primary" data-act="uik-generate"${KS.busy ? ' disabled' : ''}>${SI.wand} Generate scale</button>
+        <button class="btn" data-act="uik-bind"${KS.busy || !sel ? ' disabled' : ''}>Bind selection</button>
+        <button class="btn btn-sm" data-act="uik-reset"${KS.busy ? ' disabled' : ''}>Change breakpoints</button>
+      </div>
+      ${stats}
+      ${blockHtml(KS, {
+        id: 'uik-preview-block', title: 'Preview at a breakpoint',
+        sub: `${escHtml(selLabel)} — everything bound to a Responsive token moves at once.`,
+        body: `<div class="sm-actions">${previews}</div>
+               <p class="uik-note">Nothing bound stays where it is. That difference is the quickest way to see how much of a frame is actually on the system.</p>`
+      })}
+      ${blockHtml(KS, {
+        id: 'uik-scale', title: 'Scale', count: (KS.table || []).length,
+        sub: st.tableFromFile ? 'Read from the variables in this file.' : 'A starting point — edit any value, then Generate.',
+        body: uikTableHtml()
+      })}`;
+  }
+
+  function renderUiKit() {
+    const el = $('uikitScreen');
+    if (!el) return;
+    // The presets come from the sandbox, so until uikit-scan replies there
+    // is nothing to put in the dropdown. Say so rather than rendering an
+    // empty select that looks broken.
+    if (!KS.state) {
+      el.innerHTML = '<div class="empty">Reading this file&rsquo;s design system&hellip;</div>';
+      setFooter('uikit', footerTexts.uikit);
+      return;
+    }
+    el.innerHTML = KS.state.config ? uikMainHtml() : uikEntryHtml();
+    setFooter('uikit', footerTexts.uikit);
+  }
+
+  // ── Messages ────────────────────────────────────────────────────────────
+  function uikApplyState(st) {
+    KS.state = st;
+    KS.table = st && st.table ? st.table : null;
+    if (st && st.config && st.config.preset) KS.preset = st.config.preset;
+  }
+
+  function handleUiKitUiMessage(msg) {
+    if (msg.type === 'uikit-state') { uikApplyState(msg); renderUiKit(); return true; }
+    if (msg.type === 'uikit-done') {
+      KS.busy = false;
+      setScopeBusy(KS, false);
+      if (msg.state) uikApplyState(msg.state);
+      renderUiKit();
+      if (msg.message) showToast(msg.message, msg.tone || 'success');
+      return true;
+    }
+    if (msg.type === 'uikit-error') {
+      KS.busy = false;
+      setScopeBusy(KS, false);
+      renderUiKit();
+      showToast(msg.message || 'Something went wrong.', 'error');
+      return true;
+    }
+    return false;
+  }
+
+  let uikReqSeq = 0;
+  function sendUiKit(msg) {
+    KS.busy = true;
+    setScopeBusy(KS, true);
+    msg.requestId = 'k' + (++uikReqSeq);
+    parent.postMessage({ pluginMessage: msg }, '*');
+  }
+
+  // ── Events ──────────────────────────────────────────────────────────────
+  $('tab-uikit').addEventListener('click', e => {
+    const el = e.target.closest('[data-act]');
+    if (!el || el.disabled || KS.busy) return;
+    const act = el.dataset.act;
+    if (act === 'toggle') { KS.collapsed[el.dataset.id] = !KS.collapsed[el.dataset.id]; renderUiKit(); return; }
+    if (act === 'uik-rescan') { parent.postMessage({ pluginMessage: { type: 'uikit-scan' } }, '*'); return; }
+    if (act === 'uik-setup') {
+      const presets = (KS.state && KS.state.presets) || {};
+      sendUiKit({ type: 'uikit-save-breakpoints', preset: KS.preset, breakpoints: presets[KS.preset] || [] });
+      return;
+    }
+    if (act === 'uik-reset') { KS.state = Object.assign({}, KS.state, { config: null }); renderUiKit(); return; }
+    if (act === 'uik-generate') { sendUiKit({ type: 'uikit-generate', table: KS.table }); return; }
+    if (act === 'uik-bind') { sendUiKit({ type: 'uikit-bind' }); return; }
+    if (act === 'uik-preview') { sendUiKit({ type: 'uikit-preview', breakpoint: el.dataset.bp }); return; }
+  });
+
+  $('tab-uikit').addEventListener('change', e => {
+    const sel = e.target.closest('[data-uik-preset]');
+    if (sel) { KS.preset = sel.value; renderUiKit(); }
+  });
+
+  // Patch one cell in place. Re-rendering on every keystroke would move focus
+  // out of the input being typed into — the same reason syncPalRow exists.
+  $('tab-uikit').addEventListener('input', e => {
+    const cell = e.target.closest('[data-uik-cell]');
+    if (!cell || !KS.table) return;
+    const row = KS.table[Number(cell.dataset.row)];
+    if (!row) return;
+    const raw = cell.value.trim();
+    if (raw === '') { delete row.values[cell.dataset.key]; return; }
+    const n = Number(raw);
+    if (!isNaN(n) && isFinite(n)) row.values[cell.dataset.key] = n;
+  });
+
   renderColors();
   renderText();
+  renderUiKit();
+  parent.postMessage({ pluginMessage: { type: 'uikit-scan' } }, '*');
 </script>
 
 </body>
