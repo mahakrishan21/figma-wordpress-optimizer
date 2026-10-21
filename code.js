@@ -4381,24 +4381,45 @@ function applyVarScopes(variable, scopes) {
 var SPACING_SCOPES = ['GAP', 'WIDTH_HEIGHT'];
 var RADIUS_SCOPES = ['CORNER_RADIUS'];
 
-// The 4pt ramp, with a 2px micro-step. Breakpoint-invariant by definition:
-// a ramp is a set of raw values, so it lives in Primitives with one mode.
-function defaultPrimitiveRamp() {
-  var steps = [[25, 2], [50, 4], [100, 8], [150, 12], [200, 16], [250, 20], [300, 24],
-               [400, 32], [500, 40], [600, 48], [700, 64], [800, 80], [900, 96], [950, 112]];
+// Ramps are defined as MULTIPLES of a base, not as fixed pixel values, so
+// changing the base retunes the whole scale and keeps it on-grid. A ramp is
+// breakpoint-invariant by definition, so it lives in Primitives.
+var SPACING_PRESETS = {
+  grid4: { label: '4pt grid', base: 4, steps: [['25', 0.5], ['50', 1], ['100', 2], ['150', 3],
+            ['200', 4], ['250', 5], ['300', 6], ['400', 8], ['500', 10], ['600', 12],
+            ['700', 16], ['800', 20], ['900', 24], ['950', 28]] },
+  grid8: { label: '8pt grid', base: 8, steps: [['100', 1], ['200', 2], ['300', 3], ['400', 4],
+            ['500', 5], ['600', 6], ['700', 8], ['800', 10], ['900', 12], ['1000', 16]] },
+  tailwind: { label: 'Tailwind', base: 4, steps: [['1', 1], ['2', 2], ['3', 3], ['4', 4], ['5', 5],
+            ['6', 6], ['8', 8], ['10', 10], ['12', 12], ['16', 16], ['20', 20], ['24', 24]] },
+  tshirt: { label: 'T-shirt (xs–3xl)', base: 8, steps: [['xs', 0.5], ['sm', 1], ['md', 2],
+            ['lg', 3], ['xl', 4], ['2xl', 6], ['3xl', 8]] }
+};
+
+var RADIUS_PRESETS = {
+  subtle:  { label: 'Subtle', base: 2, steps: [['none', 0], ['sm', 1], ['md', 2], ['lg', 4], ['full', 499.5]] },
+  rounded: { label: 'Rounded', base: 4, steps: [['none', 0], ['sm', 1], ['md', 2], ['lg', 4], ['full', 249.75]] },
+  pill:    { label: 'Pill', base: 8, steps: [['none', 0], ['sm', 1], ['md', 2], ['lg', 3], ['full', 124.875]] }
+};
+
+function rampRows(prefix, preset, base, scopes) {
   var rows = [];
-  for (var i = 0; i < steps.length; i++) {
+  if (!preset) return rows;
+  var unit = (typeof base === 'number' && isFinite(base) && base > 0) ? base : preset.base;
+  for (var i = 0; i < preset.steps.length; i++) {
     var vals = {};
-    vals[UIKIT_VALUE_KEY] = steps[i][1];
-    rows.push({ name: 'space/' + steps[i][0], tier: 'primitive', scopes: SPACING_SCOPES, values: vals });
-  }
-  var radii = [['none', 0], ['sm', 4], ['md', 8], ['lg', 16], ['full', 999]];
-  for (var r = 0; r < radii.length; r++) {
-    var rv = {};
-    rv[UIKIT_VALUE_KEY] = radii[r][1];
-    rows.push({ name: 'radius/' + radii[r][0], tier: 'primitive', scopes: RADIUS_SCOPES, values: rv });
+    vals[UIKIT_VALUE_KEY] = Math.round(preset.steps[i][1] * unit * 100) / 100;
+    rows.push({ name: prefix + '/' + preset.steps[i][0], tier: 'primitive', scopes: scopes, values: vals });
   }
   return rows;
+}
+
+function defaultPrimitiveRamp(opts) {
+  opts = opts || {};
+  var sp = SPACING_PRESETS[opts.spacing || 'grid4'] || SPACING_PRESETS.grid4;
+  var rd = RADIUS_PRESETS[opts.radius || 'rounded'] || RADIUS_PRESETS.rounded;
+  return rampRows('space', sp, opts.spacingBase, SPACING_SCOPES)
+    .concat(rampRows('radius', rd, opts.radiusBase, RADIUS_SCOPES));
 }
 
 // The semantic tokens that genuinely differ per breakpoint. Seeded by
@@ -4436,8 +4457,8 @@ function defaultResponsiveRows(cfg) {
   return rows;
 }
 
-function defaultScaleTable(cfg) {
-  return defaultPrimitiveRamp().concat(defaultResponsiveRows(cfg));
+function defaultScaleTable(cfg, opts) {
+  return defaultPrimitiveRamp(opts).concat(defaultResponsiveRows(cfg));
 }
 
 // Index local variables of a collection by name, so a re-run reuses rather
@@ -4664,6 +4685,347 @@ async function previewBreakpoint(bpName) {
   return result;
 }
 
+// ── UI Kit: responsive rules ───────────────────────────────────────────────
+// Values reflow from variable modes. LAYOUT cannot: layoutMode,
+// layoutSizingHorizontal, layoutWrap and visible are enums and booleans, and
+// no variable can bind to any of them. So layout needs rules, and the
+// vocabulary is kept deliberately small so the result stays predictable.
+var UIKIT_RULES_KEY = 'uikit.rules';
+var UIKIT_FROM_KEY = 'uikit.generatedFrom';
+var UIKIT_BP_KEY = 'uikit.breakpoint';
+var UIKIT_HASH_KEY = 'uikit.hash';
+
+function readRules(node) {
+  try {
+    var raw = node.getPluginData(UIKIT_RULES_KEY);
+    if (!raw) return null;
+    var o = JSON.parse(raw);
+    return (o && typeof o === 'object') ? o : null;
+  } catch (e) { return null; }
+}
+
+function writeRules(node, rules) {
+  try {
+    if (!rules || !Object.keys(rules).length) node.setPluginData(UIKIT_RULES_KEY, '');
+    else node.setPluginData(UIKIT_RULES_KEY, JSON.stringify(rules));
+    return true;
+  } catch (e) { return false; }
+}
+
+function fnv1a(str) {
+  var h = 0x811c9dc5;
+  for (var i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(16);
+}
+
+// A fingerprint of what a PERSON would change, used to tell a generated
+// frame that is still untouched from one somebody has since edited.
+//
+// Width and height are deliberately excluded: auto layout and the active
+// mode compute them, so including them would make a frame look edited
+// merely because Figma re-settled it.
+function structureHash(node) {
+  var parts = [];
+  function walk(n, depth) {
+    if (!n) return;
+    var pads = [n.paddingLeft, n.paddingTop, n.paddingRight, n.paddingBottom, n.itemSpacing, n.counterAxisSpacing]
+      .map(function (v) { return (v === null || v === undefined) ? '' : Math.round(v); }).join(',');
+    parts.push(depth + ':' + n.type + ':' + String(n.name || '') + ':' + (n.visible === false ? 0 : 1) +
+      ':' + (n.layoutMode || '') + ':' + (n.layoutWrap || '') + ':' + pads +
+      (n.type === 'TEXT' ? (':' + String(n.characters == null ? '' : n.characters).slice(0, 120)) : ''));
+    if (n.children) for (var i = 0; i < n.children.length; i++) walk(n.children[i], depth + 1);
+  }
+  walk(node, 0);
+  return fnv1a(parts.join('|'));
+}
+
+function childWidths(node) {
+  var out = [];
+  if (!node.children) return out;
+  for (var i = 0; i < node.children.length; i++) {
+    var c = node.children[i];
+    if (c.visible === false) continue;
+    out.push({ node: c, width: typeof c.width === 'number' ? c.width : 0 });
+  }
+  return out;
+}
+
+function looksLikeNav(name) {
+  return /^(nav|navigation|menu|main\s*nav|nav\s*links?)$/i.test(String(name || '').trim());
+}
+
+// Are these siblings a grid — several children of roughly equal width?
+function equalWidthRow(kids) {
+  if (kids.length < 3) return false;
+  var w = kids[0].width;
+  if (!w) return false;
+  for (var i = 1; i < kids.length; i++) {
+    if (Math.abs(kids[i].width - w) > w * 0.12) return false;
+  }
+  return true;
+}
+
+// Propose rules for every breakpoint narrower than the widest one.
+//
+// Proposals only. Nothing is written and nothing is generated until the
+// designer has looked at the list, because an inferred layout decision is a
+// guess and a guess applied silently is worse than no feature.
+function inferResponsiveRules(root, cfg) {
+  var out = { proposals: [], byNode: {} };
+  var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  if (bps.length < 2 || !root) return out;
+  var widest = bps[0].width || (root.width || 1440);
+
+  function add(node, bpName, rule, value, reason) {
+    if (!out.byNode[node.id]) out.byNode[node.id] = { name: node.name, rules: {} };
+    var slot = out.byNode[node.id].rules;
+    if (!slot[bpName]) slot[bpName] = {};
+    slot[bpName][rule] = value;
+    out.proposals.push({
+      nodeId: node.id, name: String(node.name || ''), breakpoint: bpName,
+      rule: rule, value: value, reason: reason
+    });
+  }
+
+  for (var b = 1; b < bps.length; b++) {
+    var bp = bps[b];
+    var targetW = bp.width || widest;
+
+    (function descend(node, avail) {
+      if (!node || node.visible === false) return;
+      var padX = (node.paddingLeft || 0) + (node.paddingRight || 0);
+      var inner = Math.max(0, avail - padX);
+      var kids = childWidths(node);
+
+      if (looksLikeNav(node.name) && kids.length >= 3 && inner < 700) {
+        add(node, bp.name, 'hide', true,
+          'A nav with ' + kids.length + ' links will not fit ' + Math.round(inner) + 'px.');
+      }
+
+      if (isAutoLayoutFrame(node) && node.layoutMode === 'HORIZONTAL' && kids.length > 1) {
+        var gaps = (node.itemSpacing || 0) * (kids.length - 1);
+        var needed = gaps;
+        for (var i = 0; i < kids.length; i++) needed += kids[i].width;
+
+        if (needed > inner) {
+          if (equalWidthRow(kids)) {
+            var cw = kids[0].width;
+            var gap = node.itemSpacing || 0;
+            var fit = Math.max(1, Math.floor((inner + gap) / (cw + gap)));
+            if (fit < kids.length) {
+              add(node, bp.name, 'cols', fit,
+                kids.length + ' equal columns need ' + Math.round(needed) + 'px; ' +
+                Math.round(inner) + 'px fits ' + fit + '.');
+            }
+          } else {
+            add(node, bp.name, 'stack', true,
+              'Its children need ' + Math.round(needed) + 'px side by side; only ' +
+              Math.round(inner) + 'px is available.');
+          }
+        }
+      }
+
+      for (var k = 0; k < kids.length; k++) {
+        var child = kids[k].node;
+        if (kids[k].width > inner && kids[k].width > 0) {
+          add(child, bp.name, 'fill', true,
+            'It is ' + Math.round(kids[k].width) + 'px wide inside ' + Math.round(inner) + 'px.');
+        }
+        descend(child, node.layoutMode === 'HORIZONTAL' && kids.length > 1 ? kids[k].width : inner);
+      }
+    })(root, targetW);
+  }
+
+  return out;
+}
+
+// Save a proposal set onto the source layers, so a later re-generate
+// replays the designer's decisions instead of re-deriving them.
+async function saveResponsiveRules(byNode, accepted) {
+  var saved = 0;
+  for (var nodeId in byNode) {
+    var node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) continue;
+    var keep = {};
+    var rules = byNode[nodeId].rules;
+    for (var bp in rules) {
+      for (var rule in rules[bp]) {
+        var key = nodeId + '|' + bp + '|' + rule;
+        if (accepted && accepted[key] === false) continue;
+        if (!keep[bp]) keep[bp] = {};
+        keep[bp][rule] = rules[bp][rule];
+      }
+    }
+    var existing = readRules(node) || {};
+    for (var ebp in keep) existing[ebp] = Object.assign(existing[ebp] || {}, keep[ebp]);
+    if (writeRules(node, existing)) saved++;
+  }
+  return saved;
+}
+
+function setSizing(node, axis, mode) {
+  try { node[axis] = mode; return true; } catch (e) { return false; }
+}
+
+// Apply one node's rules for one breakpoint. Everything is attempted
+// independently — a layer Figma refuses is counted, never fatal.
+function applyRulesTo(node, bpName, counts) {
+  var rules = readRules(node);
+  if (!rules || !rules[bpName]) return;
+  var r = rules[bpName];
+
+  if (r.hide === true) { try { node.visible = false; counts.applied++; } catch (e) { counts.failed++; } }
+  if (r.show === true) { try { node.visible = true; counts.applied++; } catch (e) { counts.failed++; } }
+
+  if (r.stack === true) {
+    try {
+      node.layoutMode = 'VERTICAL';
+      // Children sized for a row will not fill a column on their own.
+      if (node.children) {
+        for (var i = 0; i < node.children.length; i++) setSizing(node.children[i], 'layoutSizingHorizontal', 'FILL');
+      }
+      counts.applied++;
+    } catch (e) { counts.failed++; }
+  }
+
+  if (typeof r.cols === 'number' && r.cols > 0 && node.children) {
+    try {
+      node.layoutWrap = 'WRAP';
+      var gap = node.itemSpacing || 0;
+      var inner = Math.max(0, (node.width || 0) - (node.paddingLeft || 0) - (node.paddingRight || 0));
+      var each = r.cols > 0 ? (inner - gap * (r.cols - 1)) / r.cols : inner;
+      for (var c = 0; c < node.children.length; c++) {
+        var kid = node.children[c];
+        setSizing(kid, 'layoutSizingHorizontal', 'FIXED');
+        if (typeof kid.resize === 'function' && each > 0) kid.resize(each, kid.height || 1);
+      }
+      counts.applied++;
+    } catch (e) { counts.failed++; }
+  }
+
+  if (r.fill === true) {
+    if (setSizing(node, 'layoutSizingHorizontal', 'FILL')) counts.applied++; else counts.failed++;
+  }
+
+  if (r.order && r.order.length && node.children) {
+    try {
+      for (var o = 0; o < r.order.length; o++) {
+        var target = null;
+        for (var k = 0; k < node.children.length; k++) if (node.children[k].name === r.order[o]) { target = node.children[k]; break; }
+        if (target) node.insertChild(o, target);
+      }
+      counts.applied++;
+    } catch (e) { counts.failed++; }
+  }
+
+  if (r.swap) counts.unsupported.push('"' + node.name + '": component swap is not generated yet.');
+}
+
+function walkApply(node, bpName, counts) {
+  applyRulesTo(node, bpName, counts);
+  if (node.children) {
+    // Copy the list: a rule may reorder children mid-walk.
+    var kids = node.children.slice();
+    for (var i = 0; i < kids.length; i++) walkApply(kids[i], bpName, counts);
+  }
+}
+
+function findGeneratedFrame(sourceId, bpName) {
+  var kids = figma.currentPage.children || [];
+  for (var i = 0; i < kids.length; i++) {
+    var n = kids[i];
+    try {
+      if (n.getPluginData(UIKIT_FROM_KEY) === sourceId && n.getPluginData(UIKIT_BP_KEY) === bpName) return n;
+    } catch (e) { /* not every node carries plugin data */ }
+  }
+  return null;
+}
+
+// Generate one frame per breakpoint from the selected frame.
+//
+// A frame that someone has edited since it was generated is REPORTED AND
+// SKIPPED, never overwritten. Silently destroying hand-made changes is the
+// single fastest way to make a generator untrustworthy.
+async function generateResponsiveFrames(cfg, opts) {
+  opts = opts || {};
+  var result = { created: 0, replaced: 0, skipped: 0, applied: 0, failed: 0,
+                 reasons: [], unsupported: [], frames: [], unit: 'frame' };
+  var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  if (bps.length < 2) { result.reasons.push('At least two breakpoints are needed.'); return result; }
+
+  var sel = figma.currentPage.selection;
+  if (!sel || sel.length !== 1) { result.reasons.push('Select exactly one frame to generate from.'); return result; }
+  var source = sel[0];
+  if (!hasChildren(source)) { result.reasons.push('"' + source.name + '" has no children to lay out.'); return result; }
+  if (source.getPluginData(UIKIT_FROM_KEY)) {
+    result.reasons.push('"' + source.name + '" was itself generated. Select the original instead.');
+    return result;
+  }
+
+  var cols = await getUiKitCollections(false);
+  var modeByName = {};
+  if (cols.responsive) {
+    var ms = cols.responsive.modes || [];
+    for (var m = 0; m < ms.length; m++) modeByName[normModeName(ms[m].name)] = ms[m].modeId;
+  }
+
+  var x = source.x + (source.width || 0) + 120;
+  var counts = { applied: 0, failed: 0, unsupported: [] };
+
+  for (var b = 1; b < bps.length; b++) {
+    var bp = bps[b];
+
+    var existing = findGeneratedFrame(source.id, bp.name);
+    if (existing) {
+      var storedHash = existing.getPluginData(UIKIT_HASH_KEY);
+      var liveHash = structureHash(existing);
+      if (storedHash && storedHash !== liveHash) {
+        result.skipped++;
+        result.reasons.push('"' + existing.name + '" has been edited since it was generated, so it was left alone.');
+        x = existing.x + (existing.width || 0) + 120;
+        continue;
+      }
+      x = existing.x;
+      try { existing.remove(); result.replaced++; } catch (e) { /* keep going */ }
+    }
+
+    var clone = source.clone();
+    clone.name = source.name + ' — ' + bp.name;
+
+    if (cols.responsive && modeByName[normModeName(bp.name)]) {
+      try { clone.setExplicitVariableModeForCollection(cols.responsive, modeByName[normModeName(bp.name)]); }
+      catch (e) { result.reasons.push('"' + clone.name + '" could not take the ' + bp.name + ' mode.'); }
+    }
+
+    setSizing(clone, 'layoutSizingHorizontal', 'FIXED');
+    if (bp.width && typeof clone.resize === 'function') {
+      try { clone.resize(bp.width, clone.height || 1); } catch (e) { /* non-resizable */ }
+    }
+
+    walkApply(clone, bp.name, counts);
+
+    clone.setPluginData(UIKIT_FROM_KEY, source.id);
+    clone.setPluginData(UIKIT_BP_KEY, bp.name);
+    clone.setPluginData(UIKIT_HASH_KEY, structureHash(clone));
+
+    clone.x = x;
+    clone.y = source.y;
+    figma.currentPage.appendChild(clone);
+    x += (clone.width || bp.width || 0) + 120;
+
+    if (!existing) result.created++;
+    result.frames.push({ id: clone.id, name: clone.name, breakpoint: bp.name });
+  }
+
+  result.applied = counts.applied;
+  result.failed = counts.failed;
+  result.unsupported = counts.unsupported;
+  return result;
+}
+
 // ── UI Kit: reading a scale off the canvas ─────────────────────────────────
 // A documented scale is just labelled text, so this is pattern matching and
 // it will not be right every time. That is why it only ever PROPOSES a
@@ -4870,6 +5232,8 @@ async function uiKitState() {
     config: cfg,
     presets: BREAKPOINT_PRESETS,
     presetNames: presetNames,
+    spacingPresets: SPACING_PRESETS,
+    radiusPresets: RADIUS_PRESETS,
     valueKey: UIKIT_VALUE_KEY,
     collections: {
       primitives: !!cols.primitives,
@@ -4962,6 +5326,34 @@ async function handleUiKitMessage(msg) {
           ' Check the table before generating.';
         if (r.unparsed.length) tone = 'warning';
       }
+    } else if (msg.type === 'uikit-reseed') {
+      var rcfg = readBreakpointConfig();
+      if (!rcfg) throw new Error('Set up breakpoints first.');
+      r = { rows: defaultScaleTable(rcfg, msg.options || {}) };
+      summary = 'Scale rebuilt from the preset — ' + r.rows.length + ' tokens. Nothing is written until you Generate.';
+    } else if (msg.type === 'uikit-infer') {
+      var icfg = readBreakpointConfig();
+      if (!icfg) throw new Error('Set up breakpoints first.');
+      var isel = figma.currentPage.selection;
+      if (!isel || isel.length !== 1) throw new Error('Select exactly one frame to analyse.');
+      r = inferResponsiveRules(isel[0], icfg);
+      summary = r.proposals.length
+        ? ('Proposed ' + r.proposals.length + ' layout change' + (r.proposals.length === 1 ? '' : 's') + '. Review them, then generate.')
+        : 'No layout changes needed — every row already fits the narrower breakpoints.';
+      if (!r.proposals.length) tone = 'warning';
+    } else if (msg.type === 'uikit-responsive') {
+      var vcfg = readBreakpointConfig();
+      if (!vcfg) throw new Error('Set up breakpoints first.');
+      if (msg.byNode) await saveResponsiveRules(msg.byNode, msg.accepted);
+      r = await generateResponsiveFrames(vcfg, msg);
+      if (r.frames.length) {
+        summary = r.created + ' created' + (r.replaced ? (', ' + r.replaced + ' replaced') : '') +
+          (r.skipped ? (', ' + r.skipped + ' left alone') : '') + '.';
+      } else {
+        summary = r.reasons.length ? r.reasons[0] : 'Nothing generated.';
+        tone = 'warning';
+      }
+      if (r.skipped) tone = 'warning';
     } else if (msg.type === 'uikit-bind') {
       r = await bindScaleToSelection(msg);
       summary = uiKitSummary('bind', r);
@@ -4979,7 +5371,7 @@ async function handleUiKitMessage(msg) {
     // A parse PROPOSES a table and writes nothing, so the state must carry
     // the proposal rather than what is currently in the file — otherwise
     // the reply would immediately overwrite what was just read.
-    if (msg.type === 'uikit-parse' && r && r.rows && r.rows.length) {
+    if ((msg.type === 'uikit-parse' || msg.type === 'uikit-reseed') && r && r.rows && r.rows.length) {
       state.table = r.rows;
       state.tableFromFile = false;
     }
@@ -5884,7 +6276,9 @@ figma.ui.onmessage = async (msg) => {
     }
     if (msg.type === 'uikit-scan' || msg.type === 'uikit-save-breakpoints' ||
         msg.type === 'uikit-generate' || msg.type === 'uikit-bind' ||
-        msg.type === 'uikit-preview' || msg.type === 'uikit-parse') {
+        msg.type === 'uikit-preview' || msg.type === 'uikit-parse' ||
+        msg.type === 'uikit-reseed' || msg.type === 'uikit-infer' ||
+        msg.type === 'uikit-responsive') {
       await handleUiKitMessage(msg);
       return;
     }

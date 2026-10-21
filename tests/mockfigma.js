@@ -2,16 +2,22 @@
 var _id = 0; function nid(p){ return p + (++_id); }
 function F(){ return {
   mixed: Symbol('mixed'),
-  _paintStyles: [], _textStyles: [], _vars: [], _cols: [],
+  _paintStyles: [], _textStyles: [], _vars: [], _cols: [], _nodes: {},
   showUI: function(){}, on: function(){}, commitUndo: function(){},
   notify: function(){},
   ui: { postMessage: function(m){ (globalThis.__posted = globalThis.__posted || []).push(m); }, resize: function(){}, onmessage: null },
-  currentPage: { id:'p1', selection: [], children: [] },
+  currentPage: { id:'p1', type:'PAGE', selection: [], children: [],
+    appendChild: function(c){
+      if (c.parent && c.parent.children) {
+        var j = c.parent.children.indexOf(c); if (j >= 0) c.parent.children.splice(j,1);
+      }
+      c.parent = this; this.children.push(c);
+    } },
   loadFontAsync: function(){ return Promise.resolve(); },
   getLocalPaintStylesAsync: function(){ return Promise.resolve(this._paintStyles.slice()); },
   getLocalTextStylesAsync: function(){ return Promise.resolve(this._textStyles.slice()); },
   getStyleByIdAsync: function(){ return Promise.resolve(null); },
-  getNodeByIdAsync: function(){ return Promise.resolve(null); },
+  getNodeByIdAsync: function(id){ return Promise.resolve(figma._nodes[id] || null); },
   createPaintStyle: function(){ var st={id:nid('S'),name:'',paints:[],
       remove:function(){ var i=figma._paintStyles.indexOf(this); if(i>=0) figma._paintStyles.splice(i,1); }};
     this._paintStyles.push(st); return st; },
@@ -113,19 +119,70 @@ function mkFrame(o){
     clearExplicitVariableModeForCollection: function(col){ delete this.explicitModes[col.id]; },
     setPluginData: function(k, val){ this._plugin[k] = String(val); },
     getPluginData: function(k){ return this._plugin[k] || ''; },
-    appendChild: function(c){ c.parent = this; this.children.push(c); },
-    resize: function(w,h){ this.width = w; this.height = h; }
+    appendChild: function(c){
+      if (c.parent && c.parent.children) {
+        var j = c.parent.children.indexOf(c); if (j >= 0) c.parent.children.splice(j,1);
+      }
+      c.parent = this; this.children.push(c);
+    },
+    insertChild: function(idx, c){
+      if (c.parent && c.parent.children) {
+        var j = c.parent.children.indexOf(c); if (j >= 0) c.parent.children.splice(j,1);
+      }
+      c.parent = this; this.children.splice(idx, 0, c);
+    },
+    remove: function(){
+      this.removed = true;
+      if (this.parent && this.parent.children) {
+        var j = this.parent.children.indexOf(this); if (j >= 0) this.parent.children.splice(j,1);
+      }
+    },
+    resize: function(w,h){ this.width = w; this.height = h; },
+    clone: function(){ return cloneNode(this); }
   };
   for (var i=0;i<n.children.length;i++) n.children[i].parent = n;
+  figma._nodes[n.id] = n;
   return n;
+}
+
+// clone() copies plugin data in the real API, which is what lets a generated
+// frame carry the rules it was generated from.
+function cloneNode(src){
+  var copy;
+  if (src.type === 'TEXT') {
+    copy = mkText(src.characters, src.name);
+  } else {
+    copy = mkFrame({ name: src.name, layoutMode: src.layoutMode, layoutWrap: src.layoutWrap,
+      layoutSizingHorizontal: src.layoutSizingHorizontal, layoutSizingVertical: src.layoutSizingVertical,
+      width: src.width, height: src.height,
+      paddingLeft: src.paddingLeft, paddingRight: src.paddingRight,
+      paddingTop: src.paddingTop, paddingBottom: src.paddingBottom,
+      itemSpacing: src.itemSpacing, counterAxisSpacing: src.counterAxisSpacing,
+      cornerRadius: src.cornerRadius, children: [] });
+  }
+  copy.visible = src.visible;
+  copy.locked = src.locked;
+  for (var k in src._plugin) copy._plugin[k] = src._plugin[k];
+  if (src.boundVariables) { copy.boundVariables = {}; for (var b in src.boundVariables) copy.boundVariables[b] = src.boundVariables[b]; }
+  if (src.explicitModes) { copy.explicitModes = {}; for (var m in src.explicitModes) copy.explicitModes[m] = src.explicitModes[m]; }
+  if (src.children) for (var i=0;i<src.children.length;i++) copy.appendChild(cloneNode(src.children[i]));
+  return copy;
 }
 globalThis.mkFrame = mkFrame;
 
 function mkText(characters, name){
-  return { id: nid('T'), type:'TEXT', name: name || characters, characters: characters,
-           visible:true, locked:false, parent:null, boundVariables:{}, _plugin:{},
+  var t = { id: nid('T'), type:'TEXT', name: name || characters, characters: characters,
+           visible:true, locked:false, parent:null, boundVariables:{}, explicitModes:{}, _plugin:{},
+           width: 100, height: 20,
            setPluginData:function(k,v){ this._plugin[k]=String(v); },
-           getPluginData:function(k){ return this._plugin[k]||''; } };
+           getPluginData:function(k){ return this._plugin[k]||''; },
+           setBoundVariable:function(f,v){ if (v===null) delete this.boundVariables[f]; else this.boundVariables[f]={type:'VARIABLE_ALIAS',id:v.id}; },
+           remove:function(){ this.removed = true;
+             if (this.parent && this.parent.children) { var j=this.parent.children.indexOf(this); if(j>=0) this.parent.children.splice(j,1); } },
+           resize:function(w,h){ this.width=w; this.height=h; },
+           clone:function(){ return cloneNode(this); } };
+  figma._nodes[t.id] = t;
+  return t;
 }
 globalThis.mkText = mkText;
 

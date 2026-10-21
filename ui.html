@@ -736,6 +736,24 @@
             border: 1px solid var(--border); color: var(--text-secondary); background: var(--surface); }
   .uik-bp b { color: var(--text-primary); font-weight: 600; }
   .uik-note { font-size: 11px; color: var(--text-muted); line-height: 1.5; margin: 6px 0 0; }
+  .uik-acts { display: flex; gap: 2px; justify-content: flex-end; }
+  .uik-icon { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+              border: none; background: none; border-radius: var(--radius-sm); color: var(--text-muted);
+              cursor: pointer; font-size: 14px; line-height: 1; }
+  .uik-icon:hover { background: var(--gray-100); color: var(--text-primary); }
+  .uik-nameinput { font-size: 11px; padding: 3px 6px; font-family: ui-monospace, Menlo, monospace; }
+  .uik-presets { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 8px 12px 2px; }
+  .uik-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 140px; }
+  .uik-field-sm { flex: 0 0 72px; }
+  .uik-field span { font-size: 10px; font-weight: 600; color: var(--text-muted);
+                    text-transform: uppercase; letter-spacing: .04em; }
+  .uik-add { padding: 4px 12px 10px; }
+  .uik-props { padding: 0 12px; }
+  .uik-prop-bp { font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase;
+                 letter-spacing: .04em; margin: 8px 0 4px; }
+  .uik-prop { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; font-size: 11px; cursor: pointer; }
+  .uik-prop-text { min-width: 0; }
+  .uik-prop-why { display: block; color: var(--text-muted); }
   .sm-screen .uik-note { padding: 0 12px 8px; }
   .sm-card .uik-note { padding: 0; }
 
@@ -4856,7 +4874,11 @@
     state: null,          // last uikit-state from the sandbox
     table: null,          // the editable scale table
     preset: 'standard',
-    collapsed: {}, expanded: {}, pages: {}, names: {}, editing: null
+    collapsed: {}, expanded: {}, pages: {}, names: {}, editing: null,
+    ramp: { spacing: 'grid4', spacingBase: null, radius: 'rounded', radiusBase: null },
+    proposals: null,   // from uikit-infer
+    accepted: {},      // proposalKey -> false when unticked
+    byNode: null
   };
 
   const UIK_PRESET_LABELS = {
@@ -4913,21 +4935,51 @@
 
   // ── The scale table ─────────────────────────────────────────────────────
   function uikRowsHtml(rows, cols, keyFor) {
-    const grid = `grid-template-columns: minmax(0,1fr) repeat(${cols.length}, 74px);`;
+    const grid = `grid-template-columns: minmax(0,1fr) repeat(${cols.length}, 74px) 52px;`;
     const head = `<div class="uik-head first">Token</div>` +
-      cols.map(c => `<div class="uik-head">${escHtml(c.label)}</div>`).join('');
+      cols.map(c => `<div class="uik-head">${escHtml(c.label)}</div>`).join('') +
+      `<div class="uik-head">Actions</div>`;
     const body = rows.map(r => {
       const i = KS.table.indexOf(r);
-      return `<div class="uik-name" title="${escHtml(r.name)}">${escHtml(r.name)}</div>` +
+      const nameCell = KS.editing === i
+        ? `<input class="sm-input uik-nameinput" data-uik-name data-row="${i}" value="${escHtml(r.name)}">`
+        : `<div class="uik-name" title="${escHtml(r.name)}">${escHtml(r.name)}</div>`;
+      return nameCell +
         cols.map(c => {
           const k = keyFor(c);
           const v = r.values ? r.values[k] : '';
           return `<input class="sm-input uik-cell" type="number" inputmode="decimal"
                     data-uik-cell data-row="${i}" data-key="${escHtml(k)}"
                     value="${v === undefined || v === null ? '' : escHtml(String(v))}">`;
-        }).join('');
+        }).join('') +
+        `<div class="uik-acts">
+           <button class="uik-icon" data-act="uik-row-edit" data-row="${i}" title="Rename">${SI.pencil}</button>
+           <button class="uik-icon" data-act="uik-row-del" data-row="${i}" title="Remove">&times;</button>
+         </div>`;
     }).join('');
     return `<div class="uik-table" style="${grid}">${head}${body}</div>`;
+  }
+
+  function uikPresetControls() {
+    const sp = (KS.state && KS.state.spacingPresets) || {};
+    const rd = (KS.state && KS.state.radiusPresets) || {};
+    const opt = (map, chosen) => Object.keys(map).map(k =>
+      `<option value="${escHtml(k)}"${k === chosen ? ' selected' : ''}>${escHtml(map[k].label || k)}</option>`).join('');
+    const spBase = KS.ramp.spacingBase != null ? KS.ramp.spacingBase : ((sp[KS.ramp.spacing] || {}).base || 4);
+    const rdBase = KS.ramp.radiusBase != null ? KS.ramp.radiusBase : ((rd[KS.ramp.radius] || {}).base || 4);
+    return `
+      <div class="uik-presets">
+        <label class="uik-field"><span>Spacing</span>
+          <select class="sm-input" data-uik-ramp="spacing">${opt(sp, KS.ramp.spacing)}</select></label>
+        <label class="uik-field uik-field-sm"><span>Base</span>
+          <input class="sm-input" type="number" min="1" step="1" data-uik-ramp="spacingBase" value="${escHtml(String(spBase))}"></label>
+        <label class="uik-field"><span>Radius</span>
+          <select class="sm-input" data-uik-ramp="radius">${opt(rd, KS.ramp.radius)}</select></label>
+        <label class="uik-field uik-field-sm"><span>Base</span>
+          <input class="sm-input" type="number" min="0" step="1" data-uik-ramp="radiusBase" value="${escHtml(String(rdBase))}"></label>
+        <button class="btn btn-sm" data-act="uik-reseed"${KS.busy ? ' disabled' : ''}>Rebuild from preset</button>
+      </div>
+      <p class="uik-note">Rebuilding replaces the ramp rows with the preset &times; base. It writes nothing &mdash; your edits below survive until you press Generate.</p>`;
   }
 
   function uikTableHtml() {
@@ -4937,22 +4989,21 @@
     const resp = KS.table.filter(r => r.tier !== 'primitive');
     let html = '';
 
-    if (prims.length) {
-      html += subBlockHtml(KS, {
-        id: 'uik-prims', title: 'Primitives', level2: true,
-        sub: 'Raw values. One number each — a ramp does not change per breakpoint.',
-        count: prims.length,
-        body: uikRowsHtml(prims, [{ label: 'Value', key: uikValueKey() }], c => c.key)
-      });
-    }
-    if (resp.length) {
-      html += subBlockHtml(KS, {
-        id: 'uik-resp', title: 'Responsive', level2: true,
-        sub: 'A value per breakpoint. Where a value matches a primitive exactly it is stored as an alias, so retuning the ramp moves these too.',
-        count: resp.length,
-        body: uikRowsHtml(resp, bps.map(b => ({ label: b.name, key: b.name })), c => c.key)
-      });
-    }
+    html += subBlockHtml(KS, {
+      id: 'uik-prims', title: 'Primitives', level2: true,
+      sub: 'Raw values. One number each — a ramp does not change per breakpoint.',
+      count: prims.length,
+      body: uikPresetControls() +
+        uikRowsHtml(prims, [{ label: 'Value', key: uikValueKey() }], c => c.key) +
+        `<div class="uik-add"><button class="btn btn-sm" data-act="uik-row-add" data-tier="primitive">+ Add token</button></div>`
+    });
+    html += subBlockHtml(KS, {
+      id: 'uik-resp', title: 'Responsive', level2: true,
+      sub: 'A value per breakpoint. Where a value matches a primitive exactly it is stored as an alias, so retuning the ramp moves these too.',
+      count: resp.length,
+      body: uikRowsHtml(resp, bps.map(b => ({ label: b.name, key: b.name })), c => c.key) +
+        `<div class="uik-add"><button class="btn btn-sm" data-act="uik-row-add" data-tier="responsive">+ Add token</button></div>`
+    });
     return html;
   }
 
@@ -4990,11 +5041,67 @@
         body: `<div class="sm-actions">${previews}</div>
                <p class="uik-note">Nothing bound stays where it is. That difference is the quickest way to see how much of a frame is actually on the system.</p>`
       })}
+      ${uikResponsiveHtml()}
       ${blockHtml(KS, {
         id: 'uik-scale', title: 'Scale', count: (KS.table || []).length,
         sub: st.tableFromFile ? 'Read from the variables in this file.' : 'A proposal — check every value, then Generate.',
         body: uikTableHtml()
       })}`;
+  }
+
+  // ── Responsive generation ───────────────────────────────────────────────
+  function uikProposalKey(p) { return p.nodeId + '|' + p.breakpoint + '|' + p.rule; }
+
+  function uikProposalsHtml() {
+    if (!KS.proposals) {
+      return `<p class="uik-note">Select the frame you designed at the widest breakpoint, then analyse it. Values already reflow from the tokens; this proposes the <b>layout</b> changes that tokens cannot express — stacking a row, dropping a grid to fewer columns, hiding a nav.</p>`;
+    }
+    if (!KS.proposals.length) {
+      return `<p class="uik-note">No layout changes needed — every row already fits the narrower breakpoints.</p>`;
+    }
+    const byBp = {};
+    KS.proposals.forEach(p => { (byBp[p.breakpoint] = byBp[p.breakpoint] || []).push(p); });
+    return Object.keys(byBp).map(bp => `
+      <div class="uik-prop-bp">${escHtml(bp)}</div>
+      ${byBp[bp].map(p => {
+        const k = uikProposalKey(p);
+        const on = KS.accepted[k] !== false;
+        return `<label class="uik-prop">
+          <input type="checkbox" data-uik-prop="${escHtml(k)}"${on ? ' checked' : ''}>
+          <span class="uik-prop-text">
+            <b>${escHtml(p.name)}</b> — ${escHtml(uikRuleLabel(p))}
+            <span class="uik-prop-why">${escHtml(p.reason)}</span>
+          </span>
+        </label>`;
+      }).join('')}
+    `).join('');
+  }
+
+  function uikRuleLabel(p) {
+    if (p.rule === 'stack') return 'stack vertically';
+    if (p.rule === 'cols') return 'drop to ' + p.value + ' column' + (p.value === 1 ? '' : 's');
+    if (p.rule === 'fill') return 'fill the available width';
+    if (p.rule === 'hide') return 'hide';
+    if (p.rule === 'show') return 'show';
+    return p.rule;
+  }
+
+  function uikResponsiveHtml() {
+    const st = KS.state || {};
+    const sel = st.selectionCount || 0;
+    const n = KS.proposals ? KS.proposals.filter(p => KS.accepted[uikProposalKey(p)] !== false).length : 0;
+    return blockHtml(KS, {
+      id: 'uik-responsive', title: 'Responsive versions',
+      sub: sel === 1 ? escHtml(st.selectionName || '1 frame selected') : 'Select exactly one frame',
+      count: KS.proposals ? KS.proposals.length : 0,
+      body: `
+        <div class="sm-actions" style="padding:0 12px 6px">
+          <button class="btn btn-sm" data-act="uik-infer"${KS.busy || sel !== 1 ? ' disabled' : ''}>Analyse layout</button>
+          <button class="btn btn-sm btn-primary" data-act="uik-responsive"${KS.busy || sel !== 1 ? ' disabled' : ''}>Generate ${n ? n + ' change' + (n === 1 ? '' : 's') : 'frames'}</button>
+        </div>
+        <div class="uik-props">${uikProposalsHtml()}</div>
+        <p class="uik-note">A generated frame that has been edited since is reported and left alone, never overwritten.</p>`
+    });
   }
 
   function renderUiKit() {
@@ -5024,6 +5131,11 @@
     if (msg.type === 'uikit-done') {
       KS.busy = false;
       setScopeBusy(KS, false);
+      if (msg.result && msg.result.proposals) {
+        KS.proposals = msg.result.proposals;
+        KS.byNode = msg.result.byNode || null;
+        KS.accepted = {};
+      }
       if (msg.state) uikApplyState(msg.state);
       renderUiKit();
       if (msg.message) showToast(msg.message, msg.tone || 'success');
@@ -5061,14 +5173,77 @@
     }
     if (act === 'uik-reset') { KS.state = Object.assign({}, KS.state, { config: null }); renderUiKit(); return; }
     if (act === 'uik-parse') { sendUiKit({ type: 'uikit-parse' }); return; }
+    if (act === 'uik-reseed') { sendUiKit({ type: 'uikit-reseed', options: uikRampOptions() }); return; }
+    if (act === 'uik-infer') { sendUiKit({ type: 'uikit-infer' }); return; }
+    if (act === 'uik-responsive') {
+      sendUiKit({ type: 'uikit-responsive', byNode: KS.byNode, accepted: KS.accepted });
+      return;
+    }
+    if (act === 'uik-row-edit') { KS.editing = Number(el.dataset.row); renderUiKit(); return; }
+    if (act === 'uik-row-del') {
+      const i = Number(el.dataset.row);
+      if (KS.table && KS.table[i]) { KS.table.splice(i, 1); KS.editing = null; renderUiKit(); }
+      return;
+    }
+    if (act === 'uik-row-add') {
+      if (!KS.table) KS.table = [];
+      const tier = el.dataset.tier === 'primitive' ? 'primitive' : 'responsive';
+      KS.table.push({ name: tier === 'primitive' ? 'space/new' : 'space/section/new',
+                      tier: tier, scopes: ['GAP', 'WIDTH_HEIGHT'], values: {} });
+      KS.editing = KS.table.length - 1;
+      renderUiKit();
+      const inp = $('uikitScreen').querySelector('[data-uik-name]');
+      if (inp) { inp.focus(); inp.select(); }
+      return;
+    }
     if (act === 'uik-generate') { sendUiKit({ type: 'uikit-generate', table: KS.table }); return; }
     if (act === 'uik-bind') { sendUiKit({ type: 'uikit-bind' }); return; }
     if (act === 'uik-preview') { sendUiKit({ type: 'uikit-preview', breakpoint: el.dataset.bp }); return; }
   });
 
+  function uikRampOptions() {
+    return { spacing: KS.ramp.spacing, spacingBase: KS.ramp.spacingBase,
+             radius: KS.ramp.radius, radiusBase: KS.ramp.radiusBase };
+  }
+
   $('tab-uikit').addEventListener('change', e => {
     const sel = e.target.closest('[data-uik-preset]');
-    if (sel) { KS.preset = sel.value; renderUiKit(); }
+    if (sel) { KS.preset = sel.value; renderUiKit(); return; }
+
+    const ramp = e.target.closest('[data-uik-ramp]');
+    if (ramp) {
+      const field = ramp.dataset.uikRamp;
+      if (field === 'spacing' || field === 'radius') {
+        KS.ramp[field] = ramp.value;
+        // A new preset brings its own base, so forget the old override.
+        KS.ramp[field === 'spacing' ? 'spacingBase' : 'radiusBase'] = null;
+      } else {
+        const n = Number(ramp.value);
+        KS.ramp[field] = (!isNaN(n) && isFinite(n) && n > 0) ? n : null;
+      }
+      renderUiKit();
+      return;
+    }
+
+    const prop = e.target.closest('[data-uik-prop]');
+    if (prop) { KS.accepted[prop.dataset.uikProp] = prop.checked; renderUiKit(); return; }
+  });
+
+  // Commit a rename on Enter or blur; Escape abandons it.
+  $('tab-uikit').addEventListener('keydown', e => {
+    const inp = e.target.closest('[data-uik-name]');
+    if (!inp) return;
+    if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+    if (e.key === 'Escape') { KS.editing = null; renderUiKit(); }
+  });
+  $('tab-uikit').addEventListener('focusout', e => {
+    const inp = e.target.closest('[data-uik-name]');
+    if (!inp || !KS.table) return;
+    const row = KS.table[Number(inp.dataset.row)];
+    const v = inp.value.trim();
+    if (row && v) row.name = v;
+    KS.editing = null;
+    renderUiKit();
   });
 
   // Patch one cell in place. Re-rendering on every keystroke would move focus
