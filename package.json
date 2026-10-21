@@ -1,6 +1,6 @@
 {
   "name": "figma-wordpress-optimizer",
-  "version": "1.3.0",
+  "version": "1.5.0",
   "description": "Figma plugin that audits designs for WordPress handoff readiness, manages color and text styles, and runs an offline spelling & grammar pass.",
   "license": "MIT",
   "private": true,

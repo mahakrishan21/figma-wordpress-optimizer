@@ -25,6 +25,7 @@ A Figma plugin that audits designs against a WordPress conversion SOP (Standard 
 - [Colors](#colors)
 - [Typography](#typography)
 - [Styles or variables](#styles-or-variables)
+- [UI Kit & Design System](#ui-kit--design-system)
 - [Spelling & Grammar](#spelling--grammar)
 - [Automated Actions](#automated-actions)
 - [Issue Categories](#issue-categories)
@@ -87,7 +88,7 @@ Chrome that is always present, whichever tab you are on:
 | Element | Description |
 |---|---|
 | Header | Plugin icon, name, one-line description, and an **i** button that opens the [rules reference popup](#rules-reference-popup) — all 24 audit rules grouped by category |
-| Tab bar | **Audit** · **Spelling & Grammar** · **Colors** · **Typography** |
+| Tab bar | **Audit** · **Spelling & Grammar** · **Colors** · **Typography** · **UI Kit**. The strip wraps, so every tab stays reachable at the minimum window width |
 | Toasts | Every status message, action result, warning and error slides in at the top of the panel and auto-dismisses; hovering pauses the timer |
 | Footer | Help text that follows the active tab, the selection and the scan results, plus the **Close** button |
 | Resize handles | Right edge, bottom edge, and bottom-right corner. The size is clamped to 400–1200 × 400–960 px |
@@ -343,6 +344,69 @@ Binding is best-effort — if a particular Figma build rejects a field, the styl
 - **Layers inside component instances** are styled on the main component when it lives in this file (so every instance updates), otherwise as an instance override. Locked layers are skipped.
 - **Name conflicts** — when a new style's name already exists, you choose **Update existing** (changes that style everywhere) or **Keep both**.
 - Each action is a **single undo step** (⌘Z), and the tab re-scans automatically afterwards.
+
+---
+
+## UI Kit & Design System
+
+A design system documented as frames and labels is a *picture* of a system. A designer reads "Spacing / Desktop → 300 = 24px" and types `24` into a padding field; nothing enforces the scale, nothing updates when it changes, and every breakpoint is produced by duplicating a frame and resizing it by hand.
+
+The **UI Kit** tab turns that documentation into the system itself.
+
+### Collections
+
+Three tiers are created, split by what varies:
+
+| Collection | Modes | Holds |
+|---|---|---|
+| `Primitives` | one | the raw ramp — `space/300`, `radius/md`. A ramp does not change per breakpoint |
+| `Theme` | Light / Dark | semantic colour, for later phases |
+| `Responsive` | one per breakpoint | `space/section/lg`, `container/max` — the tokens that genuinely differ |
+
+Each collection carries **its own mode budget**, which is what makes breakpoints and theming possible at the same time.
+
+The Colors and Typography tabs never adopt these collections. Those tabs write a single mode, so a mode-aware collection would give you a token with a Desktop value and three empty breakpoints.
+
+### Breakpoints
+
+Presets ship for **standard**, **Tailwind**, **Bootstrap**, **Material** and **WordPress/Gutenberg**. Each breakpoint becomes a mode on the `Responsive` collection.
+
+How many modes a file allows depends on the Figma plan, and the published figures contradict each other — so the plugin does not predict it. It asks the file, and if a preset wants more modes than the file allows, **nothing is changed** and the message names the real ceiling and how many breakpoints to drop.
+
+### The scale table
+
+Rows are tokens, columns are breakpoints. Edit any cell.
+
+**Read from canvas** proposes a table by reading labelled text, handling both of the ways a scale is normally documented:
+
+| On the canvas | Read as |
+|---|---|
+| `"Component Padding - lg - 120px"` inside a frame named `Component Padding - Desktop` | `component-padding/lg`, Desktop = 120 |
+| A heading `"Spacing/ Desktop"` above text pairs `"300"` / `"24px"` | `spacing/300`, Desktop = 24 |
+
+It only ever *proposes*. The table stays the source of truth, so anything misread is a visible wrong number rather than a silent one, and prose that merely mentions a px value is reported as unread rather than guessed at.
+
+### Generate
+
+Writes the table into variables. A responsive value **aliases a primitive** whenever one holds exactly that number — `space/section/sm` at Desktop is 64, `space/700` is 64, so the former points at the latter and retuning the ramp moves every semantic token with it. Where nothing matches, the raw number is written and counted separately, so the report shows how much of the system is actually wired together.
+
+Reuse is by name, so running it twice creates nothing.
+
+### Bind selection
+
+Binds `paddingLeft/Right/Top/Bottom`, `itemSpacing`, `counterAxisSpacing` and `cornerRadius` where the layer's literal value already matches a token **in that layer's current mode**. Semantic tokens are tried before primitives.
+
+A field that is already bound is counted, not rebound. Frames without auto layout have no padding or gap to bind and say so. Locked layers are skipped with a reason.
+
+### Preview at a breakpoint
+
+Overrides the selection's mode for the `Responsive` collection. Everything bound moves at once; everything else stays put — which is the quickest way to see how much of a frame is actually on the system.
+
+### What tokens cannot do
+
+`layoutMode`, `layoutSizingHorizontal`, `layoutWrap` and `visible` are enums and booleans, and Figma cannot bind a variable to any of them. So **values** reflow from tokens, but **layout changes** — row becoming column, four columns becoming one, a nav becoming a hamburger — cannot, and are not attempted here.
+
+Shadows have no answer at all: variables cannot hold effects, and effect styles have no modes.
 
 ---
 

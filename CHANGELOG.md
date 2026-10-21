@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **UI Kit & Design System tab.** A design system documented as frames and labels is a picture of a system; this turns it into the system itself
+  - **Tiered collections** — `Primitives` (raw values, one mode), `Theme` (Light/Dark) and `Responsive` (one mode per breakpoint). Each collection carries its own mode budget, which is what makes breakpoints and theming possible at the same time
+  - **Breakpoint presets** for standard, Tailwind, Bootstrap, Material and WordPress/Gutenberg, so nobody types four numbers. How many modes a file allows depends on the Figma plan and the published figures contradict each other, so the plugin asks the file rather than guessing — if a preset asks for more than the file allows, **nothing is changed** and the message names the real ceiling
+  - **An editable scale table** — rows are tokens, columns are breakpoints. **Read from canvas** proposes a table by reading labelled text, handling both the `"Component Padding - lg - 120px"` form and the `"Spacing/ Desktop"` heading above label/value pairs. It only ever proposes: the table stays the source of truth, so a misread is a visible wrong number rather than a silent one
+  - **Generate** writes the table into variables. A responsive value **aliases a primitive** whenever one holds exactly that number, so retuning the ramp moves every semantic token with it. Reuse is by name, so a second run creates nothing
+  - **Bind selection** binds padding, item spacing, counter-axis spacing and corner radius where the literal already matches a token **in that layer's current mode**. Semantic tokens win over primitives. Frames without auto layout have no padding or gap to bind and say so; a field already bound is counted, not rebound
+  - **Preview at a breakpoint** overrides the selection's mode. Everything bound moves at once and everything else stays put — the quickest way to see how much of a frame is actually on the system
+  - Layout cannot come from tokens: `layoutMode`, `layoutSizingHorizontal`, `layoutWrap` and `visible` are enums and booleans, and Figma cannot bind a variable to any of them
+
+### Changed
+- **The plugin is now "Figma WordPress Optimizer v20".** The manifest `id` changed too, which is a **breaking change: remove the old plugin and re-import it from the manifest.** An `id` change is not an update — the old install keeps running the old code silently. The id had to change before the new tab shipped, because plugin data is scoped to it
+- The tab strip now wraps. Five tabs fit at 760px, but the window can be dragged down to 400, where they previously clipped rather than reflowed and a tab became unreachable
+- `getTokenCollection` no longer auto-picks a UI Kit collection for the Colors and Typography tabs. Those tabs write a single mode, so adopting a mode-aware collection would have produced a token with a Desktop value and three empty breakpoints
+
+### Fixed
+- `scopePanel` and `pgKeyOf` dispatched on object identity, so any scope that was not Colors fell through to Typography. Harmless with two tabs, wrong with three — both now dispatch on the scope's name
+
+## [1.5.0] — 2026-10-19
+
+Supersedes the untagged 1.4.0, whose changes were never written up separately.
+
 ### Fixed
 - **A merged colour stayed in Near-Duplicate Colors with its Merge button still offered.** When a style and a variable hold the same value, merging in *Styles* mode links the style to the variable and deliberately deletes nothing — so on the next scan both tokens still existed and still looked like a duplicate. Merging again did the same thing, forever
   - A style whose paint is bound to a local variable no longer takes part in duplicate detection: it has no value of its own, it **is** that variable. The pair disappears as soon as it is linked
@@ -80,6 +102,13 @@ All notable changes to this project are documented in this file.
 - Row and bulk buttons relabel themselves when the dropdown changes, without a re-scan
 - Merging a near-duplicate group that contains a variable binds the style to it rather than deleting anything; variables are never deleted by a merge
 
+
+### Added
+- **Text styles that duplicate a variable group are now detected.** A text style whose five properties resolve to the same variables as an existing group is reported as a duplicate rather than sitting alongside it unnoticed
+
+### Fixed
+- **Colour styles are no longer created inside groups.** Figma turns a `/` in a style name into a folder, so "Brand / Primary" silently became a *Primary* style inside a *Brand* group. Names are flattened before creation — "Blue/500" becomes "Blue 500"
+- **A paint bound to a deleted variable is no longer treated as linked.** The binding survives the variable, so a style could look wired to a token that no longer existed; only live local variables now count
 
 ## [1.3.0] — 2026-10-16
 
