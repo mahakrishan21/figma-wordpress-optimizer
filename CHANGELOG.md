@@ -6,7 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Added
 - **Build design system tab** (the tab formerly called UI Kit). A design system documented as frames and labels is a picture of a system; this turns it into the system itself
-  - It opens the way the Colors tab does, with a choice: **Generate from scratch**, or **use what's already in this file**
+  - It opens the way the Audit, Colors and Typography tabs do — built from the same empty-state parts, so the tab looks like the rest of the plugin rather than like itself — with a choice: **Generate from scratch**, or **use what's already in this file**
+  - **Read from canvas** no longer dead-ends on a file with no breakpoints. Parsing needs breakpoint names to read a heading like "Spacing/ Desktop", so the standard set is created first and the message says so
   - **From scratch is a wizard** — breakpoints, spacing and radius, typography, colour, the other token families, then elements — asking one question at a time and showing what each answer produces. **Nothing is written until the last step**, and everything then lands inside a single undo
   - **Every step is shown, not described.** Spacing and radius are drawn as bars at their real width, the type scale is set in actual type, colour ramps are continuous strips, and the grid is drawn as columns. The prose that used to explain each step is gone
   - **Canvas sizes are editable** — each breakpoint's width can be changed, not just picked from a preset

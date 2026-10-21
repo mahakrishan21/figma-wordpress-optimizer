@@ -757,12 +757,6 @@
   .uik-els { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 12px 2px; }
   .uik-el { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
             color: var(--text-secondary); cursor: pointer; }
-  .uik-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  @media (max-width: 620px) { .uik-choices { grid-template-columns: 1fr; } }
-  .uik-choice { border: 1px solid var(--border); border-radius: var(--radius-lg);
-                padding: 16px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
-  .uik-choice-title { font-size: 13px; font-weight: 600; color: var(--text-primary);
-                      display: flex; align-items: center; gap: 8px; }
   .uik-wiz { display: flex; flex-direction: column; gap: 12px; }
   .uik-wiz-rail { display: flex; align-items: center; gap: 6px; }
   .uik-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
@@ -2643,7 +2637,9 @@
     plus:      '<svg width="10" height="10" viewBox="0 0 10 10"><path d="M5 1v8M1 5h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
     palette16: '<svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 0 14c.9 0 1.3-.6 1.3-1.3 0-.4-.2-.7-.4-1-.2-.2-.4-.5-.4-.9 0-.7.6-1.3 1.3-1.3h1.5A3.8 3.8 0 0 0 15 6.7C15 3.6 11.9 1 8 1zM4.5 8.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm2-3a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm3 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm2 3a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg>',
     badgeColors: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2.2s4.2 4.4 4.2 7.4a4.2 4.2 0 0 1-8.4 0C3.8 6.6 8 2.2 8 2.2z" stroke="var(--green-600)" stroke-width="1.8" stroke-linejoin="round"/></svg>',
-    badgeType: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4.5 13L8 3.5 11.5 13M5.8 9.8h4.4" stroke="var(--amber-600)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    badgeType: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4.5 13L8 3.5 11.5 13M5.8 9.8h4.4" stroke="var(--amber-600)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    system: '<svg width="40" height="40" viewBox="0 0 40 40" fill="none"><rect x="6" y="6" width="28" height="28" rx="7" fill="var(--violet-100)"/><rect x="12" y="12" width="7" height="7" rx="1.6" stroke="var(--violet-500)" stroke-width="2.2"/><rect x="21" y="12" width="7" height="7" rx="3.5" stroke="var(--violet-500)" stroke-width="2.2"/><rect x="12" y="21" width="7" height="7" rx="3.5" stroke="var(--violet-500)" stroke-width="2.2"/><rect x="21" y="21" width="7" height="7" rx="1.6" stroke="var(--violet-500)" stroke-width="2.2"/></svg>',
+    badgeSystem: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1.8l5.4 3.1v6.2L8 14.2 2.6 11.1V4.9L8 1.8z" stroke="var(--violet-600)" stroke-width="1.7" stroke-linejoin="round"/></svg>'
   };
 
   const PER_PAGE = 5;
@@ -4978,33 +4974,36 @@
   }
 
   // ── Entry: start fresh, or work with what the file already has ──────────
+  // Built from the same empty-state parts as the Audit, Colors and
+  // Typography tabs — scene, title, description, actions, helper — so this
+  // tab opens looking like the rest of the plugin rather than like itself.
   function uikEntryHtml() {
     const st = KS.state || {};
     const cols = st.collections || {};
     const has = cols.responsive || cols.primitives || !!st.config;
-    return `
-      <div class="uik-choices">
-        <div class="uik-choice">
-          <div class="uik-choice-title">${SI.wand} Generate from scratch</div>
-          <p class="uik-note" style="padding:0">
-            Answer one question at a time — breakpoints, spacing, type, colour, elements — and see what
-            each answer produces. <b>Nothing is written until the last step</b>, and everything then lands
-            in a single undo.
-          </p>
-          <div class="sm-actions"><button class="btn btn-primary" data-act="uik-wizard"${KS.busy ? ' disabled' : ''}>Start</button></div>
-        </div>
-        <div class="uik-choice">
-          <div class="uik-choice-title">${SI.search} Use what&rsquo;s in this file</div>
-          <p class="uik-note" style="padding:0">
-            ${has
-              ? 'This file already has a design system. Open it to edit the scale, build the elements, bind existing designs to it and generate their responsive versions.'
-              : 'Read a scale that is documented on the canvas as labelled frames, or adopt variables that already exist, instead of starting over.'}
-          </p>
-          <div class="sm-actions">
-            <button class="btn" data-act="uik-use-existing"${KS.busy ? ' disabled' : ''}>${has ? 'Open it' : 'Read from canvas'}</button>
-          </div>
-        </div>
-      </div>`;
+    return `<div class="audit-empty">
+      <div class="es-scene">
+        <div class="es-card">${SI.system}</div>
+        <div class="es-badge violet">${SI.badgeSystem}</div>
+      </div>
+      <div class="es-title">${has ? 'Design system ready' : 'Build a design system'}</div>
+      <div class="es-desc">
+        ${has
+          ? 'This file already has one. Open it to edit the scale, build the elements, apply it to existing designs and generate their responsive versions.'
+          : 'Canvas sizes, grid, spacing, type and colour as variables \u2014 then the components to match.'}
+      </div>
+      <div class="es-actions">
+        <button class="btn ${has ? '' : 'btn-primary'}" data-act="uik-wizard"${KS.busy ? ' disabled' : ''}>
+          ${SI.wand} Generate from scratch
+        </button>
+        <button class="btn ${has ? 'btn-primary' : ''}" data-act="uik-use-existing"${KS.busy ? ' disabled' : ''}>
+          ${SI.search} ${has ? 'Open it' : 'Read from canvas'}
+        </button>
+      </div>
+      <div class="es-helper">${has
+        ? 'Generating again replaces the scale, reusing every token by name.'
+        : 'One question at a time \u2014 nothing is written until the last step.'}</div>
+    </div>`;
   }
 
   // ── Wizard ──────────────────────────────────────────────────────────────

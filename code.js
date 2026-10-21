@@ -6160,18 +6160,31 @@ async function handleUiKitMessage(msg) {
       else if (!r.created && !r.reused) tone = 'warning';
     } else if (msg.type === 'uikit-parse') {
       var pcfg = readBreakpointConfig();
-      if (!pcfg) throw new Error('Set up breakpoints first.');
+      var seededConfig = false;
+      if (!pcfg) {
+        // Parsing needs breakpoint names to read a heading like
+        // "Spacing/ Desktop", so a file with none gets the standard set
+        // rather than a dead end. It is visible in the tab and editable.
+        pcfg = { preset: 'standard', breakpoints: BREAKPOINT_PRESETS.standard };
+        var pcols = await getUiKitCollections(true);
+        var pmodes = await ensureModes(pcols.responsive, breakpointNames(pcfg));
+        if (pmodes.capHit) throw new Error('This file allows only ' + pmodes.cap +
+          ' modes per collection, so the standard four breakpoints will not fit. Generate from scratch and pick fewer.');
+        writeBreakpointConfig(pcfg);
+        seededConfig = true;
+      }
       var roots = (figma.currentPage.selection && figma.currentPage.selection.length)
         ? figma.currentPage.selection
         : figma.currentPage.children;
       r = await scanUiKit(roots, pcfg);
       if (!r.rows.length) {
         tone = 'warning';
-        summary = 'Found no "<label> 24px" pairs to read. Select the frames that document the scale and try again.';
+        summary = 'Found no "<label> 24px" pairs to read. Select the frames that document the scale and try again, or generate from scratch.';
       } else {
         summary = 'Read ' + r.rows.length + ' token' + (r.rows.length === 1 ? '' : 's') +
           ' from ' + r.parsed + ' labelled value' + (r.parsed === 1 ? '' : 's') +
           (r.unparsed.length ? ('; ' + r.unparsed.length + ' label(s) could not be read.') : '.') +
+          (seededConfig ? ' Standard breakpoints were set up to read it.' : '') +
           ' Check the table before generating.';
         if (r.unparsed.length) tone = 'warning';
       }

@@ -468,6 +468,36 @@ async function run() {
   eq(pd.state.tableFromFile, false, 'and is flagged as a proposal, not read from the file');
   ok(pd.message.indexOf('Check the table') !== -1, 'the message tells you to check it: ' + pd.message);
 
+  // ── 18 ── Read from canvas works on a file with no breakpoints yet ────
+  // Parsing needs breakpoint NAMES to read a heading like "Spacing/ Desktop",
+  // so a fresh file must not dead-end.
+  freshFile();
+  eq(readBreakpointConfig(), null, 'no config to begin with');
+  var kitPage = mkFrame({ name: 'Padding & Spacing', children: [
+    mkFrame({ name: 'Group 1', children: [
+      mkText('Spacing/ Desktop', 'heading'),
+      mkFrame({ name: 'Frame 1', children: [mkText('300'), mkText('24px')] })
+    ]})
+  ]});
+  figma.currentPage.selection = [kitPage];
+  globalThis.__posted = [];
+  await figma.ui.onmessage({ type: 'uikit-parse', requestId: 'r10' });
+  var pdone = posted('uikit-done')[0];
+  ok(!!pdone, 'parse succeeds rather than erroring');
+  eq(posted('uikit-error').length, 0, 'no error posted');
+  ok(!!readBreakpointConfig(), 'standard breakpoints were set up so the labels could be read');
+  ok(pdone.message.indexOf('Standard breakpoints were set up') !== -1,
+     'and it says so rather than doing it silently: ' + pdone.message);
+  ok(pdone.state.table && pdone.state.table.length > 0, 'the proposal came back');
+
+  // 18b ── a file that already has a config is left alone
+  var beforeCfg = readBreakpointConfig();
+  globalThis.__posted = [];
+  await figma.ui.onmessage({ type: 'uikit-parse', requestId: 'r11' });
+  var pdone2 = posted('uikit-done')[0];
+  eq(readBreakpointConfig().preset, beforeCfg.preset, 'the existing config is untouched');
+  eq(pdone2.message.indexOf('Standard breakpoints were set up'), -1, 'and it does not claim to have set any up');
+
   print('');
   print(fail === 0 ? ('ALL PASS (' + pass + ' assertions)') : (pass + ' passed, ' + fail + ' FAILED'));
 }
