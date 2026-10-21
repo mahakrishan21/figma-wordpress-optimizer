@@ -4664,6 +4664,163 @@ async function previewBreakpoint(bpName) {
   return result;
 }
 
+// ── UI Kit: state and the message handler ──────────────────────────────────
+
+// Read the scale back out of the file, so re-opening the tab shows what is
+// actually there rather than the seed table again.
+async function readScaleTable(cfg) {
+  var cols = await getUiKitCollections(false);
+  if (!cols.primitives && !cols.responsive) return null;
+  var names = breakpointNames(cfg);
+  var all = await localVariablesAllModes('FLOAT');
+  var rows = [];
+
+  for (var i = 0; i < all.length; i++) {
+    var e = all[i], vals = {}, tier = null;
+    if (cols.primitives && e.variable.variableCollectionId === cols.primitives.id) {
+      tier = 'primitive';
+      vals[UIKIT_VALUE_KEY] = e.resolved[modeOf(cols.primitives)];
+    } else if (cols.responsive && e.variable.variableCollectionId === cols.responsive.id) {
+      tier = 'responsive';
+      for (var m = 0; m < names.length; m++) {
+        for (var k = 0; k < e.modes.length; k++) {
+          if (normModeName(e.modes[k].name) === normModeName(names[m])) {
+            vals[names[m]] = e.resolved[e.modes[k].modeId];
+          }
+        }
+      }
+    }
+    if (!tier) continue;
+    rows.push({ name: e.variable.name, tier: tier, scopes: (e.variable.scopes || []).slice(), values: vals });
+  }
+  rows.sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+  return rows.length ? rows : null;
+}
+
+async function uiKitState() {
+  var cfg = readBreakpointConfig();
+  var cols = await getUiKitCollections(false);
+  var presetNames = [];
+  for (var k in BREAKPOINT_PRESETS) presetNames.push(k);
+
+  var responsiveModes = [];
+  if (cols.responsive) {
+    var ms = cols.responsive.modes || [];
+    for (var i = 0; i < ms.length; i++) responsiveModes.push(ms[i].name);
+  }
+
+  var table = cfg ? (await readScaleTable(cfg)) : null;
+  var fromFile = !!table;
+  if (!table && cfg) table = defaultScaleTable(cfg);
+
+  var sel = figma.currentPage.selection || [];
+  return {
+    type: 'uikit-state',
+    config: cfg,
+    presets: BREAKPOINT_PRESETS,
+    presetNames: presetNames,
+    valueKey: UIKIT_VALUE_KEY,
+    collections: {
+      primitives: !!cols.primitives,
+      theme: !!cols.theme,
+      responsive: !!cols.responsive,
+      responsiveModes: responsiveModes
+    },
+    table: table,
+    tableFromFile: fromFile,
+    selectionCount: sel.length,
+    selectionName: sel.length === 1 ? sel[0].name : ''
+  };
+}
+
+function uiKitSummary(kind, r) {
+  if (kind === 'generate') {
+    if (r.modes && r.modes.capHit) return r.reasons[0];
+    var parts = [];
+    if (r.created) parts.push(r.created + ' created');
+    if (r.reused) parts.push(r.reused + ' reused');
+    if (r.aliased) parts.push(r.aliased + ' aliased to a primitive');
+    if (r.raw) parts.push(r.raw + ' raw');
+    if (r.skipped) parts.push(r.skipped + ' skipped');
+    return parts.length ? ('Scale generated — ' + parts.join(', ') + '.') : 'Nothing to generate.';
+  }
+  if (kind === 'bind') {
+    if (!r.bound && !r.alreadyBound) return r.reasons.length ? r.reasons[0] : 'Nothing to bind.';
+    var b = [];
+    if (r.bound) b.push(r.bound + ' bound');
+    if (r.alreadyBound) b.push(r.alreadyBound + ' already bound');
+    if (r.skipped) b.push(r.skipped + ' skipped');
+    return b.join(', ') + ' across ' + r.layers + ' layer' + (r.layers === 1 ? '' : 's') + '.';
+  }
+  if (kind === 'preview') {
+    if (!r.applied) return r.reasons.length ? r.reasons[0] : 'Nothing to preview.';
+    return 'Previewing ' + r.applied + ' frame' + (r.applied === 1 ? '' : 's') + '.';
+  }
+  return '';
+}
+
+async function handleUiKitMessage(msg) {
+  // Scanning changes nothing, so it stays outside the undo boundary.
+  if (msg.type === 'uikit-scan') {
+    figma.ui.postMessage(await uiKitState());
+    return;
+  }
+
+  // Close the undo group that is currently open BEFORE starting, so one
+  // Cmd-Z undoes exactly this action and not whatever the user did on the
+  // canvas beforehand. Same reasoning as handleStyleMessage.
+  figma.commitUndo();
+  try {
+    var r = null, summary = '', tone = 'success';
+
+    if (msg.type === 'uikit-save-breakpoints') {
+      var cfg = { preset: msg.preset || 'custom', breakpoints: msg.breakpoints || [] };
+      if (!cfg.breakpoints.length) throw new Error('Pick at least one breakpoint.');
+      var cols = await getUiKitCollections(true);
+      var modes = await ensureModes(cols.responsive, breakpointNames(cfg));
+      if (modes.capHit) {
+        tone = 'warning';
+        summary = 'This file allows ' + modes.cap + ' modes per collection, but ' +
+          cfg.breakpoints.length + ' breakpoints were asked for. Nothing was changed.';
+      } else {
+        writeBreakpointConfig(cfg);
+        summary = cfg.breakpoints.length + ' breakpoints set up.';
+      }
+      r = { modes: modes };
+    } else if (msg.type === 'uikit-generate') {
+      var gcfg = readBreakpointConfig();
+      if (!gcfg) throw new Error('Set up breakpoints first.');
+      r = await generateScaleVariables(gcfg, msg.table);
+      summary = uiKitSummary('generate', r);
+      if (r.modes && r.modes.capHit) tone = 'warning';
+      else if (!r.created && !r.reused) tone = 'warning';
+    } else if (msg.type === 'uikit-bind') {
+      r = await bindScaleToSelection(msg);
+      summary = uiKitSummary('bind', r);
+      if (!r.bound) tone = 'warning';
+    } else if (msg.type === 'uikit-preview') {
+      r = await previewBreakpoint(msg.breakpoint);
+      summary = uiKitSummary('preview', r);
+      if (!r.applied) tone = 'warning';
+    } else {
+      return;
+    }
+
+    figma.commitUndo();
+    figma.ui.postMessage({
+      type: 'uikit-done', requestId: msg.requestId, tone: tone,
+      message: summary, result: r, state: await uiKitState()
+    });
+    if (summary) figma.notify(summary, { timeout: 3000 });
+  } catch (e) {
+    try { figma.commitUndo(); } catch (e2) { /* nothing to close */ }
+    figma.ui.postMessage({
+      type: 'uikit-error', requestId: msg.requestId,
+      message: (e && e.message) ? e.message : String(e)
+    });
+  }
+}
+
 function modeOf(collection) {
   if (!collection) return null;
   if (collection.defaultModeId) return collection.defaultModeId;
@@ -5547,6 +5704,12 @@ figma.ui.onmessage = async (msg) => {
     }
     if (msg.type === 'style-scan' || msg.type === 'style-rows' || msg.type === 'style-create' || msg.type === 'style-merge' || msg.type === 'style-delete' || msg.type === 'variable-delete' || msg.type === 'merge-style-variable' || msg.type === 'convert') {
       await handleStyleMessage(msg);
+      return;
+    }
+    if (msg.type === 'uikit-scan' || msg.type === 'uikit-save-breakpoints' ||
+        msg.type === 'uikit-generate' || msg.type === 'uikit-bind' ||
+        msg.type === 'uikit-preview') {
+      await handleUiKitMessage(msg);
       return;
     }
     if (msg.type === 'count-token-uses') {
