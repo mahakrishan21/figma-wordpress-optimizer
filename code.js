@@ -5482,6 +5482,237 @@ async function generateKitElements(cfg, opts) {
   return result;
 }
 
+// ── Adopt an existing design into the system ───────────────────────────────
+// A design built before the system exists will almost never match it
+// exactly: a padding of 23 where the scale says 24, a blue a shade off the
+// brand. Binding only exact matches therefore bites on nothing.
+//
+// So this SURVEYS first — every colour, type size and spacing, matched to
+// the nearest token with the distance shown — and only binds what is
+// accepted. A near match moves the design slightly, which is a decision for
+// the designer, not for the plugin.
+
+var ADOPT_DEFAULTS = { colorDelta: 3, fontDelta: 1.5, spaceDelta: 2 };
+
+function adoptKey(nodeId, kind, field, index, range) {
+  return [nodeId, kind, field, index === undefined ? '' : index,
+          range ? (range.start + '-' + range.end) : ''].join('|');
+}
+
+// Nearest COLOR token, by perceptual distance rather than hex equality.
+function nearestColorToken(pool, hex, opacity, maxDelta) {
+  var lab = hexToLab(hex), best = null, bestD = Infinity;
+  for (var i = 0; i < pool.length; i++) {
+    var c = pool[i];
+    if (Math.abs(c.opacity - (typeof opacity === 'number' ? opacity : 1)) > 0.02) continue;
+    var d = labDistance(lab, c.lab);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  if (!best || bestD > maxDelta) return null;
+  return { token: best, delta: Math.round(bestD * 100) / 100, exact: bestD < 0.01 };
+}
+
+function nearestNumberToken(pool, value, maxDelta) {
+  var best = null, bestD = Infinity;
+  for (var i = 0; i < pool.length; i++) {
+    var d = Math.abs(pool[i].value - value);
+    if (d < bestD) { bestD = d; best = pool[i]; }
+  }
+  if (!best || bestD > maxDelta) return null;
+  return { token: best, delta: Math.round(bestD * 100) / 100, exact: bestD < 0.001 };
+}
+
+// Build the three pools the survey matches against.
+async function adoptionPools(cols, modeId) {
+  var colours = [], spaces = [], fonts = [], leadings = [];
+
+  var colourVars = await localVariablesAllModes('COLOR');
+  for (var i = 0; i < colourVars.length; i++) {
+    var e = colourVars[i];
+    var inKit = (cols.primitives && e.variable.variableCollectionId === cols.primitives.id) ||
+                (cols.theme && e.variable.variableCollectionId === cols.theme.id);
+    if (!inKit) continue;
+    var v = e.resolved[modeOf(e.collection)];
+    if (!v || typeof v.r !== 'number') continue;
+    var hex = rgbToHexStr(v);
+    colours.push({ variable: e.variable, name: e.variable.name, hex: hex,
+                   opacity: typeof v.a === 'number' ? v.a : 1, lab: hexToLab(hex) });
+  }
+
+  var numVars = await localVariablesAllModes('FLOAT');
+  for (var n = 0; n < numVars.length; n++) {
+    var ne = numVars[n];
+    var isPrim = cols.primitives && ne.variable.variableCollectionId === cols.primitives.id;
+    var isResp = cols.responsive && ne.variable.variableCollectionId === cols.responsive.id;
+    if (!isPrim && !isResp) continue;
+    // A responsive token is read in the mode the LAYER renders in, so a
+    // desktop frame is matched against desktop values.
+    var val = isResp ? (ne.resolved[modeId] !== undefined ? ne.resolved[modeId] : null)
+                     : ne.resolved[modeOf(ne.collection)];
+    if (typeof val !== 'number') continue;
+    var rec = { variable: ne.variable, name: ne.variable.name, value: val };
+    if (ne.variable.name.indexOf('text/size/') === 0) fonts.push(rec);
+    else if (ne.variable.name.indexOf('text/leading/') === 0) leadings.push(rec);
+    else if (ne.variable.name.indexOf('space/') === 0 || ne.variable.name.indexOf('radius/') === 0 ||
+             ne.variable.name.indexOf('grid/') === 0) spaces.push(rec);
+  }
+  return { colours: colours, spaces: spaces, fonts: fonts, leadings: leadings };
+}
+
+var ADOPT_SPACE_FIELDS = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom',
+                          'itemSpacing', 'counterAxisSpacing', 'cornerRadius'];
+
+async function surveyAdoption(roots, opts) {
+  opts = opts || {};
+  var tol = {
+    colorDelta: typeof opts.colorDelta === 'number' ? opts.colorDelta : ADOPT_DEFAULTS.colorDelta,
+    fontDelta: typeof opts.fontDelta === 'number' ? opts.fontDelta : ADOPT_DEFAULTS.fontDelta,
+    spaceDelta: typeof opts.spaceDelta === 'number' ? opts.spaceDelta : ADOPT_DEFAULTS.spaceDelta
+  };
+  var out = { proposals: [], alreadyBound: 0, unmatched: [], scanned: 0,
+              exact: 0, near: 0, reasons: [], unit: 'binding' };
+  if (!roots || !roots.length) { out.reasons.push('Select a frame first.'); return out; }
+
+  var cols = await getUiKitCollections(false);
+  if (!cols.primitives && !cols.responsive) {
+    out.reasons.push('There is no design system in this file yet — build one first.');
+    return out;
+  }
+
+  var modeId = cols.responsive ? nodeModeFor(roots[0], cols.responsive) : null;
+  var pools = await adoptionPools(cols, modeId);
+  if (!pools.colours.length && !pools.spaces.length && !pools.fonts.length) {
+    out.reasons.push('The system has no tokens to match against.');
+    return out;
+  }
+
+  var nodes = styleScanNodes(roots);
+  var seenUnmatched = {};
+  function noteUnmatched(label) {
+    if (seenUnmatched[label]) { seenUnmatched[label]++; return; }
+    seenUnmatched[label] = 1;
+    out.unmatched.push(label);
+  }
+
+  function add(node, kind, field, match, currentLabel, extra) {
+    var prop = Object.assign({
+      key: adoptKey(node.id, kind, field, extra && extra.index, extra && extra.range),
+      nodeId: node.id, nodeName: String(node.name || ''), kind: kind, field: field,
+      current: currentLabel, tokenName: match.token.name, tokenId: match.token.variable.id,
+      delta: match.delta, exact: match.exact
+    }, extra || {});
+    out.proposals.push(prop);
+    if (match.exact) out.exact++; else out.near++;
+  }
+
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    if (styleBlockedReason(node)) continue;
+    out.scanned++;
+
+    // ── colour ───────────────────────────────────────────────────────────
+    var slots = paintSlotsOf(node);
+    for (var sI = 0; sI < slots.length; sI++) {
+      var slot = slots[sI];
+      var paint = slot.paint;
+      if (!paint || paint.type !== 'SOLID') continue;
+      if (paint.boundVariables && paint.boundVariables.color) { out.alreadyBound++; continue; }
+      var hex = rgbToHexStr(paint.color);
+      var op = typeof paint.opacity === 'number' ? paint.opacity : 1;
+      var cm = nearestColorToken(pools.colours, hex, op, tol.colorDelta);
+      if (!cm) { noteUnmatched(hex); continue; }
+      add(node, 'color', slot.prop, cm, hex, { index: slot.index, range: slot.range || null });
+    }
+
+    // ── typography ───────────────────────────────────────────────────────
+    if (node.type === 'TEXT') {
+      var runs = await textTypeRuns(node);
+      for (var rI = 0; rI < runs.length; rI++) {
+        var run = runs[rI];
+        if (hasTextVariableBinding(node)) { out.alreadyBound++; break; }
+        // textTypeRuns reports a run's extent under .range, not on the run.
+        var at = run.range ? { start: run.range.start, end: run.range.end } : null;
+        var size = run.spec ? run.spec.fontSize : null;
+        if (typeof size === 'number') {
+          var fm = nearestNumberToken(pools.fonts, size, tol.fontDelta);
+          if (fm) add(node, 'type', 'fontSize', fm, size + 'px', { range: at });
+          else noteUnmatched(size + 'px type');
+        }
+        var lh = run.spec ? run.spec.lineHeight : null;
+        if (lh && lh.unit === 'PERCENT' && typeof lh.value === 'number') {
+          var lm = nearestNumberToken(pools.leadings, lh.value, 5);
+          if (lm) add(node, 'type', 'lineHeight', lm, Math.round(lh.value) + '%', { range: at });
+        }
+      }
+    }
+
+    // ── spacing ──────────────────────────────────────────────────────────
+    if (isAutoLayoutFrame(node) || typeof node.cornerRadius === 'number') {
+      for (var fI = 0; fI < ADOPT_SPACE_FIELDS.length; fI++) {
+        var field = ADOPT_SPACE_FIELDS[fI];
+        var cur = node[field];
+        if (typeof cur !== 'number' || !isFinite(cur)) continue;
+        if (node.boundVariables && node.boundVariables[field]) { out.alreadyBound++; continue; }
+        if (cur === 0) continue;   // zero is a choice, not a token to snap
+        var sm = nearestNumberToken(pools.spaces, cur, tol.spaceDelta);
+        if (!sm) { noteUnmatched(cur + 'px ' + field); continue; }
+        add(node, 'space', field, sm, cur + 'px');
+      }
+    }
+  }
+
+  return out;
+}
+
+// Bind what was accepted. Each binding is attempted on its own: one layer
+// Figma refuses must not cost the rest.
+async function applyAdoption(proposals, accepted) {
+  var result = { bound: 0, failed: 0, skipped: 0, reasons: [], unit: 'binding' };
+  if (!proposals || !proposals.length) { result.reasons.push('Nothing to apply.'); return result; }
+  var seen = {};
+
+  for (var i = 0; i < proposals.length; i++) {
+    var p = proposals[i];
+    if (accepted && accepted[p.key] === false) { result.skipped++; continue; }
+
+    var node = await figma.getNodeByIdAsync(p.nodeId);
+    if (!node) { result.failed++; continue; }
+    var variable = await figma.variables.getVariableByIdAsync(p.tokenId);
+    if (!variable) { result.failed++; continue; }
+
+    try {
+      if (p.kind === 'color') {
+        var paints = node[p.field];
+        if (p.range && node.type === 'TEXT') {
+          var runPaints = node.getRangeFills(p.range.start, p.range.end);
+          if (!Array.isArray(runPaints)) { result.failed++; continue; }
+          var copy = runPaints.slice();
+          copy[p.index] = figma.variables.setBoundVariableForPaint(copy[p.index], 'color', variable);
+          node.setRangeFills(p.range.start, p.range.end, copy);
+        } else {
+          if (!Array.isArray(paints)) { result.failed++; continue; }
+          var next = paints.slice();
+          next[p.index] = figma.variables.setBoundVariableForPaint(next[p.index], 'color', variable);
+          node[p.field] = next;
+        }
+        result.bound++;
+      } else if (p.kind === 'type') {
+        if (p.range) node.setRangeBoundVariable(p.range.start, p.range.end, p.field, variable);
+        else node.setBoundVariable(p.field, variable);
+        result.bound++;
+      } else {
+        node.setBoundVariable(p.field, variable);
+        result.bound++;
+      }
+    } catch (e) {
+      result.failed++;
+      var why = 'Figma refused to bind ' + p.field + ' on "' + p.nodeName + '".';
+      if (!seen[why]) { seen[why] = true; result.reasons.push(why); }
+    }
+  }
+  return result;
+}
+
 // ── Make a frame genuinely fluid ───────────────────────────────────────────
 // Generating a frame per breakpoint is a fallback. What Figma actually
 // offers is a layout that reflows as you DRAG the frame's width, and it
@@ -6952,6 +7183,29 @@ async function handleUiKitMessage(msg) {
         if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
         summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
       }
+    } else if (msg.type === 'uikit-survey') {
+      r = await surveyAdoption(figma.currentPage.selection, msg);
+      if (r.proposals.length) {
+        summary = r.proposals.length + ' can be wired up — ' + r.exact + ' exact, ' + r.near +
+          ' within tolerance' + (r.alreadyBound ? (', ' + r.alreadyBound + ' already bound') : '') +
+          '. Review before applying.';
+        if (r.near) tone = 'warning';
+      } else {
+        summary = r.reasons.length ? r.reasons[0]
+          : (r.alreadyBound ? 'Everything here is already on the system.' : 'Nothing matched the system.');
+        tone = 'warning';
+      }
+    } else if (msg.type === 'uikit-adopt') {
+      r = await applyAdoption(msg.proposals, msg.accepted);
+      if (r.bound) {
+        summary = r.bound + ' bound to the system' +
+          (r.skipped ? (', ' + r.skipped + ' left alone') : '') +
+          (r.failed ? (', ' + r.failed + ' refused') : '') + '.';
+        if (r.failed) tone = 'warning';
+      } else {
+        summary = r.reasons.length ? r.reasons[0] : 'Nothing was bound.';
+        tone = 'warning';
+      }
     } else if (msg.type === 'uikit-fluid') {
       r = await makeSelectionFluid(msg);
       if (r.wrapped || r.filled || r.autoLayout || r.text) {
@@ -7919,7 +8173,8 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-responsive' || msg.type === 'uikit-elements' ||
         msg.type === 'uikit-build' || msg.type === 'uikit-preview-table' ||
         msg.type === 'uikit-export' || msg.type === 'uikit-canvas' ||
-        msg.type === 'uikit-fluid') {
+        msg.type === 'uikit-fluid' || msg.type === 'uikit-survey' ||
+        msg.type === 'uikit-adopt') {
       await handleUiKitMessage(msg);
       return;
     }

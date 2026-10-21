@@ -754,6 +754,12 @@
   .uik-prop { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; font-size: 11px; cursor: pointer; }
   .uik-prop-text { min-width: 0; }
   .uik-prop-why { display: block; color: var(--text-muted); }
+  .uik-prop-why code { font-family: ui-monospace, Menlo, monospace; font-size: 10px;
+                       color: var(--text-secondary); }
+  .uik-exact, .uik-near { font-style: normal; font-size: 9px; font-weight: 600;
+                          padding: 1px 5px; border-radius: var(--radius-full); margin-left: 5px; }
+  .uik-exact { background: var(--green-100); color: var(--green-700, var(--green-600)); }
+  .uik-near { background: var(--amber-100); color: var(--amber-700, var(--amber-600)); }
   .uik-els { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 12px 2px; }
   .uik-el { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
             color: var(--text-secondary); cursor: pointer; }
@@ -4982,6 +4988,8 @@
     previewRows: null, // the live table inside the wizard
     tableDirty: false, // true once a row has been edited by hand
     rowEditing: null,  // name of the row being renamed
+    survey: null,       // proposals from uikit-survey
+    surveyAccepted: {},
     exportFormat: 'css',
     exportText: null,
     elements: {},      // element key -> false when unticked
@@ -5511,6 +5519,7 @@
         body: `<div class="sm-actions">${previews}</div>
                <p class="uik-note">Nothing bound stays where it is. That difference is the quickest way to see how much of a frame is actually on the system.</p>`
       })}
+      ${uikSurveyHtml()}
       ${uikElementsHtml()}
       ${uikExportHtml()}
       ${uikResponsiveHtml()}
@@ -5556,6 +5565,59 @@
     if (p.rule === 'hide') return 'hide';
     if (p.rule === 'show') return 'show';
     return p.rule;
+  }
+
+  // ── Apply the system to a design that already exists ────────────────────
+  const UIK_KIND_LABEL = { color: 'Colour', type: 'Type', space: 'Spacing' };
+
+  function uikSurveyHtml() {
+    const st = KS.state || {};
+    const sel = st.selectionCount || 0;
+    const sv = KS.survey;
+    const accepted = sv ? sv.proposals.filter(p => KS.surveyAccepted[p.key] !== false).length : 0;
+
+    let body = '';
+    if (!sv) {
+      body = `<p class="uik-note">Select a design that was built before the system and survey it. Every colour, type size and spacing is matched to its nearest token, with the distance shown. <b>Nothing changes until you apply.</b></p>`;
+    } else if (!sv.proposals.length) {
+      body = `<p class="uik-note">${sv.alreadyBound ? 'Everything here is already on the system.' : 'Nothing matched the system.'}${sv.unmatched && sv.unmatched.length ? ' Unmatched: ' + escHtml(sv.unmatched.slice(0, 8).join(', ')) : ''}</p>`;
+    } else {
+      const byKind = {};
+      sv.proposals.forEach(p => { (byKind[p.kind] = byKind[p.kind] || []).push(p); });
+      body = Object.keys(byKind).map(kind => `
+        <div class="uik-prop-bp">${escHtml(UIK_KIND_LABEL[kind] || kind)} — ${byKind[kind].length}</div>
+        ${byKind[kind].slice(0, 60).map(p => `
+          <label class="uik-prop">
+            <input type="checkbox" data-uik-sv="${escHtml(p.key)}"${KS.surveyAccepted[p.key] !== false ? ' checked' : ''}>
+            <span class="uik-prop-text">
+              <b>${escHtml(p.nodeName)}</b> · ${escHtml(p.field)}
+              <span class="uik-prop-why">
+                ${escHtml(String(p.current))} &rarr; <code>${escHtml(p.tokenName)}</code>
+                ${p.exact ? '<i class="uik-exact">exact</i>' : `<i class="uik-near">off by ${escHtml(String(p.delta))}</i>`}
+              </span>
+            </span>
+          </label>`).join('')}
+        ${byKind[kind].length > 60 ? `<p class="uik-note" style="padding:0">…and ${byKind[kind].length - 60} more, all included.</p>` : ''}
+      `).join('');
+      if (sv.unmatched && sv.unmatched.length) {
+        body += `<p class="uik-note">No token near: ${escHtml(sv.unmatched.slice(0, 10).join(', '))}${sv.unmatched.length > 10 ? ' …' : ''}</p>`;
+      }
+    }
+
+    return blockHtml(KS, {
+      id: 'uik-survey', title: 'Apply to an existing design',
+      sub: sel ? escHtml(st.selectionName || sel + ' selected') : 'Select a frame',
+      count: sv ? sv.proposals.length : 0,
+      body: `
+        <div class="sm-actions" style="padding:8px 12px 4px">
+          <button class="btn btn-sm${sv ? '' : ' btn-primary'}" data-act="uik-survey"${KS.busy || !sel ? ' disabled' : ''}>Survey this design</button>
+          ${sv && sv.proposals.length ? `
+            <button class="btn btn-sm" data-act="uik-sv-exact">Exact only</button>
+            <button class="btn btn-sm" data-act="uik-sv-all">All</button>
+            <button class="btn btn-sm btn-primary" data-act="uik-adopt"${KS.busy || !accepted ? ' disabled' : ''}>Apply ${accepted}</button>` : ''}
+        </div>
+        <div class="uik-props">${body}</div>`
+    });
   }
 
   function uikExportHtml() {
@@ -5687,9 +5749,20 @@
         KS.exportText = msg.result.empty ? null : msg.result;
       }
       if (msg.result && msg.result.proposals) {
-        KS.proposals = msg.result.proposals;
-        KS.byNode = msg.result.byNode || null;
-        KS.accepted = {};
+        // A survey and an inferred layout both carry "proposals"; only the
+        // survey has the matching fields, so tell them apart.
+        if (msg.result.proposals.length && msg.result.proposals[0].tokenName !== undefined) {
+          KS.survey = msg.result;
+          KS.surveyAccepted = {};
+        } else {
+          KS.proposals = msg.result.proposals;
+          KS.byNode = msg.result.byNode || null;
+          KS.accepted = {};
+        }
+      }
+      // Applying invalidates the survey it came from.
+      if (msg.result && typeof msg.result.bound === 'number' && KS.survey) {
+        KS.survey = null; KS.surveyAccepted = {};
       }
       if (msg.state) uikApplyState(msg.state);
       renderUiKit();
@@ -5810,6 +5883,18 @@
       sendUiKit({ type: 'uikit-elements', elements: defs.filter(d => KS.elements[d.key] !== false).map(d => d.key) });
       return;
     }
+    if (act === 'uik-survey') { KS.survey = null; KS.surveyAccepted = {}; sendUiKit({ type: 'uikit-survey' }); return; }
+    if (act === 'uik-adopt') {
+      sendUiKit({ type: 'uikit-adopt', proposals: KS.survey ? KS.survey.proposals : [], accepted: KS.surveyAccepted });
+      return;
+    }
+    if (act === 'uik-sv-exact') {
+      KS.surveyAccepted = {};
+      (KS.survey ? KS.survey.proposals : []).forEach(p => { if (!p.exact) KS.surveyAccepted[p.key] = false; });
+      renderUiKit();
+      return;
+    }
+    if (act === 'uik-sv-all') { KS.surveyAccepted = {}; renderUiKit(); return; }
     if (act === 'uik-fluid') { sendUiKit({ type: 'uikit-fluid' }); return; }
     if (act === 'uik-canvas') { sendUiKit({ type: 'uikit-canvas' }); return; }
     if (act === 'uik-export') {
@@ -5887,6 +5972,9 @@
 
     const prop = e.target.closest('[data-uik-prop]');
     if (prop) { KS.accepted[prop.dataset.uikProp] = prop.checked; renderUiKit(); return; }
+
+    const svBox = e.target.closest('[data-uik-sv]');
+    if (svBox) { KS.surveyAccepted[svBox.dataset.uikSv] = svBox.checked; renderUiKit(); return; }
 
     const elBox = e.target.closest('[data-uik-el]');
     if (elBox) {

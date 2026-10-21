@@ -469,6 +469,22 @@ Padding, gaps and radii are bound to the scale **as they are drawn**, and colour
 
 Inter is not assumed. If it is not installed the kit falls back to a font the machine actually has, and if there is no usable font at all it says so rather than failing on every text layer.
 
+### Apply to an existing design
+
+A design built before the system almost never matches it exactly — a padding of 23 where the scale says 24, a blue a shade off brand. Binding only exact matches therefore bites on nothing.
+
+**Survey this design** matches what is there to the nearest token and shows the distance:
+
+| What it matches | How | Tolerance |
+|---|---|---|
+| Fills and strokes, including per-run text fills | perceptual distance in CIE Lab, not hex equality | ΔE 3 |
+| Font size and line height, per run | nearest step on the scale | 1.5px |
+| Padding, gaps, corner radius | nearest step on the ramp | 2px |
+
+Every proposal is marked **exact** or **off by n**, and **nothing changes until you apply** — a near match moves the design slightly, which is the designer's decision. **Exact only** accepts the safe ones in one click.
+
+A zero is left alone: it is a choice, not a value to snap. Anything already bound is reported rather than proposed again, so a second survey is a progress report.
+
 ### Make fluid
 
 The Figma-native way to be responsive: one frame that adapts as you drag its width, rather than a frame per size.

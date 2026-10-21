@@ -263,6 +263,31 @@ function mkText(characters, name){
              if (this.parent && this.parent.children) { var j=this.parent.children.indexOf(this); if(j>=0) this.parent.children.splice(j,1); } },
            resize:function(w,h){ this.width=w; this.height=h; },
            clone:function(){ return cloneNode(this); } };
+  // A real text node always has both, and textTypeRuns skips a segment
+  // without them — so omitting them here made every text layer invisible.
+  t.fontName = { family: 'Inter', style: 'Regular' };
+  t.fontSize = 16;
+  t.lineHeight = { unit:'PERCENT', value: 150 };
+  t.letterSpacing = { unit:'PERCENT', value: 0 };
+  t.textStyleId = '';
+  t.getStyledTextSegments = function(fields){
+    var seg = { start: 0, end: String(this.characters || '').length,
+                characters: String(this.characters || ''),
+                fontName: this.fontName, fontSize: this.fontSize,
+                lineHeight: this.lineHeight, letterSpacing: this.letterSpacing,
+                textCase: 'ORIGINAL', textDecoration: 'NONE',
+                fillStyleId: '', textStyleId: this.textStyleId,
+                fills: Array.isArray(this.fills) ? this.fills : [],
+                boundVariables: this.boundVariables };
+    return [seg];
+  };
+  t.getRangeFills = function(a,b){ return Array.isArray(this.fills) ? this.fills.slice() : []; };
+  t.setRangeFills = function(a,b,f){ this.fills = f; };
+  t.setRangeBoundVariable = function(a,b,field,v){
+    if (v === null) delete this.boundVariables[field];
+    else this.boundVariables[field] = { type:'VARIABLE_ALIAS', id: v.id };
+  };
+  t.getRangeAllFontNames = function(){ return [this.fontName]; };
   t.layoutSizingHorizontal = 'FIXED';
   t.layoutSizingVertical = 'FIXED';
   t.layoutWrap = 'NO_WRAP';
