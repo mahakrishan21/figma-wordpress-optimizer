@@ -172,9 +172,60 @@ function mkFrame(o){
     clone: function(){ return cloneNode(this); }
   };
   for (var i=0;i<n.children.length;i++) n.children[i].parent = n;
+  strictLayout(n);
   figma._nodes[n.id] = n;
   return n;
 }
+
+// The real API THROWS on these, and code that silently swallows the throw
+// produces a layout that does not flow. Enforce them so the tests mean
+// something.
+function strictLayout(n){
+  function isAL(x){ return !!x && typeof x.layoutMode === 'string' && x.layoutMode !== 'NONE'; }
+  ['layoutSizingHorizontal','layoutSizingVertical'].forEach(function(prop){
+    var v = n[prop];
+    Object.defineProperty(n, prop, {
+      configurable: true, enumerable: true,
+      get: function(){ return v; },
+      set: function(next){
+        if (next === 'FILL' && !isAL(this.parent)) {
+          throw new Error('"FILL" is only valid on auto-layout children');
+        }
+        if (next === 'HUG' && !isAL(this) && this.type !== 'TEXT') {
+          throw new Error('"HUG" is only valid on auto-layout frames and text nodes');
+        }
+        v = next;
+      }
+    });
+  });
+
+  var wrap = n.layoutWrap;
+  Object.defineProperty(n, 'layoutWrap', {
+    configurable: true, enumerable: true,
+    get: function(){ return wrap; },
+    set: function(next){
+      if (next === 'WRAP' && !isAL(this)) {
+        throw new Error('layoutWrap requires layoutMode HORIZONTAL or VERTICAL');
+      }
+      wrap = next;
+    }
+  });
+
+  ['minWidth','maxWidth','minHeight','maxHeight'].forEach(function(prop){
+    var mv = n[prop];
+    Object.defineProperty(n, prop, {
+      configurable: true, enumerable: true,
+      get: function(){ return mv; },
+      set: function(next){
+        if (next !== null && !isAL(this) && !isAL(this.parent)) {
+          throw new Error('Can only set ' + prop + ' on auto layout nodes and their children');
+        }
+        mv = next;
+      }
+    });
+  });
+}
+globalThis.strictLayout = strictLayout;
 
 // clone() copies plugin data in the real API, which is what lets a generated
 // frame carry the rules it was generated from.
@@ -212,6 +263,11 @@ function mkText(characters, name){
              if (this.parent && this.parent.children) { var j=this.parent.children.indexOf(this); if(j>=0) this.parent.children.splice(j,1); } },
            resize:function(w,h){ this.width=w; this.height=h; },
            clone:function(){ return cloneNode(this); } };
+  t.layoutSizingHorizontal = 'FIXED';
+  t.layoutSizingVertical = 'FIXED';
+  t.layoutWrap = 'NO_WRAP';
+  t.minWidth = null; t.maxWidth = null; t.minHeight = null; t.maxHeight = null;
+  strictLayout(t);
   figma._nodes[t.id] = t;
   return t;
 }

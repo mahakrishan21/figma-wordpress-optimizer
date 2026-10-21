@@ -469,7 +469,25 @@ Padding, gaps and radii are bound to the scale **as they are drawn**, and colour
 
 Inter is not assumed. If it is not installed the kit falls back to a font the machine actually has, and if there is no usable font at all it says so rather than failing on every text layer.
 
+### Make fluid
+
+The Figma-native way to be responsive: one frame that adapts as you drag its width, rather than a frame per size.
+
+| What it sets | Why |
+|---|---|
+| auto layout on containers that lack it | without a flow there is nothing to reflow |
+| children to **fill** | they share the width instead of keeping their own |
+| rows of similar children to **wrap**, each with a **minimum width** | this is the whole mechanism — once a child cannot stay above its minimum the row wraps, and four columns become two, then one |
+| text to grow in **height** | copy wraps rather than overflowing |
+| a **min** and **max width** on the root | it cannot collapse below the narrowest canvas or stretch past the widest |
+
+Icons, avatars and anything small and square keep their size — an icon that stretches is worse than one that stays put.
+
+Two API rules this respects, both of which throw if broken: `FILL` is valid only on an auto-layout **child**, and `layoutMode` must be set **before** `minWidth`/`maxWidth`.
+
 ### Responsive versions
+
+For the changes a flow cannot express — hiding a nav, swapping a component for a hamburger.
 
 Select the frame you designed at the widest breakpoint, then **Analyse layout**.
 

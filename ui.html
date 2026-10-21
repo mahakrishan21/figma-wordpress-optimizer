@@ -831,6 +831,7 @@
   .uik-sep { height: 1px; background: var(--border); margin: 14px 0 2px; }
   .uik-subhead { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
                  color: var(--text-muted); margin: 8px 0 0; }
+  .uik-fluid { padding: 8px 12px 0; }
   .uik-exp { padding: 4px 12px 10px; }
   .uik-exp-head { display: flex; align-items: center; justify-content: space-between;
                   gap: 8px; margin-bottom: 5px; }
@@ -5605,13 +5606,29 @@
     const sel = st.selectionCount || 0;
     const n = KS.proposals ? KS.proposals.filter(p => KS.accepted[uikProposalKey(p)] !== false).length : 0;
     return blockHtml(KS, {
-      id: 'uik-responsive', title: 'Responsive versions',
+      id: 'uik-responsive', title: 'Responsive',
       sub: sel === 1 ? escHtml(st.selectionName || '1 frame selected') : 'Select exactly one frame',
       count: KS.proposals ? KS.proposals.length : 0,
       body: `
+        <div class="uik-fluid">
+          <div class="uik-subhead" style="margin:0">Make it flow</div>
+          <p class="uik-note" style="padding:4px 0 6px">
+            Auto layout everywhere, children set to <b>fill</b>, rows set to <b>wrap</b> with a minimum
+            width, and text set to grow in height. Then <b>dragging the frame&rsquo;s width</b> reflows
+            it &mdash; four columns become two, then one, with no second frame to maintain.
+          </p>
+          <div class="sm-actions" style="padding:0 0 4px">
+            <button class="btn btn-sm btn-primary" data-act="uik-fluid"${KS.busy || !sel ? ' disabled' : ''}>Make fluid</button>
+          </div>
+        </div>
+        <div class="uik-sep"></div>
+        <div class="uik-subhead" style="padding:0 12px">Or draw each size</div>
+        <p class="uik-note" style="padding:2px 12px 6px">
+          For changes a flow cannot express &mdash; hiding a nav, swapping a component.
+        </p>
         <div class="sm-actions" style="padding:0 12px 6px">
           <button class="btn btn-sm" data-act="uik-infer"${KS.busy || sel !== 1 ? ' disabled' : ''}>Analyse layout</button>
-          <button class="btn btn-sm btn-primary" data-act="uik-responsive"${KS.busy || sel !== 1 ? ' disabled' : ''}>Generate ${n ? n + ' change' + (n === 1 ? '' : 's') : 'frames'}</button>
+          <button class="btn btn-sm" data-act="uik-responsive"${KS.busy || sel !== 1 ? ' disabled' : ''}>Generate ${n ? n + ' change' + (n === 1 ? '' : 's') : 'frames'}</button>
         </div>
         <div class="uik-props">${uikProposalsHtml()}</div>
         <p class="uik-note">A generated frame that has been edited since is reported and left alone, never overwritten.</p>`
@@ -5793,6 +5810,7 @@
       sendUiKit({ type: 'uikit-elements', elements: defs.filter(d => KS.elements[d.key] !== false).map(d => d.key) });
       return;
     }
+    if (act === 'uik-fluid') { sendUiKit({ type: 'uikit-fluid' }); return; }
     if (act === 'uik-canvas') { sendUiKit({ type: 'uikit-canvas' }); return; }
     if (act === 'uik-export') {
       KS.exportFormat = el.dataset.format;

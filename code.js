@@ -5145,7 +5145,12 @@ function kitText(chars, font, size, colorMap, colorName) {
 // Inside a FIXED-width parent, text that sizes itself to its content will
 // run straight past the edge. Figma's own audit flags that as a text
 // overflow, so wrap instead: fill the width, grow in height.
-function kitWrapText(node) {
+//
+// APPEND FIRST. "FILL" is only valid on an auto-layout CHILD, so setting it
+// on a node that has no parent yet throws and is swallowed, leaving the text
+// still auto-width and still overflowing.
+function appendWrapped(parent, node) {
+  parent.appendChild(node);
   try { node.textAutoResize = 'HEIGHT'; } catch (e) { /* older API */ }
   setSizing(node, 'layoutSizingHorizontal', 'FILL');
   return node;
@@ -5227,8 +5232,8 @@ function makeInput(ctx, state) {
   bindNumber(c, 'paddingLeft', ctx.nums, 12);
   bindNumber(c, 'paddingRight', ctx.nums, 12);
   bindNumber(c, 'cornerRadius', ctx.nums, 8);
-  c.appendChild(kitWrapText(kitText(state === 'Filled' ? 'hello@example.com' : 'Placeholder',
-    ctx.fonts.regular, 14, ctx.colors, fg)));
+  appendWrapped(c, kitText(state === 'Filled' ? 'hello@example.com' : 'Placeholder',
+    ctx.fonts.regular, 14, ctx.colors, fg));
   return c;
 }
 
@@ -5294,9 +5299,9 @@ function makeCard(ctx) {
   bindNumber(c, 'paddingBottom', ctx.nums, 24);
   bindNumber(c, 'itemSpacing', ctx.nums, 12);
   bindNumber(c, 'cornerRadius', ctx.nums, 16);
-  c.appendChild(kitWrapText(kitText('Card title', ctx.fonts.bold, 18, ctx.colors, 'color/text/primary')));
-  c.appendChild(kitWrapText(kitText('Supporting copy that explains what this card is for.',
-    ctx.fonts.regular, 14, ctx.colors, 'color/text/secondary')));
+  appendWrapped(c, kitText('Card title', ctx.fonts.bold, 18, ctx.colors, 'color/text/primary'));
+  appendWrapped(c, kitText('Supporting copy that explains what this card is for.',
+    ctx.fonts.regular, 14, ctx.colors, 'color/text/secondary'));
   return c;
 }
 
@@ -5324,7 +5329,7 @@ function makeAlert(ctx, tone) {
   dot.name = 'Icon'; dot.resize(16, 16); dot.cornerRadius = 8;
   kitFill(dot, ctx.colors, accent);
   c.appendChild(dot);
-  c.appendChild(kitWrapText(kitText(tone + ' message', ctx.fonts.medium, 14, ctx.colors, 'color/text/primary')));
+  appendWrapped(c, kitText(tone + ' message', ctx.fonts.medium, 14, ctx.colors, 'color/text/primary'));
   return c;
 }
 
@@ -5475,6 +5480,167 @@ async function generateKitElements(cfg, opts) {
 
   result.frameId = page.id;
   return result;
+}
+
+// ── Make a frame genuinely fluid ───────────────────────────────────────────
+// Generating a frame per breakpoint is a fallback. What Figma actually
+// offers is a layout that reflows as you DRAG the frame's width, and it
+// comes from four things, not from modes:
+//
+//   1. auto layout everywhere, so there is a flow to reflow
+//   2. children set to FILL, so they share the width instead of keeping it
+//   3. a WRAP row whose children carry a minWidth — this is the whole
+//      mechanism: once a child cannot stay above its minimum, the row wraps
+//      and four columns silently become two, then one
+//   4. text set to grow in HEIGHT, so copy wraps rather than overflowing
+//
+// Two API rules this has to respect, both of which throw:
+//   - FILL is only valid on an auto-layout CHILD; HUG only on an auto-layout
+//     frame or a text node
+//   - layoutMode must be set BEFORE minWidth/maxWidth, or Figma refuses with
+//     "Can only set maxHeight on auto layout nodes and their children"
+
+function setLayoutSizing(node, axis, mode, report) {
+  try { node[axis] = mode; return true; }
+  catch (e) { if (report) report.refused++; return false; }
+}
+
+function setBound(node, field, value, report) {
+  try { node[field] = value; return true; }
+  catch (e) { if (report) report.refused++; return false; }
+}
+
+// Small, square-ish things keep their size: an icon or an avatar that
+// stretches is worse than one that stays put.
+function shouldStayFixed(node) {
+  var w = node.width || 0, h = node.height || 0;
+  if (!w || !h) return false;
+  var squareish = Math.abs(w - h) <= Math.max(w, h) * 0.25;
+  if (squareish && w <= 64) return true;
+  if (isVectorLikeNode(node) && w <= 64) return true;
+  return /^(icon|avatar|badge|dot|bullet|chevron|arrow|logo)/i.test(String(node.name || '').trim());
+}
+
+function similarWidths(kids, tolerance) {
+  if (kids.length < 2) return false;
+  var w = kids[0].width || 0;
+  if (!w) return false;
+  for (var i = 1; i < kids.length; i++) {
+    if (Math.abs((kids[i].width || 0) - w) > w * (tolerance || 0.15)) return false;
+  }
+  return true;
+}
+
+// Turn one frame, and everything inside it, into a layout that adapts.
+async function makeFrameFluid(root, opts) {
+  opts = opts || {};
+  var report = { autoLayout: 0, wrapped: 0, filled: 0, text: 0, minWidths: 0, maxWidths: 0,
+                 fixedKept: 0, refused: 0, reasons: [], unit: 'layer' };
+  if (!root) { report.reasons.push('Select a frame first.'); return report; }
+
+  var minCard = typeof opts.minCardWidth === 'number' ? opts.minCardWidth : 260;
+
+  function visit(node, depth) {
+    if (!node || node.visible === false) return;
+
+    // 1 ── a container without auto layout has no flow to reflow
+    if (hasChildren(node) && node.children.length && node.type !== 'INSTANCE') {
+      if (!isAutoLayoutFrame(node) && (node.type === 'FRAME' || node.type === 'COMPONENT')) {
+        try { applySmartAutoLayout(node); report.autoLayout++; }
+        catch (e) { report.refused++; }
+      }
+    }
+
+    var kids = hasChildren(node) ? node.children.filter(function (c) { return c.visible !== false; }) : [];
+
+    // 2 ── a row of similar children becomes a wrapping grid. Set layoutMode
+    //      first (it already is), then the minimum that makes it wrap.
+    if (isAutoLayoutFrame(node) && node.layoutMode === 'HORIZONTAL' && kids.length >= 2 && similarWidths(kids)) {
+      if (setBound(node, 'layoutWrap', 'WRAP', report)) {
+        report.wrapped++;
+        setBound(node, 'counterAxisSpacing', node.itemSpacing || 0, null);
+        for (var w = 0; w < kids.length; w++) {
+          if (shouldStayFixed(kids[w])) { report.fixedKept++; continue; }
+          if (setLayoutSizing(kids[w], 'layoutSizingHorizontal', 'FILL', report)) report.filled++;
+          var floor = Math.min(minCard, Math.round(kids[w].width || minCard));
+          if (floor > 0 && setBound(kids[w], 'minWidth', floor, report)) report.minWidths++;
+        }
+      }
+    }
+
+    // 3 ── everything else in an auto-layout parent
+    for (var i = 0; i < kids.length; i++) {
+      var kid = kids[i];
+      if (!isAutoLayoutFrame(node)) continue;
+
+      if (kid.type === 'TEXT') {
+        // Copy that sizes itself to its content is exactly what overflows.
+        if (setBound(kid, 'textAutoResize', 'HEIGHT', report)) report.text++;
+        if (setLayoutSizing(kid, 'layoutSizingHorizontal', 'FILL', report)) report.filled++;
+        continue;
+      }
+
+      if (shouldStayFixed(kid)) { report.fixedKept++; continue; }
+
+      // A child that already spans most of its parent is meant to span it.
+      var parentInner = Math.max(1, (node.width || 0) - (node.paddingLeft || 0) - (node.paddingRight || 0));
+      var spansMost = (kid.width || 0) >= parentInner * 0.6;
+      if (node.layoutMode === 'VERTICAL' || spansMost) {
+        if (setLayoutSizing(kid, 'layoutSizingHorizontal', 'FILL', report)) report.filled++;
+      }
+    }
+
+    for (var c = 0; c < kids.length; c++) visit(kids[c], depth + 1);
+  }
+
+  visit(root, 0);
+
+  // 4 ── the root itself: a floor so it cannot collapse, and a ceiling so
+  //      content does not stretch across an enormous monitor.
+  if (isAutoLayoutFrame(root)) {
+    if (typeof opts.rootMinWidth === 'number' && opts.rootMinWidth > 0) {
+      if (setBound(root, 'minWidth', opts.rootMinWidth, report)) report.minWidths++;
+    }
+    if (typeof opts.rootMaxWidth === 'number' && opts.rootMaxWidth > 0) {
+      if (setBound(root, 'maxWidth', opts.rootMaxWidth, report)) report.maxWidths++;
+    }
+  } else {
+    report.reasons.push('"' + root.name + '" has no auto layout of its own, so it cannot flow. Its children were still set up.');
+  }
+
+  if (report.refused) {
+    report.reasons.push(report.refused + ' setting(s) were refused by Figma and skipped \u2014 usually a layer type that cannot take them.');
+  }
+  return report;
+}
+
+async function makeSelectionFluid(opts) {
+  var sel = figma.currentPage.selection;
+  if (!sel || !sel.length) return { reasons: ['Select a frame first.'], unit: 'layer', refused: 0 };
+
+  var cfg = readBreakpointConfig();
+  var o = Object.assign({}, opts || {});
+  if (cfg && cfg.breakpoints.length) {
+    var widths = cfg.breakpoints.map(function (b) { return b.width || 0; }).filter(Boolean);
+    if (widths.length && o.rootMinWidth === undefined) o.rootMinWidth = Math.min.apply(null, widths);
+    if (widths.length && o.rootMaxWidth === undefined) o.rootMaxWidth = Math.max.apply(null, widths);
+  }
+
+  var total = { autoLayout: 0, wrapped: 0, filled: 0, text: 0, minWidths: 0, maxWidths: 0,
+                fixedKept: 0, refused: 0, reasons: [], unit: 'layer' };
+  for (var i = 0; i < sel.length; i++) {
+    var r = await makeFrameFluid(sel[i], o);
+    total.autoLayout += r.autoLayout || 0;
+    total.wrapped += r.wrapped || 0;
+    total.filled += r.filled || 0;
+    total.text += r.text || 0;
+    total.minWidths += r.minWidths || 0;
+    total.maxWidths += r.maxWidths || 0;
+    total.fixedKept += r.fixedKept || 0;
+    total.refused += r.refused || 0;
+    Array.prototype.push.apply(total.reasons, r.reasons || []);
+  }
+  return total;
 }
 
 // ── UI Kit: responsive rules ───────────────────────────────────────────────
@@ -6786,6 +6952,20 @@ async function handleUiKitMessage(msg) {
         if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
         summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
       }
+    } else if (msg.type === 'uikit-fluid') {
+      r = await makeSelectionFluid(msg);
+      if (r.wrapped || r.filled || r.autoLayout || r.text) {
+        var fl = [];
+        if (r.autoLayout) fl.push(r.autoLayout + ' got auto layout');
+        if (r.wrapped) fl.push(r.wrapped + ' rows now wrap');
+        if (r.filled) fl.push(r.filled + ' set to fill');
+        if (r.text) fl.push(r.text + ' text layers wrap');
+        if (r.minWidths) fl.push(r.minWidths + ' minimum widths');
+        summary = fl.join(', ') + '. Drag the frame\u2019s width to see it reflow.';
+      } else {
+        summary = r.reasons.length ? r.reasons[0] : 'Nothing to change — this frame already flows.';
+        tone = 'warning';
+      }
     } else if (msg.type === 'uikit-canvas') {
       r = await buildTokenCanvas(readBreakpointConfig());
       if (r.tokens) summary = r.tokens + ' tokens drawn across ' + r.sections + ' sections, each bound to its variable.';
@@ -7738,7 +7918,8 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-reseed' || msg.type === 'uikit-infer' ||
         msg.type === 'uikit-responsive' || msg.type === 'uikit-elements' ||
         msg.type === 'uikit-build' || msg.type === 'uikit-preview-table' ||
-        msg.type === 'uikit-export' || msg.type === 'uikit-canvas') {
+        msg.type === 'uikit-export' || msg.type === 'uikit-canvas' ||
+        msg.type === 'uikit-fluid') {
       await handleUiKitMessage(msg);
       return;
     }
