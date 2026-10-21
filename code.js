@@ -4240,6 +4240,15 @@ async function getTokenCollection(create, kind) {
   var cols = await figma.variables.getLocalVariableCollectionsAsync();
   if (!cols.length) return create ? figma.variables.createVariableCollection(TOKEN_COLLECTION) : null;
 
+  // The UI Kit's collections are mode-aware; the Colors and Typography tabs
+  // write one mode only. Letting those tabs auto-pick a UI Kit collection
+  // would quietly produce a token with a Desktop value and three empty
+  // breakpoints, so they are never candidates here.
+  var uiKitCollectionIds = {};
+  for (var u = 0; u < cols.length; u++) {
+    if (isUiKitCollectionName(cols[u].name)) uiKitCollectionIds[cols[u].id] = true;
+  }
+
   var wantTypes = kind === 'text' ? ['FLOAT', 'STRING'] : ['COLOR'];
   var scopes = {};
   for (var f = 0; f < TEXT_VAR_FIELDS.length; f++) scopes[TEXT_VAR_FIELDS[f].scope] = true;
@@ -4253,6 +4262,7 @@ async function getTokenCollection(create, kind) {
       // For typography only count variables actually scoped to a type property,
       // so a spacing collection full of FLOATs isn't mistaken for a type one.
       if (kind === 'text' && !(v.scopes || []).some(function (sc) { return scopes[sc]; })) continue;
+      if (uiKitCollectionIds[v.variableCollectionId]) continue;
       counts[v.variableCollectionId] = (counts[v.variableCollectionId] || 0) + 1;
     }
   }
@@ -4266,6 +4276,91 @@ async function getTokenCollection(create, kind) {
 
   for (var k = 0; k < cols.length; k++) if (cols[k].name === TOKEN_COLLECTION) return cols[k];
   return create ? figma.variables.createVariableCollection(TOKEN_COLLECTION) : null;
+}
+
+// ── UI Kit: collections, breakpoints, config ───────────────────────────────
+// Three tiers, each with its OWN mode budget — which is what makes
+// breakpoints and theming possible at the same time, whatever the plan's
+// per-collection ceiling turns out to be:
+//
+//   Primitives   1 mode                      raw values
+//   Theme        Light / Dark                semantic colour, aliases Primitives
+//   Responsive   Desktop / Tablet / Mobile…  semantic size, aliases Primitives
+var UIKIT_PRIMITIVES = 'Primitives';
+var UIKIT_THEME = 'Theme';
+var UIKIT_RESPONSIVE = 'Responsive';
+var UIKIT_COLLECTION_NAMES = [UIKIT_PRIMITIVES, UIKIT_THEME, UIKIT_RESPONSIVE];
+
+function isUiKitCollectionName(name) {
+  var n = String(name == null ? '' : name).trim().toLowerCase();
+  for (var i = 0; i < UIKIT_COLLECTION_NAMES.length; i++) {
+    if (n === UIKIT_COLLECTION_NAMES[i].toLowerCase()) return true;
+  }
+  return false;
+}
+
+// Design-canvas widths, widest first. A preset with more entries than the
+// file's mode ceiling is not an error here — ensureModes reports the ceiling
+// and the UI asks the designer to drop some.
+var BREAKPOINT_PRESETS = {
+  standard:  [{ name: 'Desktop', width: 1440 }, { name: 'Tablet Landscape', width: 1024 },
+              { name: 'Tablet', width: 768 }, { name: 'Mobile', width: 375 }],
+  tailwind:  [{ name: '2xl', width: 1536 }, { name: 'xl', width: 1280 },
+              { name: 'lg', width: 1024 }, { name: 'md', width: 768 }, { name: 'sm', width: 640 }],
+  bootstrap: [{ name: 'xxl', width: 1400 }, { name: 'xl', width: 1200 },
+              { name: 'lg', width: 992 }, { name: 'md', width: 768 }, { name: 'sm', width: 576 }],
+  material:  [{ name: 'Large', width: 1200 }, { name: 'Expanded', width: 840 },
+              { name: 'Medium', width: 600 }, { name: 'Compact', width: 360 }],
+  wordpress: [{ name: 'Huge', width: 1440 }, { name: 'Wide', width: 1280 },
+              { name: 'Large', width: 960 }, { name: 'Medium', width: 782 },
+              { name: 'Small', width: 600 }, { name: 'Mobile', width: 480 }]
+};
+
+var UIKIT_CONFIG_KEY = 'uikit.breakpoints';
+
+// Breakpoint config lives on the document, not in the UI: ui.html has no
+// persistence of any kind, and the config must outlive the plugin window.
+// Mode ids are deliberately NOT stored — they are resolved by name on every
+// run, so deleting and recreating a mode in Figma doesn't strand the config.
+function readBreakpointConfig() {
+  try {
+    var raw = figma.root.getPluginData(UIKIT_CONFIG_KEY);
+    if (!raw) return null;
+    var cfg = JSON.parse(raw);
+    if (!cfg || !cfg.breakpoints || !cfg.breakpoints.length) return null;
+    return cfg;
+  } catch (e) { return null; }
+}
+
+function writeBreakpointConfig(cfg) {
+  figma.root.setPluginData(UIKIT_CONFIG_KEY, JSON.stringify(cfg));
+}
+
+function breakpointNames(cfg) {
+  var out = [];
+  if (!cfg || !cfg.breakpoints) return out;
+  for (var i = 0; i < cfg.breakpoints.length; i++) out.push(cfg.breakpoints[i].name);
+  return out;
+}
+
+// Resolve (and optionally create) the three UI Kit collections by name.
+// Never renames or repurposes a collection the file already has.
+async function getUiKitCollections(create) {
+  var cols = await figma.variables.getLocalVariableCollectionsAsync();
+  var out = { primitives: null, theme: null, responsive: null, created: [] };
+  var want = [['primitives', UIKIT_PRIMITIVES], ['theme', UIKIT_THEME], ['responsive', UIKIT_RESPONSIVE]];
+
+  for (var w = 0; w < want.length; w++) {
+    var key = want[w][0], name = want[w][1];
+    for (var c = 0; c < cols.length; c++) {
+      if (String(cols[c].name).trim().toLowerCase() === name.toLowerCase()) { out[key] = cols[c]; break; }
+    }
+    if (!out[key] && create) {
+      out[key] = figma.variables.createVariableCollection(name);
+      out.created.push(name);
+    }
+  }
+  return out;
 }
 
 function modeOf(collection) {
