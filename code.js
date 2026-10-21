@@ -4532,6 +4532,138 @@ async function generateScaleVariables(cfg, table) {
   return result;
 }
 
+// ── UI Kit: binding layers to the scale ────────────────────────────────────
+// Only these fields. layoutMode, layoutSizingHorizontal, layoutWrap and
+// visible are enums and booleans — Figma cannot bind a variable to any of
+// them, which is exactly why responsive LAYOUT needs a rule engine and
+// cannot come from tokens.
+var BINDABLE_SPACING = [
+  { field: 'paddingLeft', scope: 'GAP' },
+  { field: 'paddingRight', scope: 'GAP' },
+  { field: 'paddingTop', scope: 'GAP' },
+  { field: 'paddingBottom', scope: 'GAP' },
+  { field: 'itemSpacing', scope: 'GAP' },
+  { field: 'counterAxisSpacing', scope: 'GAP' },
+  { field: 'cornerRadius', scope: 'CORNER_RADIUS' }
+];
+
+// Which mode of a collection this node currently renders in: an explicit
+// override if it has one, otherwise whatever it inherits, otherwise the
+// collection default. resolvedVariableModes is the real API's answer and is
+// preferred when present.
+function nodeModeFor(node, collection) {
+  if (!node || !collection) return null;
+  try {
+    var resolved = node.resolvedVariableModes;
+    if (resolved && resolved[collection.id]) return resolved[collection.id];
+  } catch (e) { /* not every node type exposes it */ }
+  if (node.explicitModes && node.explicitModes[collection.id]) return node.explicitModes[collection.id];
+  return modeOf(collection);
+}
+
+// Candidate tokens for binding, semantic tier first.
+//
+// Order matters: a value of 64 may exist as both space/700 (a primitive)
+// and space/section/sm (semantic). Binding to the semantic one is the
+// whole point — it is the token that changes per breakpoint, and the one a
+// designer is meant to reason about.
+async function spacingCandidates(cols) {
+  var all = await localVariablesAllModes('FLOAT');
+  var responsive = [], primitives = [];
+  for (var i = 0; i < all.length; i++) {
+    var e = all[i];
+    if (cols.responsive && e.variable.variableCollectionId === cols.responsive.id) responsive.push(e);
+    else if (cols.primitives && e.variable.variableCollectionId === cols.primitives.id) primitives.push(e);
+  }
+  return responsive.concat(primitives);
+}
+
+async function bindScaleToSelection(opts) {
+  opts = opts || {};
+  var result = { bound: 0, layers: 0, skipped: 0, alreadyBound: 0, reasons: [], unit: 'binding' };
+  var sel = figma.currentPage.selection;
+  if (!sel || !sel.length) { result.reasons.push('Select a frame first.'); return result; }
+
+  var cols = await getUiKitCollections(false);
+  if (!cols.responsive && !cols.primitives) {
+    result.reasons.push('No UI Kit collections yet — generate the scale first.');
+    return result;
+  }
+  var candidates = await spacingCandidates(cols);
+  if (!candidates.length) { result.reasons.push('No scale tokens to bind to.'); return result; }
+
+  var nodes = styleScanNodes(sel);
+  var seenReason = {};
+  function note(msg) { if (!seenReason[msg]) { seenReason[msg] = true; result.reasons.push(msg); } }
+
+  for (var n = 0; n < nodes.length; n++) {
+    var node = nodes[n];
+    if (!isAutoLayoutFrame(node)) continue;
+
+    var blocked = styleBlockedReason(node);
+    if (blocked) { result.skipped++; note(blocked); continue; }
+
+    result.layers++;
+    for (var f = 0; f < BINDABLE_SPACING.length; f++) {
+      var field = BINDABLE_SPACING[f].field, scope = BINDABLE_SPACING[f].scope;
+      var cur = node[field];
+      if (typeof cur !== 'number' || !isFinite(cur)) continue;   // figma.mixed, or absent
+      if (node.boundVariables && node.boundVariables[field]) { result.alreadyBound++; continue; }
+
+      var match = null;
+      for (var c = 0; c < candidates.length; c++) {
+        var cand = candidates[c];
+        if (!hasScope(cand.variable, scope)) continue;
+        var col = cand.collection;
+        var modeId = nodeModeFor(node, col);
+        var val = (modeId && cand.resolved[modeId] !== undefined) ? cand.resolved[modeId] : null;
+        if (typeof val === 'number' && val === cur) { match = cand.variable; break; }
+      }
+      if (!match) continue;
+
+      try {
+        node.setBoundVariable(field, match);
+        result.bound++;
+      } catch (e) {
+        result.skipped++;
+        note('Figma refused to bind ' + field + ' on "' + node.name + '".');
+      }
+    }
+  }
+
+  if (!result.layers) note('Nothing in the selection uses auto layout, so there is no padding or gap to bind.');
+  return result;
+}
+
+// Render the selection at a breakpoint by overriding its mode. Everything
+// bound to a Responsive token moves at once; everything else does not,
+// which is itself the most useful thing this shows.
+async function previewBreakpoint(bpName) {
+  var result = { applied: 0, reasons: [], unit: 'frame' };
+  var sel = figma.currentPage.selection;
+  if (!sel || !sel.length) { result.reasons.push('Select a frame first.'); return result; }
+
+  var cols = await getUiKitCollections(false);
+  if (!cols.responsive) { result.reasons.push('No Responsive collection yet — generate the scale first.'); return result; }
+
+  var modeId = null;
+  var modes = cols.responsive.modes || [];
+  for (var i = 0; i < modes.length; i++) {
+    if (normModeName(modes[i].name) === normModeName(bpName)) { modeId = modes[i].modeId; break; }
+  }
+  if (!modeId) { result.reasons.push('"' + bpName + '" is not a mode on the Responsive collection.'); return result; }
+
+  for (var s2 = 0; s2 < sel.length; s2++) {
+    try {
+      sel[s2].setExplicitVariableModeForCollection(cols.responsive, modeId);
+      result.applied++;
+    } catch (e) {
+      result.reasons.push('"' + sel[s2].name + '" cannot carry a mode override.');
+    }
+  }
+  return result;
+}
+
 function modeOf(collection) {
   if (!collection) return null;
   if (collection.defaultModeId) return collection.defaultModeId;
