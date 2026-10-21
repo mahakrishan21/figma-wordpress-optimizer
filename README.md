@@ -376,6 +376,22 @@ Semantic colour aliasing per mode is what makes a dark theme one edit rather tha
 
 Every step is editable row by row — name, a value per canvas size, a preview, and rename/remove on each row, with **+ Add** per family. Editing a cell keeps it; only changing a preset, base or ratio rebuilds the rows.
 
+### Every token on the canvas
+
+A variable that lives only in the Variables panel is invisible while you design. **Document on canvas** draws all of them, grouped by family, with each sample **bound to its variable**:
+
+| Family | Sample | Bound field |
+|---|---|---|
+| Spacing | a bar at real width | `width` |
+| Radius | a rounded rectangle | the corner radii |
+| Type scale | "Ag" in real type | `fontSize` |
+| Icon size | a square | `width` + `height` |
+| Opacity | a swatch | `opacity` |
+| Border width | an outlined box | `strokeWeight` |
+| Colour | a chip | the fill's `color` |
+
+Because they are bound rather than drawn once, retuning a token retunes the page. Responsive tokens list their value at every canvas size.
+
 ### Export
 
 | Format | Notes |
