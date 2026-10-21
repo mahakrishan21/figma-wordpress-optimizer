@@ -5347,7 +5347,8 @@
     if (key === 'extras') {
       const fams = [['typography', 'Type sizes & line heights'], ['borders', 'Border widths'],
                     ['icons', 'Icon sizes'], ['opacity', 'Opacity steps'],
-                    ['breakpointWidths', 'Canvas width tokens'], ['grid', 'Grid styles']];
+                    ['breakpointWidths', 'Canvas width tokens'], ['grid', 'Grid styles'],
+                    ['canvas', 'Draw every token on the canvas']];
       return `<div class="uik-els" style="padding:0">
         ${fams.map(f => `<label class="uik-el">
           <input type="checkbox" data-uik-spec="families.${f[0]}"${sp.families[f[0]] !== false ? ' checked' : ''}>
@@ -5376,7 +5377,8 @@
       ['Radius', count('radius/') + ' tokens'],
       ['Type', count('text/size/') + ' sizes, ratio ' + sp.type.ratio],
       ['Colour', rows.filter(r => r.type === 'COLOR' && r.tier === 'primitive').length + ' steps' + (sp.colors.theme ? ' + Light/Dark' : '')],
-      ['Elements', sp.elements.length ? sp.elements.length + ' components' : 'none']
+      ['Elements', sp.elements.length ? sp.elements.length + ' components' : 'none'],
+      ['On canvas', sp.families.canvas !== false ? 'every token drawn and bound' : 'not drawn']
     ];
     return `<div class="uik-review">
       ${lines.map(l => `<div class="uik-rev-row"><b>${escHtml(l[0])}</b><span>${escHtml(l[1])}</span></div>`).join('')}
@@ -5499,6 +5501,7 @@
         <button class="btn" data-act="uik-parse"${KS.busy ? ' disabled' : ''}>Read from canvas</button>
         <button class="btn btn-primary" data-act="uik-generate"${KS.busy ? ' disabled' : ''}>${SI.wand} Generate scale</button>
         <button class="btn" data-act="uik-bind"${KS.busy || !sel ? ' disabled' : ''}>Bind selection</button>
+        <button class="btn" data-act="uik-canvas"${KS.busy ? ' disabled' : ''}>Document on canvas</button>
         <button class="btn btn-sm" data-act="uik-reset"${KS.busy ? ' disabled' : ''}>Change breakpoints</button>
       </div>
       ${blockHtml(KS, {
@@ -5790,6 +5793,7 @@
       sendUiKit({ type: 'uikit-elements', elements: defs.filter(d => KS.elements[d.key] !== false).map(d => d.key) });
       return;
     }
+    if (act === 'uik-canvas') { sendUiKit({ type: 'uikit-canvas' }); return; }
     if (act === 'uik-export') {
       KS.exportFormat = el.dataset.format;
       KS.exportText = null;

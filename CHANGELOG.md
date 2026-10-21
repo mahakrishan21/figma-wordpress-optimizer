@@ -10,6 +10,7 @@ All notable changes to this project are documented in this file.
   - **Read from canvas** no longer dead-ends on a file with no breakpoints. Parsing needs breakpoint names to read a heading like "Spacing/ Desktop", so the standard set is created first and the message says so
   - **From scratch is a wizard** — breakpoints, spacing and radius, typography, colour, the other token families, then elements — asking one question at a time and showing what each answer produces. **Nothing is written until the last step**, and everything then lands inside a single undo
   - **Every step is editable row by row**, the same shape as the Create Text Styles screen: name, a value per canvas size, a preview of the thing itself, and rename/remove on each row, with **+ Add** per family. Editing a cell keeps it; only changing a preset, base or ratio rebuilds the rows
+  - **Every token is drawn on the canvas**, grouped by family, with each sample **bound to its variable** rather than being a snapshot: a spacing bar binds its width, a radius sample its corners, a type specimen its font size, an icon square its width and height, an opacity swatch its opacity, a colour chip its fill. Retune a token and the page retunes with it. Responsive tokens list the value at every canvas size
   - **Export** — the system leaves Figma as **CSS custom properties** (with a media query per canvas size), **WordPress `theme.json`** (where the canvas sizes collapse into fluid typography — the narrowest becomes `fluid.min`, the widest `fluid.max`), **W3C DTCG tokens** (every mode carried in `$extensions`) or a **Tailwind config** (screens reversed to min-width, the way Tailwind reads them). Read back out of the variables that actually exist, not out of the wizard's answers
   - **Every step is shown, not described.** Spacing and radius are drawn as bars at their real width, the type scale is set in actual type, colour ramps are continuous strips, and the grid is drawn as columns. The prose that used to explain each step is gone
   - **Canvas sizes are editable** — each breakpoint's width can be changed, not just picked from a preset
@@ -35,6 +36,7 @@ All notable changes to this project are documented in this file.
 - `getTokenCollection` no longer auto-picks a UI Kit collection for the Colors and Typography tabs. Those tabs write a single mode, so adopting a mode-aware collection would have produced a token with a Desktop value and three empty breakpoints
 
 ### Fixed
+- **The generated Card, Alert and Input overflowed their own containers** — Figma's own audit caught the Card's copy running 41px past its edge. Text that sizes itself to its content cannot sit inside a fixed-width parent, so the copy now fills the width and the containers hug their height
 - `scopePanel` and `pgKeyOf` dispatched on object identity, so any scope that was not Colors fell through to Typography. Harmless with two tabs, wrong with three — both now dispatch on the scope's name
 
 ## [1.5.0] — 2026-10-19

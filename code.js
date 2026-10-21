@@ -5142,6 +5142,15 @@ function kitText(chars, font, size, colorMap, colorName) {
   return t;
 }
 
+// Inside a FIXED-width parent, text that sizes itself to its content will
+// run straight past the edge. Figma's own audit flags that as a text
+// overflow, so wrap instead: fill the width, grow in height.
+function kitWrapText(node) {
+  try { node.textAutoResize = 'HEIGHT'; } catch (e) { /* older API */ }
+  setSizing(node, 'layoutSizingHorizontal', 'FILL');
+  return node;
+}
+
 // Bind a numeric field to a token when one holds exactly that value, so the
 // kit is wired to the scale from birth instead of needing a Bind pass.
 function bindNumber(node, field, tokenIndex, value) {
@@ -5209,7 +5218,8 @@ function makeInput(ctx, state) {
   c.primaryAxisSizingMode = 'FIXED';
   c.counterAxisSizingMode = 'AUTO';
   c.counterAxisAlignItems = 'CENTER';
-  c.resize(280, 40);
+  c.resize(280, 1);
+  c.counterAxisSizingMode = 'AUTO';
   c.paddingLeft = 12; c.paddingRight = 12; c.paddingTop = 12; c.paddingBottom = 12;
   c.cornerRadius = 8;
   kitFill(c, ctx.colors, bg);
@@ -5217,7 +5227,8 @@ function makeInput(ctx, state) {
   bindNumber(c, 'paddingLeft', ctx.nums, 12);
   bindNumber(c, 'paddingRight', ctx.nums, 12);
   bindNumber(c, 'cornerRadius', ctx.nums, 8);
-  c.appendChild(kitText(state === 'Filled' ? 'hello@example.com' : 'Placeholder', ctx.fonts.regular, 14, ctx.colors, fg));
+  c.appendChild(kitWrapText(kitText(state === 'Filled' ? 'hello@example.com' : 'Placeholder',
+    ctx.fonts.regular, 14, ctx.colors, fg)));
   return c;
 }
 
@@ -5269,9 +5280,9 @@ function makeCard(ctx) {
   var c = figma.createComponent();
   c.name = 'Card';
   c.layoutMode = 'VERTICAL';
-  c.primaryAxisSizingMode = 'AUTO';
+  c.primaryAxisSizingMode = 'AUTO';   // hug the copy rather than clip it
   c.counterAxisSizingMode = 'FIXED';
-  c.resize(320, 200);
+  c.resize(320, 1);
   c.itemSpacing = 12;
   c.paddingLeft = 24; c.paddingRight = 24; c.paddingTop = 24; c.paddingBottom = 24;
   c.cornerRadius = 16;
@@ -5283,9 +5294,9 @@ function makeCard(ctx) {
   bindNumber(c, 'paddingBottom', ctx.nums, 24);
   bindNumber(c, 'itemSpacing', ctx.nums, 12);
   bindNumber(c, 'cornerRadius', ctx.nums, 16);
-  c.appendChild(kitText('Card title', ctx.fonts.bold, 18, ctx.colors, 'color/text/primary'));
-  c.appendChild(kitText('Supporting copy that explains what this card is for.',
-    ctx.fonts.regular, 14, ctx.colors, 'color/text/secondary'));
+  c.appendChild(kitWrapText(kitText('Card title', ctx.fonts.bold, 18, ctx.colors, 'color/text/primary')));
+  c.appendChild(kitWrapText(kitText('Supporting copy that explains what this card is for.',
+    ctx.fonts.regular, 14, ctx.colors, 'color/text/secondary')));
   return c;
 }
 
@@ -5298,7 +5309,9 @@ function makeAlert(ctx, tone) {
   c.primaryAxisSizingMode = 'FIXED';
   c.counterAxisSizingMode = 'AUTO';
   c.counterAxisAlignItems = 'MIN';
-  c.resize(420, 56);
+  c.resize(420, 1);
+  c.primaryAxisSizingMode = 'FIXED';
+  c.counterAxisSizingMode = 'AUTO';   // same reason as the card
   c.itemSpacing = 12;
   c.paddingLeft = 16; c.paddingRight = 16; c.paddingTop = 12; c.paddingBottom = 12;
   c.cornerRadius = 8;
@@ -5311,7 +5324,7 @@ function makeAlert(ctx, tone) {
   dot.name = 'Icon'; dot.resize(16, 16); dot.cornerRadius = 8;
   kitFill(dot, ctx.colors, accent);
   c.appendChild(dot);
-  c.appendChild(kitText(tone + ' message', ctx.fonts.medium, 14, ctx.colors, 'color/text/primary'));
+  c.appendChild(kitWrapText(kitText(tone + ' message', ctx.fonts.medium, 14, ctx.colors, 'color/text/primary')));
   return c;
 }
 
@@ -6020,6 +6033,11 @@ async function buildDesignSystem(spec) {
     result.elements = await generateKitElements(cfg, { elements: spec.elements });
     Array.prototype.push.apply(result.reasons, result.elements.reasons);
   }
+
+  if (fams.canvas !== false) {
+    result.canvas = await buildTokenCanvas(cfg);
+    Array.prototype.push.apply(result.reasons, result.canvas.reasons);
+  }
   return result;
 }
 
@@ -6073,7 +6091,8 @@ async function collectSystem() {
     var all = await localVariablesAllModes(types[t]);
     for (var k = 0; k < all.length; k++) {
       var e = all[k];
-      var entry = { name: e.variable.name, type: types[t], resolved: e.resolved, modes: e.modes };
+      var entry = { name: e.variable.name, type: types[t], resolved: e.resolved,
+                    modes: e.modes, variable: e.variable };
       if (cols.primitives && e.variable.variableCollectionId === cols.primitives.id) out.primitives.push(entry);
       else if (cols.responsive && e.variable.variableCollectionId === cols.responsive.id) out.responsive.push(entry);
       else if (cols.theme && e.variable.variableCollectionId === cols.theme.id) out.theme.push(entry);
@@ -6316,6 +6335,247 @@ async function exportDesignSystem(format) {
   };
 }
 
+// ── The tokens, on the canvas ──────────────────────────────────────────────
+// A variable that only exists in the Variables panel is invisible while you
+// design. This draws every one of them as a live sample BOUND to its
+// variable, so the page is not a snapshot — retune a token and the page
+// retunes with it.
+
+function tokenSectionFrame(title, ctx) {
+  var f = kitRow(title, { vertical: true, gap: 10, align: 'MIN' });
+  f.appendChild(kitText(title, ctx.fonts.bold, 15, ctx.colors, 'color/text/primary'));
+  return f;
+}
+
+function tokenRow(ctx, name, valueText, sample) {
+  var row = kitRow('Token', { gap: 16, align: 'CENTER' });
+  row.counterAxisAlignItems = 'CENTER';
+
+  var label = kitText(name, ctx.fonts.regular, 11, ctx.colors, 'color/text/secondary');
+  label.textAutoResize = 'NONE';
+  label.resize(210, 16);
+  setSizing(label, 'layoutSizingHorizontal', 'FIXED');
+  row.appendChild(label);
+
+  var val = kitText(valueText, ctx.fonts.medium, 11, ctx.colors, 'color/text/primary');
+  val.textAutoResize = 'NONE';
+  val.resize(70, 16);
+  setSizing(val, 'layoutSizingHorizontal', 'FIXED');
+  row.appendChild(val);
+
+  if (sample) row.appendChild(sample);
+  return row;
+}
+
+// Bind a numeric field, but never ask Figma to make something 0px wide.
+function sampleBar(ctx, entry, value) {
+  var r = figma.createRectangle();
+  r.name = entry.name;
+  r.resize(Math.max(1, Math.abs(Number(value) || 1)), 10);
+  r.cornerRadius = 2;
+  kitFill(r, ctx.colors, 'color/brand/default');
+  if (Number(value) > 0) { try { r.setBoundVariable('width', entry.variable); } catch (e) { /* not bindable */ } }
+  return r;
+}
+
+function sampleRadius(ctx, entry, value) {
+  var r = figma.createRectangle();
+  r.name = entry.name;
+  r.resize(44, 32);
+  kitFill(r, ctx.colors, 'color/brand/subtle');
+  kitStroke(ctx ? r : r, ctx.colors, 'color/brand/default', 1);
+  try { r.cornerRadius = Math.max(0, Number(value) || 0); } catch (e) { /* clamp */ }
+  try { r.setBoundVariable('topLeftRadius', entry.variable); r.setBoundVariable('topRightRadius', entry.variable);
+        r.setBoundVariable('bottomLeftRadius', entry.variable); r.setBoundVariable('bottomRightRadius', entry.variable); }
+  catch (e) {
+    try { r.setBoundVariable('cornerRadius', entry.variable); } catch (e2) { /* unbound still renders */ }
+  }
+  return r;
+}
+
+function sampleSwatch(ctx, entry) {
+  var r = figma.createRectangle();
+  r.name = entry.name;
+  r.resize(120, 28);
+  r.cornerRadius = 4;
+  var paint = { type: 'SOLID', color: { r: 0, g: 0, b: 0 }, opacity: 1 };
+  try { paint = figma.variables.setBoundVariableForPaint(paint, 'color', entry.variable); } catch (e) { /* literal */ }
+  try { r.fills = [paint]; } catch (e2) { /* no fills */ }
+  return r;
+}
+
+function sampleOpacity(ctx, entry, value) {
+  var r = figma.createRectangle();
+  r.name = entry.name;
+  r.resize(120, 28);
+  r.cornerRadius = 4;
+  kitFill(r, ctx.colors, 'color/brand/default');
+  try { r.opacity = Math.max(0, Math.min(1, Number(value) || 1)); } catch (e) { /* clamp */ }
+  try { r.setBoundVariable('opacity', entry.variable); } catch (e2) { /* unbound */ }
+  return r;
+}
+
+function sampleStroke(ctx, entry, value) {
+  var r = figma.createRectangle();
+  r.name = entry.name;
+  r.resize(120, 24);
+  r.fills = [];
+  kitStroke(r, ctx.colors, 'color/text/primary', Math.max(0, Number(value) || 0));
+  try { r.setBoundVariable('strokeWeight', entry.variable); } catch (e) { /* unbound */ }
+  return r;
+}
+
+function sampleIcon(ctx, entry, value) {
+  var r = figma.createRectangle();
+  r.name = entry.name;
+  var px = Math.max(1, Number(value) || 16);
+  r.resize(px, px);
+  r.cornerRadius = 2;
+  kitFill(r, ctx.colors, 'color/text/secondary');
+  try { r.setBoundVariable('width', entry.variable); r.setBoundVariable('height', entry.variable); }
+  catch (e) { /* unbound */ }
+  return r;
+}
+
+function sampleType(ctx, entry, value) {
+  var t = kitText('Ag', ctx.fonts.regular, Math.max(6, Number(value) || 16), ctx.colors, 'color/text/primary');
+  t.name = entry.name;
+  try { t.setBoundVariable('fontSize', entry.variable); } catch (e) { /* unbound */ }
+  return t;
+}
+
+// Which sample suits a token, decided by its family.
+function sampleFor(ctx, entry, value) {
+  var n = entry.name;
+  if (entry.type === 'COLOR') return sampleSwatch(ctx, entry);
+  if (n.indexOf('radius/') === 0) return sampleRadius(ctx, entry, value);
+  if (n.indexOf('opacity/') === 0) return sampleOpacity(ctx, entry, value);
+  if (n.indexOf('border/') === 0) return sampleStroke(ctx, entry, value);
+  if (n.indexOf('icon/') === 0) return sampleIcon(ctx, entry, value);
+  if (n.indexOf('text/size/') === 0) return sampleType(ctx, entry, value);
+  if (typeof value === 'number') return sampleBar(ctx, entry, value);
+  return null;
+}
+
+function valueLabel(entry, value) {
+  if (value === null || value === undefined) return '—';
+  if (entry.type === 'COLOR') return rgbaToCss(value) || '—';
+  var formatted = formatValue(entry, value);
+  return formatted === null ? '—' : String(formatted);
+}
+
+async function buildTokenCanvas(cfg) {
+  var result = { sections: 0, tokens: 0, reasons: [], unit: 'token' };
+  var sys = await collectSystem();
+  if (!sys.primitives.length && !sys.responsive.length && !sys.theme.length) {
+    result.reasons.push('There are no tokens to document yet.');
+    return result;
+  }
+
+  var fonts;
+  try { fonts = await resolveKitFonts(); }
+  catch (e) { result.reasons.push(e.message); return result; }
+
+  var cols = await getUiKitCollections(true);
+  var colors = await ensureKitColorVariables(cols);
+  var ctx = { fonts: fonts, colors: colors, nums: {} };
+
+  var page = figma.createFrame();
+  page.name = 'Design System — Tokens';
+  page.layoutMode = 'VERTICAL';
+  page.primaryAxisSizingMode = 'AUTO';
+  page.counterAxisSizingMode = 'AUTO';
+  page.itemSpacing = 40;
+  page.paddingLeft = 48; page.paddingRight = 48; page.paddingTop = 48; page.paddingBottom = 48;
+  kitFill(page, colors, 'color/surface');
+
+  var widest = sys.bpNames.length ? sys.bpNames[0] : null;
+
+  // Responsive tokens get one row per canvas size, because the whole point
+  // of them is that the value changes.
+  function addResponsive(title, prefix) {
+    var entries = sys.responsive.filter(function (e) { return e.name.indexOf(prefix) === 0; });
+    if (!entries.length) return;
+    var section = tokenSectionFrame(title, ctx);
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      var parts = [];
+      for (var b = 0; b < sys.bpNames.length; b++) {
+        var bv = valueFor(e, sys.modeIds[sys.bpNames[b]]);
+        parts.push(sys.bpNames[b].charAt(0) + ' ' + valueLabel(e, bv));
+      }
+      var shown = valueFor(e, sys.modeIds[widest]);
+      section.appendChild(tokenRow(ctx, e.name, parts.join('  '), sampleFor(ctx, e, shown)));
+      result.tokens++;
+    }
+    page.appendChild(section);
+    result.sections++;
+  }
+
+  function addPrimitive(title, prefix, typeFilter) {
+    var entries = sys.primitives.filter(function (e) {
+      return e.name.indexOf(prefix) === 0 && (!typeFilter || e.type === typeFilter);
+    });
+    if (!entries.length) return;
+    var section = tokenSectionFrame(title, ctx);
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      var v = valueFor(e, null);
+      section.appendChild(tokenRow(ctx, e.name, valueLabel(e, v), sampleFor(ctx, e, v)));
+      result.tokens++;
+    }
+    page.appendChild(section);
+    result.sections++;
+  }
+
+  addResponsive('Canvas', 'canvas/');
+  addResponsive('Grid', 'grid/');
+  addPrimitive('Breakpoints', 'breakpoint/');
+  addPrimitive('Spacing', 'space/', 'FLOAT');
+  addResponsive('Spacing — responsive', 'space/section');
+  addPrimitive('Radius', 'radius/');
+  addResponsive('Type scale', 'text/size/');
+  addPrimitive('Line height', 'text/leading/');
+  addPrimitive('Border width', 'border/');
+  addPrimitive('Icon size', 'icon/');
+  addPrimitive('Opacity', 'opacity/');
+
+  var ramps = ['brand/', 'neutral/', 'success/', 'warning/', 'danger/'];
+  for (var rI = 0; rI < ramps.length; rI++) {
+    addPrimitive('Colour — ' + ramps[rI].replace('/', ''), ramps[rI], 'COLOR');
+  }
+
+  if (sys.theme.length) {
+    var themeSection = tokenSectionFrame('Semantic colour', ctx);
+    for (var t = 0; t < sys.theme.length; t++) {
+      var te = sys.theme[t];
+      themeSection.appendChild(tokenRow(ctx, te.name, valueLabel(te, valueFor(te, null)), sampleSwatch(ctx, te)));
+      result.tokens++;
+    }
+    page.appendChild(themeSection);
+    result.sections++;
+  }
+
+  if (!result.sections) {
+    try { page.remove(); } catch (e) { /* nothing to clean */ }
+    result.reasons.push('Nothing matched a known token family, so there was nothing to draw.');
+    return result;
+  }
+
+  var maxX = 0, minY = 0, kids = figma.currentPage.children;
+  for (var k = 0; k < kids.length; k++) {
+    if (typeof kids[k].x === 'number') maxX = Math.max(maxX, kids[k].x + (kids[k].width || 0));
+    if (typeof kids[k].y === 'number') minY = Math.min(minY, kids[k].y);
+  }
+  page.x = maxX + 160;
+  page.y = minY;
+  figma.currentPage.appendChild(page);
+  try { figma.currentPage.selection = [page]; figma.viewport.scrollAndZoomIntoView([page]); } catch (e2) { /* headless */ }
+
+  result.frameId = page.id;
+  return result;
+}
+
 // ── UI Kit: state and the message handler ──────────────────────────────────
 
 // Read the scale back out of the file, so re-opening the tab shows what is
@@ -6522,9 +6782,14 @@ async function handleUiKitMessage(msg) {
         var bits = [r.tokens.created + ' tokens'];
         if (r.tokens.aliased) bits.push(r.tokens.aliased + ' aliased');
         if (r.grids && r.grids.created) bits.push(r.grids.created + ' grid styles');
+        if (r.canvas && r.canvas.tokens) bits.push('documented on canvas');
         if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
         summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
       }
+    } else if (msg.type === 'uikit-canvas') {
+      r = await buildTokenCanvas(readBreakpointConfig());
+      if (r.tokens) summary = r.tokens + ' tokens drawn across ' + r.sections + ' sections, each bound to its variable.';
+      else { summary = r.reasons.length ? r.reasons[0] : 'Nothing to draw.'; tone = 'warning'; }
     } else if (msg.type === 'uikit-export') {
       r = await exportDesignSystem(msg.format);
       if (r.empty) {
@@ -7473,7 +7738,7 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-reseed' || msg.type === 'uikit-infer' ||
         msg.type === 'uikit-responsive' || msg.type === 'uikit-elements' ||
         msg.type === 'uikit-build' || msg.type === 'uikit-preview-table' ||
-        msg.type === 'uikit-export') {
+        msg.type === 'uikit-export' || msg.type === 'uikit-canvas') {
       await handleUiKitMessage(msg);
       return;
     }

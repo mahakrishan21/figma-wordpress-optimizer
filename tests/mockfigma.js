@@ -29,7 +29,7 @@ function F(){ return {
   createText: function(){ var t = mkText(''); t.textAutoResize = 'NONE'; t.fontSize = 12;
                           t.fontName = { family:'Inter', style:'Regular' }; return t; },
   createComponent: function(){ var c = mkFrame({}); c.type = 'COMPONENT'; return c; },
-  createRectangle: function(){ var r = mkFrame({}); r.type = 'RECTANGLE'; return r; },
+  createRectangle: function(){ var r = mkFrame({}); r.type = 'RECTANGLE'; delete r.children; r.strokeWeight = 0; r.opacity = 1; return r; },
   combineAsVariants: function(nodes, parent){
     var set = mkFrame({ name: 'Component Set' });
     set.type = 'COMPONENT_SET';
