@@ -12,6 +12,15 @@ function F(){ return {
         var j = c.parent.children.indexOf(c); if (j >= 0) c.parent.children.splice(j,1);
       }
       c.parent = this; this.children.push(c);
+    },
+    findOne: function(pred){
+      var stack = (this.children || []).slice();
+      while (stack.length) {
+        var n = stack.shift();
+        if (pred(n)) return n;
+        if (n.children) Array.prototype.push.apply(stack, n.children);
+      }
+      return null;
     } },
   loadFontAsync: function(f){
     if (figma._fonts && figma._fonts.indexOf(f.family + '|' + f.style) === -1) {
@@ -180,8 +189,33 @@ function mkFrame(o){
         var j = this.parent.children.indexOf(this); if (j >= 0) this.parent.children.splice(j,1);
       }
     },
-    resize: function(w,h){ this.width = w; this.height = h; },
-    clone: function(){ return cloneNode(this); }
+    // The real resize() RESETS both sizing modes to FIXED. Code that sets
+    // AUTO/HUG and then resizes ends up FIXED at the resized value — which
+    // is how a section ends up 1px tall. Model it, or the tests lie.
+    resize: function(w,h){
+      this.width = w; this.height = h;
+      this.primaryAxisSizingMode = 'FIXED';
+      this.counterAxisSizingMode = 'FIXED';
+      try { this.layoutSizingHorizontal = 'FIXED'; this.layoutSizingVertical = 'FIXED'; } catch (e) {}
+    },
+    clone: function(){ return cloneNode(this); },
+    createInstance: function(){
+      var inst = cloneNode(this);
+      inst.type = 'INSTANCE';
+      inst.name = this.name;
+      inst.mainComponent = this;
+      return inst;
+    },
+    setGridStyleIdAsync: function(id){ this.gridStyleId = id; return Promise.resolve(); },
+    findOne: function(pred){
+      var stack = (this.children || []).slice();
+      while (stack.length) {
+        var n = stack.shift();
+        if (pred(n)) return n;
+        if (n.children) Array.prototype.push.apply(stack, n.children);
+      }
+      return null;
+    }
   };
   for (var i=0;i<n.children.length;i++) n.children[i].parent = n;
   strictLayout(n);

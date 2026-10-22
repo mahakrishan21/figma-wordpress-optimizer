@@ -5226,11 +5226,12 @@ function makeInput(ctx, state) {
   var c = figma.createComponent();
   c.name = 'State=' + state;
   c.layoutMode = 'HORIZONTAL';
+  // resize() RESETS both sizing modes to FIXED, so it has to come first —
+  // setting AUTO and then resizing leaves the node stuck at that height.
+  c.resize(280, 1);
   c.primaryAxisSizingMode = 'FIXED';
   c.counterAxisSizingMode = 'AUTO';
   c.counterAxisAlignItems = 'CENTER';
-  c.resize(280, 1);
-  c.counterAxisSizingMode = 'AUTO';
   c.paddingLeft = 12; c.paddingRight = 12; c.paddingTop = 12; c.paddingBottom = 12;
   c.cornerRadius = 8;
   kitFill(c, ctx.colors, bg);
@@ -5291,9 +5292,9 @@ function makeCard(ctx) {
   var c = figma.createComponent();
   c.name = 'Card';
   c.layoutMode = 'VERTICAL';
+  c.resize(320, 1);                   // before the sizing modes — resize resets them
   c.primaryAxisSizingMode = 'AUTO';   // hug the copy rather than clip it
   c.counterAxisSizingMode = 'FIXED';
-  c.resize(320, 1);
   c.itemSpacing = 12;
   c.paddingLeft = 24; c.paddingRight = 24; c.paddingTop = 24; c.paddingBottom = 24;
   c.cornerRadius = 16;
@@ -5317,12 +5318,10 @@ function makeAlert(ctx, tone) {
   var c = figma.createComponent();
   c.name = 'Tone=' + tone;
   c.layoutMode = 'HORIZONTAL';
-  c.primaryAxisSizingMode = 'FIXED';
-  c.counterAxisSizingMode = 'AUTO';
-  c.counterAxisAlignItems = 'MIN';
-  c.resize(420, 1);
+  c.resize(420, 1);                   // before the sizing modes
   c.primaryAxisSizingMode = 'FIXED';
   c.counterAxisSizingMode = 'AUTO';   // same reason as the card
+  c.counterAxisAlignItems = 'MIN';
   c.itemSpacing = 12;
   c.paddingLeft = 16; c.paddingRight = 16; c.paddingTop = 12; c.paddingBottom = 12;
   c.cornerRadius = 8;
@@ -5344,11 +5343,11 @@ function makeAvatar(ctx, size) {
   c.name = 'Size=' + size;
   var px = size === 'sm' ? 24 : size === 'md' ? 32 : 48;
   c.layoutMode = 'HORIZONTAL';
+  c.resize(px, px);                   // before the sizing modes
   c.primaryAxisSizingMode = 'FIXED';
   c.counterAxisSizingMode = 'FIXED';
   c.primaryAxisAlignItems = 'CENTER';
   c.counterAxisAlignItems = 'CENTER';
-  c.resize(px, px);
   c.cornerRadius = px / 2;
   kitFill(c, ctx.colors, 'color/brand/subtle');
   c.appendChild(kitText('AB', ctx.fonts.medium, px / 2.6, ctx.colors, 'color/brand/default'));
@@ -6458,6 +6457,12 @@ async function buildDesignSystem(spec) {
     result.canvas = await buildTokenCanvas(cfg);
     Array.prototype.push.apply(result.reasons, result.canvas.reasons);
   }
+
+  // Last, so it can use the components the step above created.
+  if (fams.starter !== false) {
+    result.starter = await createStarterCanvas(cfg, {});
+    Array.prototype.push.apply(result.reasons, result.starter.reasons);
+  }
   return result;
 }
 
@@ -6777,6 +6782,235 @@ async function exportDesignSystem(format) {
     filename: 'design-system.' + def.ext,
     counts: { primitives: sys.primitives.length, responsive: sys.responsive.length, theme: sys.theme.length }
   };
+}
+
+// ── A canvas to actually design in ─────────────────────────────────────────
+// Tokens and components are the foundation; they are not somewhere to start.
+// This creates the artboard the design gets built in — already at the widest
+// canvas size, already carrying the grid, already bound to the system, and
+// already fluid. Design inside it and the responsive work is mostly done.
+
+function bindNum(node, field, varsByName, name, report) {
+  var v = varsByName[name];
+  if (!v) return false;
+  try { node.setBoundVariable(field, v); if (report) report.bound++; return true; }
+  catch (e) { return false; }
+}
+
+function bindFill(node, varsByName, name) {
+  var v = varsByName[name];
+  var paint = { type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 };
+  if (v) {
+    try { paint = figma.variables.setBoundVariableForPaint(paint, 'color', v); } catch (e) { /* literal */ }
+  }
+  try { node.fills = [paint]; } catch (e) { /* no fills */ }
+}
+
+function bindRadius(node, varsByName, name) {
+  var corners = ['topLeftRadius', 'topRightRadius', 'bottomLeftRadius', 'bottomRightRadius'];
+  var v = varsByName[name];
+  if (!v) return;
+  for (var i = 0; i < corners.length; i++) {
+    try { node.setBoundVariable(corners[i], v); } catch (e) { /* older API */ }
+  }
+}
+
+async function namedVariables() {
+  var map = {};
+  var types = ['FLOAT', 'COLOR'];
+  for (var t = 0; t < types.length; t++) {
+    var all = await figma.variables.getLocalVariablesAsync(types[t]);
+    for (var i = 0; i < all.length; i++) if (!all[i].remote && !map[all[i].name]) map[all[i].name] = all[i];
+  }
+  return map;
+}
+
+// The first token that exists, so a system missing one family still works.
+function firstOf(varsByName, names) {
+  for (var i = 0; i < names.length; i++) if (varsByName[names[i]]) return names[i];
+  return null;
+}
+
+function sectionFrame(name, ctx, vars) {
+  var f = figma.createFrame();
+  f.name = name;
+  f.layoutMode = 'VERTICAL';
+  f.resize(800, 1);                   // before the sizing modes — see makeCard
+  f.primaryAxisSizingMode = 'AUTO';
+  f.counterAxisSizingMode = 'FIXED';
+  f.itemSpacing = 24;
+  f.paddingLeft = 32; f.paddingRight = 32; f.paddingTop = 32; f.paddingBottom = 32;
+  bindNum(f, 'itemSpacing', vars, firstOf(vars, ['space/300', 'space/md', 'space/3']) || '');
+  var pad = firstOf(vars, ['space/400', 'space/lg', 'space/4']);
+  if (pad) {
+    bindNum(f, 'paddingLeft', vars, pad); bindNum(f, 'paddingRight', vars, pad);
+    bindNum(f, 'paddingTop', vars, pad); bindNum(f, 'paddingBottom', vars, pad);
+  }
+  bindFill(f, vars, 'color/bg/surface');
+  bindRadius(f, vars, firstOf(vars, ['radius/lg', 'radius/md']) || '');
+  return f;
+}
+
+function canvasText(chars, font, size, vars, colourName, sizeToken) {
+  var t = figma.createText();
+  t.fontName = font;
+  t.fontSize = size;
+  t.characters = chars;
+  t.textAutoResize = 'WIDTH_AND_HEIGHT';
+  var paint = { type: 'SOLID', color: { r: 0.07, g: 0.09, b: 0.15 }, opacity: 1 };
+  if (vars[colourName]) {
+    try { paint = figma.variables.setBoundVariableForPaint(paint, 'color', vars[colourName]); } catch (e) {}
+  }
+  try { t.fills = [paint]; } catch (e) {}
+  if (sizeToken && vars[sizeToken]) {
+    try { t.setBoundVariable('fontSize', vars[sizeToken]); } catch (e) {}
+  }
+  return t;
+}
+
+// Append, THEN size — FILL is only valid once the node has an
+// auto-layout parent, and text must grow in height before it fills.
+function addFilling(parent, node) {
+  parent.appendChild(node);
+  if (node.type === 'TEXT') { try { node.textAutoResize = 'HEIGHT'; } catch (e) {} }
+  setSizing(node, 'layoutSizingHorizontal', 'FILL');
+  return node;
+}
+
+function findKitComponent(name) {
+  try {
+    var found = figma.currentPage.findOne(function (n) {
+      return (n.type === 'COMPONENT_SET' || n.type === 'COMPONENT') && n.name === name;
+    });
+    if (!found) return null;
+    if (found.type === 'COMPONENT_SET') {
+      return (found.children && found.children.length) ? found.children[0] : null;
+    }
+    return found;
+  } catch (e) { return null; }
+}
+
+async function createStarterCanvas(cfg, opts) {
+  opts = opts || {};
+  var result = { created: 0, bound: 0, sections: 0, usedComponents: [], reasons: [], unit: 'canvas' };
+  var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
+  if (!bps.length) { result.reasons.push('No canvas sizes are configured.'); return result; }
+
+  var fonts;
+  try { fonts = await resolveKitFonts(); }
+  catch (e) { result.reasons.push(e.message); return result; }
+
+  var vars = await namedVariables();
+  if (!Object.keys(vars).length) {
+    result.reasons.push('There are no tokens to design with yet.');
+    return result;
+  }
+
+  var widest = bps[0];
+  var narrowest = bps[bps.length - 1];
+
+  var page = figma.createFrame();
+  page.name = widest.name + ' — ' + (widest.width || 1440);
+  page.layoutMode = 'VERTICAL';
+  page.resize(widest.width || 1440, 1);   // before the sizing modes
+  page.primaryAxisSizingMode = 'AUTO';
+  page.counterAxisSizingMode = 'FIXED';
+  page.itemSpacing = 64;
+  page.paddingTop = 64; page.paddingBottom = 64; page.paddingLeft = 32; page.paddingRight = 32;
+  bindFill(page, vars, 'color/bg/canvas');
+
+  var sectionPad = firstOf(vars, ['space/section/lg', 'space/section/md', 'space/700']);
+  if (sectionPad) { bindNum(page, 'paddingTop', vars, sectionPad, result); bindNum(page, 'paddingBottom', vars, sectionPad, result); }
+  var margin = firstOf(vars, ['grid/margin', 'space/400']);
+  if (margin) { bindNum(page, 'paddingLeft', vars, margin, result); bindNum(page, 'paddingRight', vars, margin, result); }
+  var gutter = firstOf(vars, ['space/gutter', 'space/600', 'space/700']);
+  if (gutter) bindNum(page, 'itemSpacing', vars, gutter, result);
+
+  // Fluid from birth: a floor and a ceiling taken from the canvas sizes.
+  try { page.minWidth = narrowest.width || null; } catch (e) { /* older API */ }
+  try { page.maxWidth = widest.width || null; } catch (e) { /* older API */ }
+
+  // The grid style for the widest size, if one was made.
+  try {
+    var grids = await figma.getLocalGridStylesAsync();
+    var want = 'Grid / ' + widest.name;
+    for (var g = 0; g < grids.length; g++) {
+      if (grids[g].name === want) { await page.setGridStyleIdAsync(grids[g].id); break; }
+    }
+  } catch (e) { /* grid styles unavailable */ }
+
+  // ── A hero that already uses the type scale ──────────────────────────
+  var hero = sectionFrame('Hero', null, vars);
+  page.appendChild(hero);
+  setSizing(hero, 'layoutSizingHorizontal', 'FILL');
+  addFilling(hero, canvasText('Headline goes here', fonts.bold, 61, vars,
+    'color/text/primary', firstOf(vars, ['text/size/h1', 'text/size/display'])));
+  addFilling(hero, canvasText(
+    'Subheading copy. Every value on this canvas is a token, so changing the scale changes the design.',
+    fonts.regular, 16, vars, 'color/text/secondary', firstOf(vars, ['text/size/body'])));
+  var btn = findKitComponent('Button');
+  if (btn) {
+    try { hero.appendChild(btn.createInstance()); result.usedComponents.push('Button'); }
+    catch (e) { /* instance refused */ }
+  }
+  result.sections++;
+
+  // ── A card row that already wraps ────────────────────────────────────
+  var row = figma.createFrame();
+  row.name = 'Cards';
+  row.layoutMode = 'HORIZONTAL';
+  row.resize(800, 1);                     // before the sizing modes
+  row.primaryAxisSizingMode = 'FIXED';
+  row.counterAxisSizingMode = 'AUTO';
+  row.itemSpacing = 24;
+  row.fills = [];
+  page.appendChild(row);
+  setSizing(row, 'layoutSizingHorizontal', 'FILL');
+  try { row.layoutWrap = 'WRAP'; } catch (e) { /* older API */ }
+  if (gutter) { bindNum(row, 'itemSpacing', vars, gutter, result); bindNum(row, 'counterAxisSpacing', vars, gutter, result); }
+
+  var cardComp = findKitComponent('Card');
+  for (var c = 0; c < 3; c++) {
+    var card = null;
+    if (cardComp) {
+      try { card = cardComp.createInstance(); } catch (e) { card = null; }
+    }
+    if (!card) {
+      card = sectionFrame('Card', null, vars);
+      addFilling(card, canvasText('Card title', fonts.bold, 18, vars, 'color/text/primary', null));
+      addFilling(card, canvasText('Supporting copy.', fonts.regular, 16, vars,
+        'color/text/secondary', firstOf(vars, ['text/size/body'])));
+    } else if (result.usedComponents.indexOf('Card') === -1) {
+      result.usedComponents.push('Card');
+    }
+    row.appendChild(card);
+    setSizing(card, 'layoutSizingHorizontal', 'FILL');
+    // The minimum is what makes the row wrap rather than squash.
+    try { card.minWidth = 260; } catch (e) { /* older API */ }
+  }
+  result.sections++;
+
+  // ── An empty section to carry on in ──────────────────────────────────
+  var blank = sectionFrame('Section', null, vars);
+  page.appendChild(blank);
+  setSizing(blank, 'layoutSizingHorizontal', 'FILL');
+  addFilling(blank, canvasText('Next section', fonts.bold, 18, vars, 'color/text/primary', null));
+  result.sections++;
+
+  var maxX = 0, minY = 0, kids = figma.currentPage.children;
+  for (var k = 0; k < kids.length; k++) {
+    if (typeof kids[k].x === 'number') maxX = Math.max(maxX, kids[k].x + (kids[k].width || 0));
+    if (typeof kids[k].y === 'number') minY = Math.min(minY, kids[k].y);
+  }
+  page.x = maxX + 160;
+  page.y = minY;
+  figma.currentPage.appendChild(page);
+  try { figma.currentPage.selection = [page]; figma.viewport.scrollAndZoomIntoView([page]); } catch (e) { /* headless */ }
+
+  result.created = 1;
+  result.frameId = page.id;
+  result.frameName = page.name;
+  return result;
 }
 
 // ── The tokens, on the canvas ──────────────────────────────────────────────
@@ -7227,6 +7461,7 @@ async function handleUiKitMessage(msg) {
         if (r.tokens.aliased) bits.push(r.tokens.aliased + ' aliased');
         if (r.grids && r.grids.created) bits.push(r.grids.created + ' grid styles');
         if (r.canvas && r.canvas.tokens) bits.push('documented on canvas');
+        if (r.starter && r.starter.created) bits.push('a canvas to design in');
         if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
         summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
       }
@@ -7267,6 +7502,13 @@ async function handleUiKitMessage(msg) {
         summary = r.reasons.length ? r.reasons[0] : 'Nothing to change — this frame already flows.';
         tone = 'warning';
       }
+    } else if (msg.type === 'uikit-starter') {
+      r = await createStarterCanvas(readBreakpointConfig(), msg);
+      if (r.created) {
+        summary = '"' + r.frameName + '" is ready to design in \u2014 ' + r.sections +
+          ' sections, ' + r.bound + ' values bound to the system' +
+          (r.usedComponents.length ? (', using ' + r.usedComponents.join(' and ')) : '') + '.';
+      } else { summary = r.reasons.length ? r.reasons[0] : 'Nothing created.'; tone = 'warning'; }
     } else if (msg.type === 'uikit-canvas') {
       r = await buildTokenCanvas(readBreakpointConfig());
       if (r.tokens) summary = r.tokens + ' tokens drawn across ' + r.sections + ' sections, each bound to its variable.';
@@ -8221,7 +8463,7 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-build' || msg.type === 'uikit-preview-table' ||
         msg.type === 'uikit-export' || msg.type === 'uikit-canvas' ||
         msg.type === 'uikit-fluid' || msg.type === 'uikit-survey' ||
-        msg.type === 'uikit-adopt') {
+        msg.type === 'uikit-adopt' || msg.type === 'uikit-starter') {
       await handleUiKitMessage(msg);
       return;
     }

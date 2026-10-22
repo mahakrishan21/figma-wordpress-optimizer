@@ -5375,7 +5375,8 @@
       const fams = [['typography', 'Type sizes & line heights'], ['borders', 'Border widths'],
                     ['icons', 'Icon sizes'], ['opacity', 'Opacity steps'],
                     ['breakpointWidths', 'Canvas width tokens'], ['grid', 'Grid styles'],
-                    ['canvas', 'Draw every token on the canvas']];
+                    ['canvas', 'Draw every token on the canvas'],
+                    ['starter', 'A canvas to start designing in']];
       return `<div class="uik-els" style="padding:0">
         ${fams.map(f => `<label class="uik-el">
           <input type="checkbox" data-uik-spec="families.${f[0]}"${sp.families[f[0]] !== false ? ' checked' : ''}>
@@ -5405,7 +5406,8 @@
       ['Type', count('text/size/') + ' sizes, ratio ' + sp.type.ratio],
       ['Colour', rows.filter(r => r.type === 'COLOR' && r.tier === 'primitive').length + ' steps' + (sp.colors.theme ? ' + Light/Dark' : '')],
       ['Elements', sp.elements.length ? sp.elements.length + ' components' : 'none'],
-      ['On canvas', sp.families.canvas !== false ? 'every token drawn and bound' : 'not drawn']
+      ['On canvas', sp.families.canvas !== false ? 'every token drawn and bound' : 'not drawn'],
+      ['To design in', sp.families.starter !== false ? 'a canvas at ' + ((sp.breakpoints[0] || {}).width || '') + 'px, already fluid' : 'none']
     ];
     return `<div class="uik-review">
       ${lines.map(l => `<div class="uik-rev-row"><b>${escHtml(l[0])}</b><span>${escHtml(l[1])}</span></div>`).join('')}
@@ -5530,6 +5532,7 @@
           <div class="toolbar-label">Apply &amp; document</div>
           <button class="btn" data-act="uik-parse"${KS.busy ? ' disabled' : ''}>${SI.icRead}Read from canvas</button>
           <button class="btn" data-act="uik-bind"${KS.busy || !sel ? ' disabled' : ''}>${SI.icBind}Bind selection</button>
+          <button class="btn" data-act="uik-starter"${KS.busy ? ' disabled' : ''}>${SI.icFlow}New design canvas</button>
           <button class="btn" data-act="uik-canvas"${KS.busy ? ' disabled' : ''}>${SI.icCanvasDoc}Document on canvas</button>
           <button class="btn" data-act="uik-reset"${KS.busy ? ' disabled' : ''}>${SI.icSliders}Change breakpoints</button>
         </div>
@@ -5916,6 +5919,7 @@
     }
     if (act === 'uik-sv-all') { KS.surveyAccepted = {}; renderUiKit(); return; }
     if (act === 'uik-fluid') { sendUiKit({ type: 'uikit-fluid' }); return; }
+    if (act === 'uik-starter') { sendUiKit({ type: 'uikit-starter' }); return; }
     if (act === 'uik-canvas') { sendUiKit({ type: 'uikit-canvas' }); return; }
     if (act === 'uik-export') {
       KS.exportFormat = el.dataset.format;

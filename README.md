@@ -376,6 +376,17 @@ Semantic colour aliasing per mode is what makes a dark theme one edit rather tha
 
 Every step is editable row by row — name, a value per canvas size, a preview, and rename/remove on each row, with **+ Add** per family. Editing a cell keeps it; only changing a preset, base or ratio rebuilds the rows.
 
+### A canvas to design in
+
+Tokens and components are a foundation, not a starting point. **New design canvas** creates the artboard the design gets built in:
+
+- at the **widest canvas size**, carrying that size's grid style
+- **bound to the system** — section padding, margin, gutter, background and type scale all come from tokens
+- **already fluid** — a min and max width from the narrowest and widest canvas sizes, and a card row that wraps
+- containing a hero, a wrapping card row and an empty section, using real instances of the generated components when they exist
+
+Design inside it, and most of the responsive work is already done.
+
 ### Every token on the canvas
 
 A variable that lives only in the Variables panel is invisible while you design. **Document on canvas** draws all of them, grouped by family, with each sample **bound to its variable**:

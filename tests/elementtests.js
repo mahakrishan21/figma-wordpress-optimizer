@@ -65,6 +65,15 @@ async function run() {
   eq(padVar.variableCollectionId, cols.primitives.id, 'the token lives in Primitives');
   eq(await variableValue(padVar), 24, 'and really holds 24');
 
+  // ── 4b ── a component must HUG its height, not keep the resize value ──
+  var cardSet = collectDeep(root, function (n) { return n.type === 'COMPONENT' && n.name === 'Card'; })[0];
+  ok(!!cardSet, 'the Card component exists');
+  eq(cardSet.primaryAxisSizingMode, 'AUTO', 'and hugs its height, so its copy is not clipped');
+  var alert0 = collectDeep(root, function (n) { return n.name === 'Tone=Info'; })[0];
+  if (alert0) eq(alert0.counterAxisSizingMode, 'AUTO', 'the alert hugs its height too');
+  var input0 = collectDeep(root, function (n) { return n.name === 'State=Default'; })[0];
+  if (input0) eq(input0.counterAxisSizingMode, 'AUTO', 'and so does the input');
+
   // ── 5 ── colour tokens were created and bound ─────────────────────────
   var colourVars = await localVariablesWithValues('COLOR');
   ok(colourVars.length >= 15, 'the kit colour tokens exist  (' + colourVars.length + ')');
