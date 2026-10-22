@@ -5190,17 +5190,23 @@
   // almost-black or almost-white; neutral is the least saturated. Picking by
   // frequency instead would hand back the background.
   function uikPickBrand(colors) {
-    let brand = null, neutral = null, bestSat = -1, leastSat = 2;
+    let brand = null, neutral = null, fallbackNeutral = null;
+    let bestSat = -1, leastSat = 2, leastSatAny = 2;
     colors.forEach(c => {
       const rgb = uikHexToRgb(c.hex);
       if (!rgb) return;
       const mx = Math.max(rgb.r, rgb.g, rgb.b), mn = Math.min(rgb.r, rgb.g, rgb.b);
       const l = (mx + mn) / 2;
       const sat = mx === mn ? 0 : (l > 0.5 ? (mx - mn) / (2 - mx - mn) : (mx - mn) / (mx + mn));
-      if (l > 0.08 && l < 0.94 && sat > bestSat) { bestSat = sat; brand = c.hex; }
-      if (sat < leastSat) { leastSat = sat; neutral = c.hex; }
+      const usable = l > 0.08 && l < 0.94;
+      if (usable && sat > bestSat) { bestSat = sat; brand = c.hex; }
+      // A neutral must have somewhere to ramp to. White and black are both
+      // perfectly unsaturated, so "least saturated" alone hands back the
+      // background and the whole ramp collapses.
+      if (l > 0.15 && l < 0.85 && sat < leastSat) { leastSat = sat; neutral = c.hex; }
+      if (sat < leastSatAny) { leastSatAny = sat; fallbackNeutral = c.hex; }
     });
-    return { brand: brand, neutral: neutral };
+    return { brand: brand, neutral: neutral || fallbackNeutral };
   }
 
   function uikLoadLogo(file) {
