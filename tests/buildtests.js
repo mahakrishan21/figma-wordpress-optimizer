@@ -49,6 +49,12 @@ async function run() {
   ok(b50.values['*'].r > b500.values['*'].r, '50 is lighter than 500');
   ok(b900.values['*'].r < b500.values['*'].r, '900 is darker');
 
+  eq(cs.filter(function (r) { return r.name.indexOf('success/') === 0; }).length, 0,
+     'no success ramp is generated');
+  eq(cs.filter(function (r) { return r.name.indexOf('danger/') === 0; }).length, 0, 'nor danger');
+  eq(cs.filter(function (r) { return r.name.indexOf('color/feedback/') === 0; }).length, 0,
+     'nor the feedback semantic names');
+
   var sem = row(cs, 'color/text/primary');
   eq(sem.tier, 'theme', 'semantic names live on the theme tier');
   eq(sem.refs.Light, 'neutral/900', 'light mode points at a dark neutral');

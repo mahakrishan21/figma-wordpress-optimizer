@@ -5393,9 +5393,6 @@
         <div class="uik-ramps">
           ${uikRampStrip('brand/')}
           ${uikRampStrip('neutral/')}
-          ${uikRampStrip('success/')}
-          ${uikRampStrip('warning/')}
-          ${uikRampStrip('danger/')}
         </div>
         <label class="uik-el" style="padding:4px 0">
           <input type="checkbox" data-uik-spec="colors.theme"${sp.colors.theme ? ' checked' : ''}>
@@ -5800,7 +5797,12 @@
         // not the preset's. Only an explicit preset change takes it back.
         if (!KS.tableDirty) {
           KS.previewRows = (msg.state && msg.state.table) ? msg.state.table : null;
-          if (KS.screen === 'wizard') renderUiKit();
+          // Never re-render while a field is being used — a reply that
+          // arrives mid-interaction would replace the element in hand.
+          const live = document.activeElement;
+          const busyField = live && live.closest && live.closest('#uikitScreen') &&
+                            (live.tagName === 'INPUT' || live.tagName === 'SELECT');
+          if (KS.screen === 'wizard' && !busyField) renderUiKit();
         }
         return true;
       }
@@ -6154,9 +6156,12 @@
   $('tab-uikit').addEventListener('input', e => {
     const spec = e.target.closest('[data-uik-spec]');
     if (spec && KS.spec && spec.type === 'color') {
+      // A colour picker fires `input` continuously while it is dragged.
+      // Previewing here would re-render the panel and destroy the open
+      // picker mid-drag, which is why it felt broken. Record the value and
+      // mirror it into the hex field; the `change` handler reseeds once the
+      // picker is committed.
       uikSetSpec(spec.dataset.uikSpec, spec.value);
-      reseedFromPresets();
-      // Keep the paired hex field in step without re-rendering the picker.
       const twin = $('uikitScreen').querySelector(
         'input.sm-input[data-uik-spec="' + spec.dataset.uikSpec + '"]');
       if (twin) twin.value = spec.value;

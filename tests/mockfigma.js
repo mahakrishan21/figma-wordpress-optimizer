@@ -219,8 +219,44 @@ function mkFrame(o){
   };
   for (var i=0;i<n.children.length;i++) n.children[i].parent = n;
   strictLayout(n);
-  figma._nodes[n.id] = n;
-  return n;
+  var sealed = sealNode(n);
+  for (var c=0;c<n.children.length;c++) n.children[c].parent = sealed;
+  figma._nodes[n.id] = sealed;
+  return sealed;
+}
+
+// A Figma node proxy is NOT extensible: assigning an unknown property
+// throws "object is not extensible". Declaring everything the real API has
+// and then sealing reproduces that — assigning a REAL property still works,
+// inventing one does not.
+var NODE_EXTRAS = ['x','y','fills','strokes','width','height','minWidth','maxWidth',
+                   'minHeight','maxHeight','layoutMode','layoutWrap','itemSpacing',
+                   'counterAxisSpacing','paddingLeft','paddingRight','paddingTop','paddingBottom',
+                   'primaryAxisSizingMode','counterAxisSizingMode','children','visible','locked',
+                   'fillStyleId','strokeStyleId','textStyleId','gridStyleId','effectStyleId',
+                   'mainComponent','removed','cornerRadius','strokeWeight','strokeAlign',
+                   'opacity','rotation','effects','layoutGrids','layoutGrow','layoutAlign',
+                   'primaryAxisAlignItems','counterAxisAlignItems','counterAxisAlignContent',
+                   'itemReverseZIndex','strokesIncludedInLayout','clipsContent','description',
+                   'characters','fontName','fontSize','lineHeight','letterSpacing',
+                   'textAutoResize','textCase','textDecoration','placeholder','constraints',
+                   'absoluteBoundingBox','componentPropertyDefinitions','variantProperties'];
+// Object.preventExtensions only THROWS in strict mode; in sloppy mode the
+// assignment silently no-ops, which is exactly the failure that let
+// "node.rowHost = x" through. A Proxy throws either way.
+function sealNode(n){
+  for (var i=0;i<NODE_EXTRAS.length;i++) {
+    if (!(NODE_EXTRAS[i] in n)) n[NODE_EXTRAS[i]] = undefined;
+  }
+  return new Proxy(n, {
+    set: function(target, key, value){
+      if (!(key in target)) {
+        throw new TypeError('object is not extensible (tried to set "' + String(key) + '")');
+      }
+      target[key] = value;
+      return true;
+    }
+  });
 }
 
 // The real API THROWS on these, and code that silently swallows the throw
@@ -339,8 +375,9 @@ function mkText(characters, name){
   t.layoutWrap = 'NO_WRAP';
   t.minWidth = null; t.maxWidth = null; t.minHeight = null; t.maxHeight = null;
   strictLayout(t);
-  figma._nodes[t.id] = t;
-  return t;
+  var sealedText = sealNode(t);
+  figma._nodes[t.id] = sealedText;
+  return sealedText;
 }
 globalThis.mkText = mkText;
 

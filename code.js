@@ -4716,6 +4716,9 @@ function colorRampRows(prefix, hex) {
 }
 
 // Semantic names, aliased per theme mode.
+// Brand and neutral only. Feedback colours are a product decision, not a
+// brand one, and generating success/warning/danger ramps nobody asked for
+// filled the picker with tokens that never got used.
 var THEME_SEMANTICS = [
   ['color/bg/canvas',      'neutral/50',  'neutral/900'],
   ['color/bg/surface',     'neutral/50',  'neutral/800'],
@@ -4728,21 +4731,14 @@ var THEME_SEMANTICS = [
   ['color/text/secondary', 'neutral/600', 'neutral/300'],
   ['color/text/disabled',  'neutral/400', 'neutral/500'],
   ['color/text/inverse',   'neutral/50',  'neutral/900'],
-  ['color/text/brand',     'brand/600',   'brand/300'],
-  ['color/feedback/success', 'success/600', 'success/400'],
-  ['color/feedback/warning', 'warning/600', 'warning/400'],
-  ['color/feedback/danger',  'danger/600',  'danger/400']
+  ['color/text/brand',     'brand/600',   'brand/300']
 ];
 
 function colorSystemRows(opts) {
   opts = opts || {};
   var brand = opts.brandHex || '#2563EB';
   var neutral = opts.neutralHex || '#6B7280';
-  var rows = colorRampRows('brand', brand)
-    .concat(colorRampRows('neutral', neutral))
-    .concat(colorRampRows('success', opts.successHex || '#16A34A'))
-    .concat(colorRampRows('warning', opts.warningHex || '#D97706'))
-    .concat(colorRampRows('danger', opts.dangerHex || '#DC2626'));
+  var rows = colorRampRows('brand', brand).concat(colorRampRows('neutral', neutral));
 
   if (opts.theme === false) return rows;
   for (var i = 0; i < THEME_SEMANTICS.length; i++) {
@@ -5057,9 +5053,7 @@ var KIT_COLORS = [
   ['color/text/secondary',  { r: 0.420, g: 0.447, b: 0.502 }],
   ['color/text/disabled',   { r: 0.612, g: 0.639, b: 0.686 }],
   ['color/text/inverse',    { r: 1.000, g: 1.000, b: 1.000 }],
-  ['color/success',         { r: 0.086, g: 0.639, b: 0.290 }],
-  ['color/warning',         { r: 0.851, g: 0.467, b: 0.024 }],
-  ['color/danger',          { r: 0.863, g: 0.149, b: 0.149 }]
+  ['color/brand/muted',     { r: 0.580, g: 0.690, b: 0.969 }]
 ];
 
 // Inter is Figma's default, but it is not guaranteed to be installed — and
@@ -5295,7 +5289,7 @@ function makeToggleish(ctx, kind, state) {
 
 function makeBadge(ctx, tone) {
   var map = { Neutral: 'color/text/secondary', Brand: 'color/brand/default',
-              Success: 'color/success', Warning: 'color/warning', Danger: 'color/danger' };
+              Muted: 'color/text/disabled' };
   var c = figma.createComponent();
   c.name = 'Tone=' + tone;
   c.layoutMode = 'HORIZONTAL';
@@ -5339,8 +5333,7 @@ function makeCard(ctx) {
 }
 
 function makeAlert(ctx, tone) {
-  var accent = tone === 'Success' ? 'color/success' : tone === 'Warning' ? 'color/warning'
-             : tone === 'Danger' ? 'color/danger' : 'color/brand/default';
+  var accent = tone === 'Muted' ? 'color/text/disabled' : 'color/brand/default';
   var c = figma.createComponent();
   c.name = 'Tone=' + tone;
   c.layoutMode = 'HORIZONTAL';
@@ -5403,8 +5396,8 @@ var KIT_ELEMENTS = [
   { key: 'checkbox', label: 'Checkbox', states: ['Unchecked', 'Checked'] },
   { key: 'radio', label: 'Radio', states: ['Unchecked', 'Checked'] },
   { key: 'switch', label: 'Switch', states: ['Off', 'On'] },
-  { key: 'badge', label: 'Badge', states: ['Neutral', 'Brand', 'Success', 'Warning', 'Danger'] },
-  { key: 'alert', label: 'Alert', states: ['Info', 'Success', 'Warning', 'Danger'] },
+  { key: 'badge', label: 'Badge', states: ['Neutral', 'Brand', 'Muted'] },
+  { key: 'alert', label: 'Alert', states: ['Info', 'Muted'] },
   { key: 'avatar', label: 'Avatar', states: ['sm', 'md', 'lg'] },
   { key: 'navlink', label: 'Nav link', states: ['Default', 'Active'] },
   { key: 'card', label: 'Card', states: null }
@@ -7244,13 +7237,14 @@ function tokenSectionFrame(title, ctx) {
   f.appendChild(body);
   setSizing(body, 'layoutSizingHorizontal', 'FILL');
 
-  f.rowHost = body;
-  return f;
+  // A Figma node is NOT extensible — stashing the body on the frame threw
+  // "object is not extensible". Hand both back instead.
+  return { section: f, body: body };
 }
 
 // Rows belong in the section's body group, not directly on the section.
-function addTokenRow(section, row) {
-  (section.rowHost || section).appendChild(row);
+function addTokenRow(panel, row) {
+  (panel.body || panel).appendChild(row);
   setSizing(row, 'layoutSizingHorizontal', 'FILL');
   return row;
 }
@@ -7414,7 +7408,7 @@ async function buildTokenCanvas(cfg) {
   function addResponsive(title, prefix) {
     var entries = sys.responsive.filter(function (e) { return e.name.indexOf(prefix) === 0; });
     if (!entries.length) return;
-    var section = tokenSectionFrame(title, ctx);
+    var panel = tokenSectionFrame(title, ctx);
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
       var parts = [];
@@ -7423,10 +7417,10 @@ async function buildTokenCanvas(cfg) {
         parts.push(sys.bpNames[b].charAt(0) + ' ' + valueLabel(e, bv));
       }
       var shown = valueFor(e, sys.modeIds[widest]);
-      addTokenRow(section, tokenRow(ctx, e.name, parts.join('  '), sampleFor(ctx, e, shown)));
+      addTokenRow(panel, tokenRow(ctx, e.name, parts.join('  '), sampleFor(ctx, e, shown)));
       result.tokens++;
     }
-    page.appendChild(section);
+    page.appendChild(panel.section);
     result.sections++;
   }
 
@@ -7435,14 +7429,14 @@ async function buildTokenCanvas(cfg) {
       return e.name.indexOf(prefix) === 0 && (!typeFilter || e.type === typeFilter);
     });
     if (!entries.length) return;
-    var section = tokenSectionFrame(title, ctx);
+    var panel = tokenSectionFrame(title, ctx);
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
       var v = valueFor(e, null);
-      addTokenRow(section, tokenRow(ctx, e.name, valueLabel(e, v), sampleFor(ctx, e, v)));
+      addTokenRow(panel, tokenRow(ctx, e.name, valueLabel(e, v), sampleFor(ctx, e, v)));
       result.tokens++;
     }
-    page.appendChild(section);
+    page.appendChild(panel.section);
     result.sections++;
   }
 
@@ -7458,19 +7452,19 @@ async function buildTokenCanvas(cfg) {
   addPrimitive('Icon size', 'icon/');
   addPrimitive('Opacity', 'opacity/');
 
-  var ramps = ['brand/', 'neutral/', 'success/', 'warning/', 'danger/'];
+  var ramps = ['brand/', 'neutral/'];
   for (var rI = 0; rI < ramps.length; rI++) {
     addPrimitive('Colour — ' + ramps[rI].replace('/', ''), ramps[rI], 'COLOR');
   }
 
   if (sys.theme.length) {
-    var themeSection = tokenSectionFrame('Semantic colour', ctx);
+    var themePanel = tokenSectionFrame('Semantic colour', ctx);
     for (var t = 0; t < sys.theme.length; t++) {
       var te = sys.theme[t];
-      addTokenRow(themeSection, tokenRow(ctx, te.name, valueLabel(te, valueFor(te, null)), sampleSwatch(ctx, te)));
+      addTokenRow(themePanel, tokenRow(ctx, te.name, valueLabel(te, valueFor(te, null)), sampleSwatch(ctx, te)));
       result.tokens++;
     }
-    page.appendChild(themeSection);
+    page.appendChild(themePanel.section);
     result.sections++;
   }
 

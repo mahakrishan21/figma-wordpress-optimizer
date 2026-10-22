@@ -24,6 +24,16 @@ function findText(node, substr) {
 }
 
 async function run() {
+  // ── 0 ── a node must reject an invented property, as Figma does ───────
+  fresh6();
+  var probe = mkFrame({ name: 'Probe' });
+  var threw = false;
+  try { probe.somethingInvented = 1; } catch (e) { threw = String(e).indexOf('not extensible') !== -1; }
+  ok(threw, 'assigning an unknown property to a node throws "not extensible", as in Figma');
+  var realOk = true;
+  try { probe.cornerRadius = 8; } catch (e) { realOk = false; }
+  ok(realOk, 'while a real property still assigns');
+
   // ── 1 ── nothing to draw ──────────────────────────────────────────────
   fresh6();
   var none = await buildTokenCanvas(CFG);
