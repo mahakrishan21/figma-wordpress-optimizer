@@ -176,6 +176,82 @@ async function run() {
   eq(d3.tone, 'warning', 'no selection warns');
   ok(d3.message.indexOf('Select a frame') !== -1, 'and asks for one');
 
+  // ── 9 ── a styled layer must be LEFT ALONE ────────────────────────────
+  // Writing node.fills on a layer painted by a style silently detaches the
+  // style, so proposing a binding there would unpick the file's own styles.
+  await system();
+  var styled = mkFrame({ name: 'Styled', layoutMode: 'VERTICAL', paddingTop: 24 });
+  styled.fills = [solid('#2563EB')];
+  styled.fillStyleId = 'S:somestyle';
+  figma.currentPage.appendChild(styled);
+  var ss = await surveyAdoption([styled], {});
+  eq(ss.proposals.filter(function (p) { return p.kind === 'color'; }).length, 0,
+     'no colour binding is proposed onto a styled paint');
+  ok(ss.styled > 0, 'and it is counted as left to its style  (' + ss.styled + ')');
+  ok(ss.reasons.join(' ').indexOf('detach the style') !== -1, 'with the reason spelled out');
+  ok(ss.proposals.filter(function (p) { return p.kind === 'space'; }).length > 0,
+     'while its spacing is still offered — only the paint is off limits');
+
+  // 9b ── a text layer using a text style keeps it
+  await system();
+  var st = mkText('Hello');
+  st.fontSize = 24;
+  st.textStyleId = 'T:sometextstyle';
+  var holder2 = mkFrame({ name: 'Holder', layoutMode: 'VERTICAL', children: [st] });
+  figma.currentPage.appendChild(holder2);
+  var ts2 = await surveyAdoption([holder2], { fontDelta: 6 });
+  eq(propsFor(ts2, 'type', 'fontSize').length, 0, 'no font size binding onto a styled text layer');
+  ok(ts2.styled > 0, 'counted as styled');
+
+  // ── 10 ── generate FROM a design and bind back INTO it, in one action ──
+  fresh8();
+  var kit = mkFrame({ name: 'Padding & Spacing', children: [
+    mkFrame({ name: 'Group 1', children: [
+      mkText('Spacing/ Desktop', 'heading'),
+      mkFrame({ name: 'Frame 1', children: [mkText('300'), mkText('24px')] })
+    ]})
+  ]});
+  var design = mkFrame({ name: 'Page', layoutMode: 'VERTICAL', paddingTop: 24, cornerRadius: 8,
+                         children: [kit] });
+  design.fills = [solid('#2563EB')];
+  figma.currentPage.appendChild(design);
+  figma.currentPage.selection = [design];
+
+  eq(readBreakpointConfig(), null, 'nothing set up to begin with');
+  var fd = await adoptFromDesign({});
+  ok(!!readBreakpointConfig(), 'breakpoints were seeded');
+  eq(fd.seededBreakpoints, true, 'and reported as seeded');
+  ok(fd.generated.created > 0, 'tokens were generated  (' + fd.generated.created + ')');
+  ok(!!fd.applied, 'and an apply ran');
+  ok(fd.applied.bound > 0, 'binding values back INTO the design  (' + fd.applied.bound + ')');
+  ok(!!design.boundVariables.paddingTop, 'the design itself is now on the system');
+
+  // 10b ── exactOnly leaves the near misses alone
+  fresh8();
+  var d2 = mkFrame({ name: 'Page2', layoutMode: 'VERTICAL', paddingTop: 23, paddingLeft: 24 });
+  figma.currentPage.appendChild(d2);
+  figma.currentPage.selection = [d2];
+  var fd2 = await adoptFromDesign({ exactOnly: true });
+  ok(fd2.applied.skipped > 0, 'the near misses are skipped under exactOnly');
+  eq(d2.paddingTop, 23, 'so a 23px padding is untouched');
+  ok(!!d2.boundVariables.paddingLeft, 'while the exact 24px one is bound');
+
+  // 10c ── nothing selected
+  figma.currentPage.selection = [];
+  var fd3 = await adoptFromDesign({});
+  ok(fd3.reasons.join(' ').indexOf('Select the design') !== -1, 'it asks for a selection');
+
+  // 10d ── through the handler
+  fresh8();
+  var d3 = mkFrame({ name: 'Page3', layoutMode: 'VERTICAL', paddingTop: 24 });
+  figma.currentPage.appendChild(d3);
+  figma.currentPage.selection = [d3];
+  globalThis.__posted = [];
+  await figma.ui.onmessage({ type: 'uikit-from-design', requestId: 'g1' });
+  var gd = posted8('uikit-done')[0];
+  ok(!!gd, 'the action reports done');
+  ok(gd.message.indexOf('bound into the design') !== -1, 'saying it wired it up: ' + gd.message);
+
   print('');
   print(fail === 0 ? ('ALL PASS (' + pass + ' assertions)') : (pass + ' passed, ' + fail + ' FAILED'));
 }

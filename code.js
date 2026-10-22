@@ -5582,16 +5582,45 @@ async function adoptionPools(cols, modeId) {
                      : ne.resolved[modeOf(ne.collection)];
     if (typeof val !== 'number') continue;
     var rec = { variable: ne.variable, name: ne.variable.name, value: val };
-    if (ne.variable.name.indexOf('text/size/') === 0) fonts.push(rec);
-    else if (ne.variable.name.indexOf('text/leading/') === 0) leadings.push(rec);
-    else if (ne.variable.name.indexOf('space/') === 0 || ne.variable.name.indexOf('radius/') === 0 ||
-             ne.variable.name.indexOf('grid/') === 0) spaces.push(rec);
+    var nm = ne.variable.name;
+    if (nm.indexOf('text/size/') === 0) { fonts.push(rec); continue; }
+    if (nm.indexOf('text/leading/') === 0) { leadings.push(rec); continue; }
+    // Everything else numeric is a LENGTH and can match a padding, gap or
+    // radius. Whitelisting prefixes broke the moment a token came off a
+    // canvas with that file's own naming — "spacing/300" rather than
+    // "space/300" — and silently matched nothing.
+    if (nm.indexOf('opacity/') === 0) continue;     // 0–1, not a length
+    if (nm === 'grid/columns') continue;            // a count, not a length
+    spaces.push(rec);
   }
   return { colours: colours, spaces: spaces, fonts: fonts, leadings: leadings };
 }
 
 var ADOPT_SPACE_FIELDS = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom',
                           'itemSpacing', 'counterAxisSpacing', 'cornerRadius'];
+
+// A paint driven by a STYLE must be left alone. Writing node.fills on a
+// styled layer silently detaches the style, so a survey that proposed a
+// binding there would quietly unpick the file's existing styles — the
+// opposite of putting a design on the system.
+function slotIsStyled(node, prop) {
+  var key = prop === 'fills' ? 'fillStyleId' : 'strokeStyleId';
+  try {
+    var id = node[key];
+    if (id === figma.mixed) return true;     // some run is styled; leave it
+    return typeof id === 'string' && id.length > 0;
+  } catch (e) { return false; }
+}
+
+// Same for typography: a text style owns the size and leading of the layer
+// it is applied to.
+function textIsStyled(node) {
+  try {
+    var id = node.textStyleId;
+    if (id === figma.mixed) return true;
+    return typeof id === 'string' && id.length > 0;
+  } catch (e) { return false; }
+}
 
 // Whether one typography field is already driven by a variable. Range-level
 // bindings are not visible here, so a run that is bound per-range may be
@@ -5608,7 +5637,7 @@ async function surveyAdoption(roots, opts) {
     fontDelta: typeof opts.fontDelta === 'number' ? opts.fontDelta : ADOPT_DEFAULTS.fontDelta,
     spaceDelta: typeof opts.spaceDelta === 'number' ? opts.spaceDelta : ADOPT_DEFAULTS.spaceDelta
   };
-  var out = { proposals: [], alreadyBound: 0, unmatched: [], scanned: 0,
+  var out = { proposals: [], alreadyBound: 0, styled: 0, unmatched: [], scanned: 0,
               exact: 0, near: 0, reasons: [], unit: 'binding' };
   if (!roots || !roots.length) { out.reasons.push('Select a frame first.'); return out; }
 
@@ -5656,6 +5685,7 @@ async function surveyAdoption(roots, opts) {
       var paint = slot.paint;
       if (!paint || paint.type !== 'SOLID') continue;
       if (paint.boundVariables && paint.boundVariables.color) { out.alreadyBound++; continue; }
+      if (slotIsStyled(node, slot.prop)) { out.styled++; continue; }
       var hex = rgbToHexStr(paint.color);
       var op = typeof paint.opacity === 'number' ? paint.opacity : 1;
       var cm = nearestColorToken(pools.colours, hex, op, tol.colorDelta);
@@ -5664,7 +5694,9 @@ async function surveyAdoption(roots, opts) {
     }
 
     // ── typography ───────────────────────────────────────────────────────
-    if (node.type === 'TEXT') {
+    if (node.type === 'TEXT' && textIsStyled(node)) {
+      out.styled++;
+    } else if (node.type === 'TEXT') {
       var runs = await textTypeRuns(node);
       for (var rI = 0; rI < runs.length; rI++) {
         var run = runs[rI];
@@ -5709,6 +5741,10 @@ async function surveyAdoption(roots, opts) {
     }
   }
 
+  if (out.styled) {
+    out.reasons.push(out.styled + ' layer(s) are painted by a style rather than a raw value, and were left alone \u2014 ' +
+      'binding a variable there would detach the style. Convert those styles to variables from the Colors or Typography tab first.');
+  }
   return out;
 }
 
@@ -5758,6 +5794,64 @@ async function applyAdoption(proposals, accepted) {
       if (!seen[why]) { seen[why] = true; result.reasons.push(why); }
     }
   }
+  return result;
+}
+
+// Generate a system FROM a design, and bind it straight back INTO that
+// design. Reading a scale off the canvas and then surveying it separately
+// leaves the design exactly as it was — the tokens exist but nothing uses
+// them. One action closes that loop.
+async function adoptFromDesign(opts) {
+  opts = opts || {};
+  var result = { generated: null, survey: null, applied: null, reasons: [], unit: 'token' };
+  var sel = figma.currentPage.selection;
+  if (!sel || !sel.length) { result.reasons.push('Select the design to build from.'); return result; }
+
+  var cfg = readBreakpointConfig();
+  var seeded = false;
+  if (!cfg) {
+    cfg = { preset: 'standard', breakpoints: BREAKPOINT_PRESETS.standard };
+    var cols0 = await getUiKitCollections(true);
+    var modes0 = await ensureModes(cols0.responsive, breakpointNames(cfg));
+    if (modes0.capHit) {
+      result.reasons.push('This file allows only ' + modes0.cap +
+        ' modes per collection, so the standard breakpoints will not fit. Build from scratch and pick fewer.');
+      return result;
+    }
+    writeBreakpointConfig(cfg);
+    seeded = true;
+  }
+  result.seededBreakpoints = seeded;
+
+  // 1 ── what does this design actually use?
+  var read = await scanUiKit(sel, cfg);
+  var table = (opts.table && opts.table.length) ? opts.table : read.rows;
+  if (!table.length) {
+    // Nothing documented on the canvas, so fall back to the preset scale —
+    // the design still gets a system, just not one derived from its labels.
+    table = defaultScaleTable(cfg, buildOptionsFrom({ preset: cfg.preset, breakpoints: cfg.breakpoints }));
+    result.usedDefaults = true;
+  }
+  result.read = { rows: read.rows.length, parsed: read.parsed, unparsed: read.unparsed };
+
+  // 2 ── write the tokens
+  result.generated = await generateScaleVariables(cfg, table);
+  Array.prototype.push.apply(result.reasons, result.generated.reasons);
+  if (result.generated.modes && result.generated.modes.capHit) return result;
+
+  // 3 ── and immediately bind them back where they came from
+  result.survey = await surveyAdoption(sel, opts);
+  Array.prototype.push.apply(result.reasons, result.survey.reasons);
+
+  var accepted = {};
+  if (opts.exactOnly) {
+    for (var i = 0; i < result.survey.proposals.length; i++) {
+      var pr = result.survey.proposals[i];
+      if (!pr.exact) accepted[pr.key] = false;
+    }
+  }
+  result.applied = await applyAdoption(result.survey.proposals, accepted);
+  Array.prototype.push.apply(result.reasons, result.applied.reasons);
   return result;
 }
 
@@ -7094,27 +7188,57 @@ async function createStarterCanvas(cfg, opts) {
 // variable, so the page is not a snapshot — retune a token and the page
 // retunes with it.
 
+// One titled panel. The page lays these out SIDE BY SIDE, top-aligned —
+// the way a UI kit page is actually read, rather than as one tall column
+// nobody scrolls to the bottom of.
+var TOKEN_COLUMN_WIDTH = 520;
+
 function tokenSectionFrame(title, ctx) {
-  var f = kitRow(title, { vertical: true, gap: 10, align: 'MIN' });
-  f.appendChild(kitText(title, ctx.fonts.bold, 15, ctx.colors, 'color/text/primary'));
+  var f = figma.createFrame();
+  f.name = title;
+  f.layoutMode = 'VERTICAL';
+  f.resize(TOKEN_COLUMN_WIDTH, 1);          // before the sizing modes
+  f.primaryAxisSizingMode = 'AUTO';
+  f.counterAxisSizingMode = 'FIXED';
+  f.itemSpacing = 10;
+  f.fills = [];
+
+  var heading = kitText(title, ctx.fonts.bold, 15, ctx.colors, 'color/text/primary');
+  f.appendChild(heading);
+
+  // The rule under the title, as in the reference page.
+  var rule = figma.createRectangle();
+  rule.name = 'Line';
+  rule.resize(TOKEN_COLUMN_WIDTH, 1);
+  kitFill(rule, ctx.colors, 'color/border');
+  f.appendChild(rule);
+  setSizing(rule, 'layoutSizingHorizontal', 'FILL');
+
   return f;
 }
 
 function tokenRow(ctx, name, valueText, sample) {
-  var row = kitRow('Token', { gap: 16, align: 'CENTER' });
+  var row = figma.createFrame();
+  row.name = name;
+  row.layoutMode = 'HORIZONTAL';
+  row.resize(TOKEN_COLUMN_WIDTH, 1);        // before the sizing modes
+  row.primaryAxisSizingMode = 'FIXED';
+  row.counterAxisSizingMode = 'AUTO';
   row.counterAxisAlignItems = 'CENTER';
+  row.itemSpacing = 12;
+  row.fills = [];
 
   var label = kitText(name, ctx.fonts.regular, 11, ctx.colors, 'color/text/secondary');
-  label.textAutoResize = 'NONE';
-  label.resize(210, 16);
-  setSizing(label, 'layoutSizingHorizontal', 'FIXED');
   row.appendChild(label);
+  label.textAutoResize = 'HEIGHT';
+  label.resize(190, label.height || 16);
+  setSizing(label, 'layoutSizingHorizontal', 'FIXED');
 
   var val = kitText(valueText, ctx.fonts.medium, 11, ctx.colors, 'color/text/primary');
-  val.textAutoResize = 'NONE';
-  val.resize(70, 16);
-  setSizing(val, 'layoutSizingHorizontal', 'FIXED');
   row.appendChild(val);
+  val.textAutoResize = 'HEIGHT';
+  val.resize(96, val.height || 16);
+  setSizing(val, 'layoutSizingHorizontal', 'FIXED');
 
   if (sample) row.appendChild(sample);
   return row;
@@ -7233,13 +7357,15 @@ async function buildTokenCanvas(cfg) {
   var colors = await ensureKitColorVariables(cols);
   var ctx = { fonts: fonts, colors: colors, nums: {} };
 
+  // Side by side, top-aligned — the reference page's layout.
   var page = figma.createFrame();
   page.name = 'Design System — Tokens';
-  page.layoutMode = 'VERTICAL';
+  page.layoutMode = 'HORIZONTAL';
   page.primaryAxisSizingMode = 'AUTO';
   page.counterAxisSizingMode = 'AUTO';
-  page.itemSpacing = 40;
-  page.paddingLeft = 48; page.paddingRight = 48; page.paddingTop = 48; page.paddingBottom = 48;
+  page.counterAxisAlignItems = 'MIN';
+  page.itemSpacing = 64;
+  page.paddingLeft = 64; page.paddingRight = 64; page.paddingTop = 64; page.paddingBottom = 64;
   kitFill(page, colors, 'color/surface');
 
   var widest = sys.bpNames.length ? sys.bpNames[0] : null;
@@ -7540,11 +7666,25 @@ async function handleUiKitMessage(msg) {
         if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
         summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
       }
+    } else if (msg.type === 'uikit-from-design') {
+      r = await adoptFromDesign(msg);
+      if (r.generated && (r.generated.created || r.generated.reused)) {
+        var fb = [r.generated.created + ' tokens'];
+        if (r.applied && r.applied.bound) fb.push(r.applied.bound + ' bound into the design');
+        if (r.survey && r.survey.styled) fb.push(r.survey.styled + ' left to their styles');
+        if (r.usedDefaults) fb.push('from the preset scale, since nothing was documented on the canvas');
+        summary = fb.join(', ') + '.' + (r.seededBreakpoints ? ' Standard breakpoints were set up.' : '');
+        if (r.applied && !r.applied.bound) tone = 'warning';
+      } else {
+        summary = r.reasons.length ? r.reasons[0] : 'Nothing was generated.';
+        tone = 'warning';
+      }
     } else if (msg.type === 'uikit-survey') {
       r = await surveyAdoption(figma.currentPage.selection, msg);
       if (r.proposals.length) {
         summary = r.proposals.length + ' can be wired up — ' + r.exact + ' exact, ' + r.near +
           ' within tolerance' + (r.alreadyBound ? (', ' + r.alreadyBound + ' already bound') : '') +
+          (r.styled ? (', ' + r.styled + ' left to their styles') : '') +
           '. Review before applying.';
         if (r.near) tone = 'warning';
       } else {
@@ -8538,7 +8678,8 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-build' || msg.type === 'uikit-preview-table' ||
         msg.type === 'uikit-export' || msg.type === 'uikit-canvas' ||
         msg.type === 'uikit-fluid' || msg.type === 'uikit-survey' ||
-        msg.type === 'uikit-adopt' || msg.type === 'uikit-starter') {
+        msg.type === 'uikit-adopt' || msg.type === 'uikit-starter' ||
+        msg.type === 'uikit-from-design') {
       await handleUiKitMessage(msg);
       return;
     }

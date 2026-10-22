@@ -5055,15 +5055,15 @@
       </div>
       <div class="es-actions">
         <button class="btn ${has ? '' : 'btn-primary'}" data-act="uik-wizard"${KS.busy ? ' disabled' : ''}>
-          ${SI.wand} Generate from scratch
+          ${SI.wand} Build from scratch
         </button>
-        <button class="btn ${has ? 'btn-primary' : ''}" data-act="uik-use-existing"${KS.busy ? ' disabled' : ''}>
-          ${SI.search} ${has ? 'Open it' : 'Read from canvas'}
+        <button class="btn ${has ? 'btn-primary' : ''}" data-act="${has ? 'uik-use-existing' : 'uik-from-design'}"${KS.busy ? ' disabled' : ''}>
+          ${SI.icSurvey} ${has ? 'Open it' : 'Build from a design'}
         </button>
       </div>
       <div class="es-helper">${has
         ? 'Generating again replaces the scale, reusing every token by name.'
-        : 'One question at a time \u2014 nothing is written until the last step.'}</div>
+        : 'From scratch asks one question at a time. From a design reads what a selected frame already uses, makes it into tokens, and binds them straight back into it.'}</div>
     </div>`;
   }
 
@@ -5637,7 +5637,10 @@
 
     let body = '';
     if (!sv) {
-      body = `<p class="uik-note">Select a design that was built before the system and survey it. Every colour, type size and spacing is matched to its nearest token, with the distance shown. <b>Nothing changes until you apply.</b></p>`;
+      body = `<p class="uik-note">
+        <b>Survey</b> matches what a selected design already uses against the tokens that exist, shows how far off each one is, and changes nothing until you apply.<br>
+        <b>Generate &amp; apply</b> does the whole thing in one go: reads the design, makes the tokens, and binds them straight back into it.
+      </p>`;
     } else if (!sv.proposals.length) {
       body = `<p class="uik-note">${sv.alreadyBound ? 'Everything here is already on the system.' : 'Nothing matched the system.'}${sv.unmatched && sv.unmatched.length ? ' Unmatched: ' + escHtml(sv.unmatched.slice(0, 8).join(', ')) : ''}</p>`;
     } else {
@@ -5670,6 +5673,7 @@
       body: `
         <div class="sm-actions" style="padding:8px 12px 4px">
           <button class="btn${sv ? '' : ' btn-primary'}" data-act="uik-survey"${KS.busy || !sel ? ' disabled' : ''}>${SI.icSurvey}Survey this design</button>
+          <button class="btn" data-act="uik-from-design"${KS.busy || !sel ? ' disabled' : ''}>${SI.icWand}Generate &amp; apply</button>
           ${sv && sv.proposals.length ? `
             <button class="btn btn-sm" data-act="uik-sv-exact">Exact only</button>
             <button class="btn btn-sm" data-act="uik-sv-all">All</button>
@@ -5942,6 +5946,11 @@
       return;
     }
     if (act === 'uik-survey') { KS.survey = null; KS.surveyAccepted = {}; sendUiKit({ type: 'uikit-survey' }); return; }
+    if (act === 'uik-from-design') {
+      KS.survey = null; KS.surveyAccepted = {};
+      sendUiKit({ type: 'uikit-from-design' });
+      return;
+    }
     if (act === 'uik-adopt') {
       sendUiKit({ type: 'uikit-adopt', proposals: KS.survey ? KS.survey.proposals : [], accepted: KS.surveyAccepted });
       return;

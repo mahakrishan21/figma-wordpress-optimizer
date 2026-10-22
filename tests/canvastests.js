@@ -41,7 +41,17 @@ async function run() {
 
   var page = figma.currentPage.children.filter(function (c) { return c.name === 'Design System — Tokens'; })[0];
   ok(!!page, 'the page is on the canvas');
-  eq(page.layoutMode, 'VERTICAL', 'as an auto-layout frame');
+  // Side by side and top-aligned, the way a UI kit page is actually read —
+  // not one tall column nobody scrolls to the bottom of.
+  eq(page.layoutMode, 'HORIZONTAL', 'sections sit side by side');
+  eq(page.counterAxisAlignItems, 'MIN', 'top-aligned, so columns of different length line up');
+  var sections = page.children || [];
+  ok(sections.length >= 10, 'one panel per family  (' + sections.length + ')');
+  sections.forEach(function (sec, i) {
+    eq(sec.primaryAxisSizingMode, 'AUTO', 'panel ' + i + ' hugs its height');
+    ok((sec.children || []).some(function (c) { return c.name === 'Line'; }),
+       'panel ' + i + ' has a rule under its title');
+  });
 
   // section headings are present
   ['Spacing', 'Radius', 'Type scale', 'Opacity', 'Semantic colour'].forEach(function (h) {
@@ -71,20 +81,21 @@ async function run() {
   ok(!!typeSample, 'the type sample is real text');
   ok(!!typeSample.boundVariables.fontSize, 'with its font size bound');
 
-  var iconSample = deepAll(page, function (n) { return n.name === 'icon/md'; })[0];
+  // The ROW is named after its token too, so select the sample by type.
+  var iconSample = deepAll(page, function (n) { return n.name === 'icon/md' && n.type === 'RECTANGLE'; })[0];
   ok(!!iconSample && !!iconSample.boundVariables.width && !!iconSample.boundVariables.height,
      'icon samples bind both width and height');
 
-  var opacitySample = deepAll(page, function (n) { return n.name === 'opacity/disabled'; })[0];
+  var opacitySample = deepAll(page, function (n) { return n.name === 'opacity/disabled' && n.type === 'RECTANGLE'; })[0];
   ok(!!opacitySample && !!opacitySample.boundVariables.opacity, 'opacity samples bind opacity');
 
-  var colourSample = deepAll(page, function (n) { return n.name === 'brand/500'; })[0];
+  var colourSample = deepAll(page, function (n) { return n.name === 'brand/500' && n.type === 'RECTANGLE'; })[0];
   ok(!!colourSample, 'a colour swatch exists');
   ok(colourSample.fills && colourSample.fills[0] && colourSample.fills[0].boundVariables &&
      colourSample.fills[0].boundVariables.color, 'with its FILL bound to the colour variable');
 
   // ── 4 ── a zero value is not asked to be 0px wide ─────────────────────
-  var zeroRow = deepAll(page, function (n) { return n.name === 'border/none'; })[0];
+  var zeroRow = deepAll(page, function (n) { return n.name === 'border/none' && n.type === 'RECTANGLE'; })[0];
   ok(!!zeroRow, 'border/none is drawn');
   ok(!zeroRow.width || zeroRow.width >= 1, 'without asking Figma for a zero-sized node');
 
