@@ -54,6 +54,14 @@ async function run() {
   ok(names.indexOf('Variant=Primary, State=Default') !== -1, 'named as variant properties, so Figma reads them as a matrix');
   ok(names.indexOf('Variant=Tertiary, State=Disabled') !== -1, 'including the far corner of the matrix');
 
+  // ── 3b ── a variant set must lay itself out, and wrap ─────────────────
+  // combineAsVariants leaves variants stacked at (0,0); a 3x3 matrix in one
+  // line runs off the page.
+  eq(btnSet.layoutMode, 'HORIZONTAL', 'the set has a layout of its own');
+  eq(btnSet.layoutWrap, 'WRAP', 'and wraps rather than running off');
+  eq(btnSet.counterAxisSizingMode, 'AUTO', 'hugging its height so no row is clipped');
+  ok(btnSet.counterAxisSpacing > 0, 'with a row gap for the wrapped rows');
+
   // ── 4 ── bound to the tokens, not to loose numbers ────────────────────
   var primary = btnSet.children.filter(function (c) { return c.name === 'Variant=Primary, State=Default'; })[0];
   ok(!!primary.boundVariables.paddingLeft, 'button padding is bound to a token');

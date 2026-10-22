@@ -5472,8 +5472,17 @@ async function generateKitElements(cfg, opts) {
       try {
         holder = figma.combineAsVariants(made, section);
         holder.name = def.label;
+        // Variants land stacked at (0,0), so the set needs a layout of its
+        // own. It WRAPS: a 3x3 Button matrix in one line runs off the page,
+        // and a bigger matrix runs further. resize() comes before the sizing
+        // modes, as everywhere else — it resets them.
         holder.layoutMode = 'HORIZONTAL';
+        holder.layoutWrap = 'WRAP';
+        holder.resize(1200, 1);
+        holder.primaryAxisSizingMode = 'FIXED';
+        holder.counterAxisSizingMode = 'AUTO';
         holder.itemSpacing = 16;
+        holder.counterAxisSpacing = 16;
         holder.paddingLeft = 16; holder.paddingRight = 16; holder.paddingTop = 16; holder.paddingBottom = 16;
       } catch (err2) {
         // Without a variant set the components are still usable, just loose.
