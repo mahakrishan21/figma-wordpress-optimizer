@@ -38,6 +38,9 @@ All notable changes to this project are documented in this file.
 - `getTokenCollection` no longer auto-picks a UI Kit collection for the Colors and Typography tabs. Those tabs write a single mode, so adopting a mode-aware collection would have produced a token with a Desktop value and three empty breakpoints
 
 ### Fixed
+- **The tab's buttons now match the Audit tab's.** They sit in the same bordered toolbar card, at full size with an icon beside the name, grouped under an **Apply & document** divider — rather than the small unlabelled buttons they were
+- **Canvas size inputs did not line up.** The proportional screen bar came before the number field, so the field shifted left on every row. The field is now in a fixed column and the bar follows it
+- **The wizard could open with no canvas sizes at all.** It hard-coded the `standard` preset, so a file whose presets did not include one started empty. It now prefers the file's own configured preset, then `standard`, then whatever exists
 - **`nodeModeFor` read a property that does not exist.** Figma's node property is `explicitVariableModes`; the code read `explicitModes`, a name the test harness had invented. In Figma that branch was simply dead, and the tests passed for the wrong reason. The mock now models the real pair, including the fact that **`resolvedVariableModes` folds in modes inherited from ancestors** — so a child of a mode-overridden frame now resolves correctly in the tests as it always did in Figma
 - **A single bound field hid a whole text layer from the survey.** A layer whose font size was already bound was skipped entirely, so its unbound line height was never offered. Typography is now checked field by field
 - **The CSS export threw the dark theme away.** The Theme collection holds a value per mode and only the first was emitted. It now writes a `[data-theme="dark"]` block carrying every semantic colour that differs from light
