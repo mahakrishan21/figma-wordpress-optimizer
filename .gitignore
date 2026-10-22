@@ -9,3 +9,6 @@ assets/icon-source.png
 
 # Node
 node_modules/
+
+# Browser tooling scratch output
+.playwright-mcp/

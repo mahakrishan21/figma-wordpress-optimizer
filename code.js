@@ -5866,6 +5866,170 @@ async function applyAdoption(proposals, accepted) {
   return result;
 }
 
+// ── Build from an existing file ────────────────────────────────────────────
+// A file that already has paint and text styles has already made most of
+// the decisions. Generating a fresh ramp beside them would leave two
+// systems in one file, so this ADOPTS what is there: every local style
+// becomes a token of the same name and value, and the style is bound to
+// it, so existing usage keeps working and becomes token-driven at once.
+
+function styleTokenName(prefix, styleName) {
+  var slug = String(styleName).replace(/\s*\/\s*/g, '/').trim();
+  slug = slug.replace(/\s+/g, '-').toLowerCase();
+  slug = slug.replace(/[^a-z0-9/\-]/g, '');
+  return prefix + '/' + slug.replace(/^\/+|\/+$/g, '');
+}
+
+async function adoptPaintStyles(cols, report) {
+  var out = { adopted: 0, reused: 0, bound: 0, skipped: 0 };
+  if (!cols.primitives) return out;
+  var styles = (await figma.getLocalPaintStylesAsync()).filter(function (st) { return !st.remote; });
+  if (!styles.length) return out;
+
+  var existing = await variablesByNameIn(cols.primitives);
+  var pool = await localVariablesWithValues('COLOR');
+
+  for (var i = 0; i < styles.length; i++) {
+    var st = styles[i];
+    var solid = solidOfStyle(st);
+    if (!solid) { out.skipped++; continue; }
+
+    var name = styleTokenName('color', st.name);
+    var v = existing[name];
+    if (v) { out.reused++; } else {
+      // A variable of the same VALUE under another name is still the same
+      // colour — reuse it rather than making a near-duplicate.
+      v = findColorVariable(pool, solid.hex, solid.opacity);
+      if (v) { out.reused++; } else {
+        v = figma.variables.createVariable(name, cols.primitives, 'COLOR');
+        var rgba = hexToRgb01(solid.hex);
+        rgba.a = typeof solid.opacity === 'number' ? solid.opacity : 1;
+        await setVarValue(v, cols.primitives, rgba);
+        try { v.scopes = []; } catch (e) { /* older API */ }
+        existing[name] = v;
+        pool.push({ variable: v, value: rgba });
+        out.adopted++;
+      }
+    }
+    // Bind the STYLE to the token: every layer already using the style now
+    // follows the token, with nothing to re-apply.
+    try { if (await bindPaintStyleToExactVariable(st, v)) out.bound++; }
+    catch (e) { /* style refused the binding */ }
+  }
+  if (out.skipped && report) {
+    report.push(out.skipped + ' paint style(s) are not a single solid colour and were left alone.');
+  }
+  return out;
+}
+
+async function adoptTextStyles(cfg, cols, report) {
+  var out = { adopted: 0, reused: 0, skipped: 0 };
+  if (!cols.responsive) return out;
+  var styles = (await figma.getLocalTextStylesAsync()).filter(function (st) { return !st.remote; });
+  if (!styles.length) return out;
+
+  var names = breakpointNames(cfg);
+  var modes = await ensureModes(cols.responsive, names);
+  if (modes.capHit) return out;
+
+  var bps = cfg.breakpoints;
+  var widest = bps[0].width || 1440;
+  var narrowest = bps[bps.length - 1].width || widest;
+  var existing = await variablesByNameIn(cols.responsive);
+
+  for (var i = 0; i < styles.length; i++) {
+    var st = styles[i];
+    var size = st.fontSize;
+    if (typeof size !== 'number' || !isFinite(size)) { out.skipped++; continue; }
+
+    var name = styleTokenName('text/size', st.name);
+    var v = existing[name];
+    if (v) { out.reused++; continue; }
+    v = figma.variables.createVariable(name, cols.responsive, 'FLOAT');
+    try { v.scopes = ['FONT_SIZE']; } catch (e) { /* older API */ }
+
+    // The style gives the widest value; the narrower ones are seeded by
+    // canvas ratio, floored at 14 so body copy stays readable. The
+    // designer tunes them in the table — a seeded number is a starting
+    // point, not a claim.
+    for (var b = 0; b < bps.length; b++) {
+      var w = bps[b].width || widest;
+      var t = (widest === narrowest) ? 0 : (widest - w) / (widest - narrowest);
+      var shrink = 1 - (0.28 * Math.max(0, Math.min(1, t)));
+      var val = Math.max(size > 20 ? 18 : 14, Math.round(size * shrink));
+      var modeId = modes.nameToModeId[names[b]];
+      if (modeId) await setVarValue(v, cols.responsive, val, modeId);
+    }
+    existing[name] = v;
+    out.adopted++;
+  }
+  if (out.skipped && report) report.push(out.skipped + ' text style(s) had no readable size.');
+  return out;
+}
+
+// What the file already contains, before anything is written.
+async function surveyExistingFile() {
+  var paints = (await figma.getLocalPaintStylesAsync()).filter(function (s) { return !s.remote; });
+  var texts = (await figma.getLocalTextStylesAsync()).filter(function (s) { return !s.remote; });
+  var cols = await getUiKitCollections(false);
+  var all = await figma.variables.getLocalVariableCollectionsAsync();
+  return {
+    paintStyles: paints.length,
+    textStyles: texts.length,
+    collections: all.map(function (c) { return { name: c.name, vars: c.variableIds.length, modes: c.modes.length }; }),
+    hasSystem: !!(cols.primitives || cols.responsive),
+    config: readBreakpointConfig()
+  };
+}
+
+async function buildFromExistingFile(opts) {
+  opts = opts || {};
+  var result = { reasons: [], unit: 'token',
+                 paints: null, texts: null, filled: null, survey: null, applied: null };
+
+  var cfg = readBreakpointConfig();
+  if (!cfg) {
+    cfg = { preset: 'standard', breakpoints: BREAKPOINT_PRESETS.standard };
+    var c0 = await getUiKitCollections(true);
+    var m0 = await ensureModes(c0.responsive, breakpointNames(cfg));
+    if (m0.capHit) {
+      result.reasons.push('This file allows only ' + m0.cap + ' modes per collection, so the standard ' +
+        'canvas sizes will not fit. Build a new system and pick fewer.');
+      return result;
+    }
+    writeBreakpointConfig(cfg);
+    result.seededBreakpoints = true;
+  }
+  result.cfg = cfg;
+
+  var cols = await getUiKitCollections(true);
+  result.paints = await adoptPaintStyles(cols, result.reasons);
+  result.texts = await adoptTextStyles(cfg, cols, result.reasons);
+
+  // Only fill in the families the file had nothing for — spacing, radius,
+  // the grid. Rebuilding colour or type here would put a second system
+  // beside the one just adopted.
+  var seeded = defaultScaleTable(cfg, { colors: false, typography: false });
+  result.filled = await generateScaleVariables(cfg, seeded);
+  Array.prototype.push.apply(result.reasons, result.filled.reasons);
+
+  if (opts.bindSelection !== false) {
+    var sel = figma.currentPage.selection;
+    if (sel && sel.length) {
+      result.survey = await surveyAdoption(sel, opts);
+      var accepted = {};
+      if (opts.exactOnly) {
+        for (var i = 0; i < result.survey.proposals.length; i++) {
+          if (!result.survey.proposals[i].exact) accepted[result.survey.proposals[i].key] = false;
+        }
+      }
+      result.applied = await applyAdoption(result.survey.proposals, accepted);
+      Array.prototype.push.apply(result.reasons, result.applied.reasons);
+    }
+  }
+  return result;
+}
+
 // Generate a system FROM a design, and bind it straight back INTO that
 // design. Reading a scale off the canvas and then surveying it separately
 // leaves the design exactly as it was — the tokens exist but nothing uses
@@ -7732,7 +7896,11 @@ async function uiKitState() {
     table: table,
     tableFromFile: fromFile,
     selectionCount: sel.length,
-    selectionName: sel.length === 1 ? sel[0].name : ''
+    selectionName: sel.length === 1 ? sel[0].name : '',
+    fileHas: {
+      paintStyles: (await figma.getLocalPaintStylesAsync()).filter(function (s) { return !s.remote; }).length,
+      textStyles: (await figma.getLocalTextStylesAsync()).filter(function (s) { return !s.remote; }).length
+    }
   };
 }
 
@@ -7871,6 +8039,26 @@ async function handleUiKitMessage(msg) {
         if (r.starter && r.starter.created) bits.push('a canvas to design in');
         if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
         summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
+      }
+    } else if (msg.type === 'uikit-survey-file') {
+      r = await surveyExistingFile();
+      summary = r.paintStyles + ' paint styles, ' + r.textStyles + ' text styles, ' +
+        r.collections.length + ' variable collection' + (r.collections.length === 1 ? '' : 's') + ' in this file.';
+    } else if (msg.type === 'uikit-from-file') {
+      r = await buildFromExistingFile(msg);
+      var total = (r.paints ? r.paints.adopted : 0) + (r.texts ? r.texts.adopted : 0);
+      if (total || (r.filled && r.filled.created)) {
+        var ff = [];
+        if (r.paints && r.paints.adopted) ff.push(r.paints.adopted + ' colours adopted');
+        if (r.paints && r.paints.bound) ff.push(r.paints.bound + ' styles now follow a token');
+        if (r.paints && r.paints.reused) ff.push(r.paints.reused + ' already existed');
+        if (r.texts && r.texts.adopted) ff.push(r.texts.adopted + ' text sizes adopted');
+        if (r.filled && r.filled.created) ff.push(r.filled.created + ' filled in');
+        if (r.applied && r.applied.bound) ff.push(r.applied.bound + ' bound into the selection');
+        summary = ff.join(', ') + '.' + (r.seededBreakpoints ? ' Standard canvas sizes were set up.' : '');
+      } else {
+        summary = r.reasons.length ? r.reasons[0] : 'This file had nothing to adopt.';
+        tone = 'warning';
       }
     } else if (msg.type === 'uikit-from-design') {
       r = await adoptFromDesign(msg);
@@ -8885,7 +9073,8 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-export' || msg.type === 'uikit-canvas' ||
         msg.type === 'uikit-fluid' || msg.type === 'uikit-survey' ||
         msg.type === 'uikit-adopt' || msg.type === 'uikit-starter' ||
-        msg.type === 'uikit-from-design') {
+        msg.type === 'uikit-from-design' || msg.type === 'uikit-from-file' ||
+        msg.type === 'uikit-survey-file') {
       await handleUiKitMessage(msg);
       return;
     }

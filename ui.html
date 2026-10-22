@@ -5051,6 +5051,20 @@
   // Built from the same empty-state parts as the Audit, Colors and
   // Typography tabs — scene, title, description, actions, helper — so this
   // tab opens looking like the rest of the plugin rather than like itself.
+  // What the file already holds, so the second option can say what it will
+  // actually adopt rather than promising in the abstract.
+  function fileSummary() {
+    const f = (KS.state && KS.state.fileHas) || {};
+    const bits = [];
+    if (f.paintStyles) bits.push(plural(f.paintStyles, 'colour style'));
+    if (f.textStyles) bits.push(plural(f.textStyles, 'text style'));
+    if (!bits.length) {
+      return 'A new system asks one question at a time. Building from this file adopts the styles and values it already uses — this one has no styles yet, so it will read the canvas instead.';
+    }
+    return 'A new system asks one question at a time. Building from this file adopts ' +
+      bits.join(' and ') + ' it already has, turning each into a token of the same name.';
+  }
+
   function uikEntryHtml() {
     const st = KS.state || {};
     const cols = st.collections || {};
@@ -5068,15 +5082,15 @@
       </div>
       <div class="es-actions">
         <button class="btn ${has ? '' : 'btn-primary'}" data-act="uik-wizard"${KS.busy ? ' disabled' : ''}>
-          ${SI.wand} Build from scratch
+          ${SI.wand} Build a New Design System
         </button>
-        <button class="btn ${has ? 'btn-primary' : ''}" data-act="${has ? 'uik-use-existing' : 'uik-from-design'}"${KS.busy ? ' disabled' : ''}>
-          ${SI.icSurvey} ${has ? 'Open it' : 'Build from a design'}
+        <button class="btn ${has ? 'btn-primary' : ''}" data-act="${has ? 'uik-use-existing' : 'uik-from-file'}"${KS.busy ? ' disabled' : ''}>
+          ${SI.icSurvey} ${has ? 'Open it' : 'Build from an Existing File'}
         </button>
       </div>
       <div class="es-helper">${has
         ? 'Generating again replaces the scale, reusing every token by name.'
-        : 'From scratch asks one question at a time. From a design reads what a selected frame already uses, makes it into tokens, and binds them straight back into it.'}</div>
+        : fileSummary()}</div>
     </div>`;
   }
 
@@ -5647,6 +5661,7 @@
           <button class="btn" data-act="uik-bind"${KS.busy || !sel ? ' disabled' : ''}>${SI.icBind}Bind selection</button>
           <button class="btn" data-act="uik-starter"${KS.busy ? ' disabled' : ''}>${SI.icFlow}New design canvas</button>
           <button class="btn" data-act="uik-canvas"${KS.busy ? ' disabled' : ''}>${SI.icCanvasDoc}Document on canvas</button>
+          <button class="btn" data-act="uik-from-file"${KS.busy ? ' disabled' : ''}>${SI.icRead}Adopt this file&rsquo;s styles</button>
           <button class="btn" data-act="uik-reset"${KS.busy ? ' disabled' : ''}>${SI.icSliders}Change breakpoints</button>
         </div>
       </div>
@@ -5658,7 +5673,6 @@
       })}
       ${uikSurveyHtml()}
       ${uikElementsHtml()}
-      ${uikExportHtml()}
       ${uikResponsiveHtml()}
       ${blockHtml(KS, {
         id: 'uik-scale', title: 'Scale', count: (KS.table || []).length,
@@ -5822,6 +5836,11 @@
           <div class="sm-actions" style="padding:0 0 4px">
             <button class="btn btn-primary" data-act="uik-fluid"${KS.busy || !sel ? ' disabled' : ''}>${SI.icFlow}Make fluid</button>
           </div>
+          <p class="uik-note" style="padding:4px 0 0">
+            Then <b>Generate frames</b> below draws it at ${
+              (uikBreakpoints().length ? uikBreakpoints() : [{ name: 'Desktop' }, { name: 'Tablet' }, { name: 'Mobile' }])
+                .map(b => escHtml(b.name)).join(' &middot; ')} &mdash; one frame per canvas size.
+          </p>
         </div>
         <div class="uik-sep"></div>
         <div class="uik-subhead" style="padding:0 12px">Or draw each size</div>
@@ -5982,9 +6001,10 @@
     }
     if (act === 'uik-use-existing') {
       if (KS.state && KS.state.config) { KS.screen = 'main'; renderUiKit(); }
-      else sendUiKit({ type: 'uikit-parse' });
+      else sendUiKit({ type: 'uikit-from-file' });
       return;
     }
+    if (act === 'uik-from-file') { sendUiKit({ type: 'uikit-from-file' }); return; }
     if (act === 'uik-wiz-back') {
       if (KS.step === 0) { KS.screen = 'entry'; KS.spec = null; }
       else KS.step--;
