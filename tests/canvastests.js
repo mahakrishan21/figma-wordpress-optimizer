@@ -167,6 +167,55 @@ async function run() {
   var filled = texts.filter(function (t) { return t.layoutSizingHorizontal === 'FILL'; });
   ok(filled.length >= 3, 'the copy fills its container instead  (' + filled.length + ')');
 
+  // ── 9 ── the logo, drawn in colour, mono dark and mono light ──────────
+  fresh6();
+  writeBreakpointConfig(CFG);
+  await generateScaleVariables(CFG, defaultScaleTable(CFG, {}));
+  var withLogo = await buildTokenCanvas(CFG, {
+    logo: { bytes: [1, 2, 3, 4], width: 600, height: 200, name: 'logo.png' }
+  });
+  eq(withLogo.logo, true, 'a logo panel was drawn');
+  var lp = figma.currentPage.children.filter(function (c) { return c.name === 'Design System — Tokens'; })[0];
+  var logoPanel = (lp.children || []).filter(function (c) { return c.name === 'Logo'; })[0];
+  ok(!!logoPanel, 'and it leads the page');
+  eq(lp.children[0].name, 'Logo', 'as the first section');
+
+  var tiles = deepAll(logoPanel, function (n) {
+    return n.name === 'Original' || n.name.indexOf('Mono') === 0;
+  });
+  eq(tiles.length, 3, 'three tiles: original, mono dark, mono light');
+
+  var plates = deepAll(logoPanel, function (n) { return n.name === 'Logo' && n.type === 'RECTANGLE'; });
+  eq(plates.length, 3, 'each tile carries the image');
+  plates.forEach(function (pl, i) {
+    eq(pl.fills[0].type, 'IMAGE', 'tile ' + i + ' uses an image fill');
+    ok(!!pl.fills[0].imageHash, 'tile ' + i + ' has an image hash');
+  });
+  // a raster cannot be recoloured, so the mono versions are FILTERED
+  var mono = plates.filter(function (pl) { return pl.fills[0].filters; });
+  eq(mono.length, 2, 'two of them carry filters');
+  mono.forEach(function (pl) {
+    eq(pl.fills[0].filters.saturation, -1, 'saturation stripped to make it mono');
+  });
+  var exposures = mono.map(function (pl) { return pl.fills[0].filters.exposure; }).sort();
+  ok(exposures[0] < 0 && exposures[1] > 0, 'one pushed dark, one pushed light');
+
+  // 9b ── a logo Figma refuses is reported, not fatal
+  fresh6();
+  writeBreakpointConfig(CFG);
+  await generateScaleVariables(CFG, defaultScaleTable(CFG, {}));
+  var bad = await buildTokenCanvas(CFG, { logo: { bytes: [], width: 10, height: 10 } });
+  ok(bad.tokens > 0, 'the rest of the page is still drawn');
+  ok(!bad.logo, 'without a logo panel');
+
+  // 9c ── no logo at all is the normal case
+  fresh6();
+  writeBreakpointConfig(CFG);
+  await generateScaleVariables(CFG, defaultScaleTable(CFG, {}));
+  var noLogo = await buildTokenCanvas(CFG, {});
+  ok(!noLogo.logo, 'no logo section when none was given');
+  ok(noLogo.tokens > 0, 'and everything else is there');
+
   print('');
   print(fail === 0 ? ('ALL PASS (' + pass + ' assertions)') : (pass + ' passed, ' + fail + ' FAILED'));
 }

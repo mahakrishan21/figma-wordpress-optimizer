@@ -6567,7 +6567,7 @@ async function buildDesignSystem(spec) {
   }
 
   if (fams.canvas !== false) {
-    result.canvas = await buildTokenCanvas(cfg);
+    result.canvas = await buildTokenCanvas(cfg, { logo: spec.logo });
     Array.prototype.push.apply(result.reasons, result.canvas.reasons);
   }
 
@@ -7373,7 +7373,60 @@ function valueLabel(entry, value) {
   return formatted === null ? '—' : String(formatted);
 }
 
-async function buildTokenCanvas(cfg) {
+// The logo, as it will actually be used: on light, and on dark.
+//
+// A raster logo cannot be recoloured, but an image fill carries FILTERS —
+// saturation to strip the colour, exposure to push it to near-black or
+// near-white. That gives honest mono variants from the file that was
+// uploaded, rather than pretending to redraw it.
+function logoTile(label, ctx, hash, aspect, opts) {
+  opts = opts || {};
+  var tile = figma.createFrame();
+  tile.name = label;
+  tile.layoutMode = 'VERTICAL';
+  tile.resize(TOKEN_COLUMN_WIDTH, 1);
+  tile.primaryAxisSizingMode = 'AUTO';
+  tile.counterAxisSizingMode = 'FIXED';
+  tile.itemSpacing = 12;
+  tile.paddingLeft = 24; tile.paddingRight = 24; tile.paddingTop = 24; tile.paddingBottom = 24;
+  kitFill(tile, ctx.colors, opts.onDark ? 'color/text/primary' : 'color/surface/raised');
+  try { tile.cornerRadius = 8; } catch (e) { /* older API */ }
+
+  var plate = figma.createRectangle();
+  plate.name = 'Logo';
+  var h = 72;
+  plate.resize(Math.max(24, Math.round(h * (aspect || 3))), h);
+  var paint = { type: 'IMAGE', scaleMode: 'FIT', imageHash: hash };
+  if (opts.filters) paint.filters = opts.filters;
+  try { plate.fills = [paint]; } catch (e) { /* refused */ }
+  tile.appendChild(plate);
+  setSizing(plate, 'layoutSizingHorizontal', 'FILL');
+
+  var cap = kitText(label, ctx.fonts.regular, 10, ctx.colors,
+    opts.onDark ? 'color/text/inverse' : 'color/text/secondary');
+  tile.appendChild(cap);
+  try { cap.textAutoResize = 'HEIGHT'; } catch (e) {}
+  setSizing(cap, 'layoutSizingHorizontal', 'FILL');
+  return tile;
+}
+
+function buildLogoPanel(ctx, logo) {
+  var hash = null;
+  try { hash = figma.createImage(new Uint8Array(logo.bytes)).hash; }
+  catch (e) { return { panel: null, reason: 'Figma would not accept that logo file.' }; }
+
+  var aspect = (logo.width && logo.height) ? (logo.width / logo.height) : 3;
+  var panel = tokenSectionFrame('Logo', ctx);
+  addTokenRow(panel, logoTile('Original', ctx, hash, aspect, {}));
+  // saturation -1 strips the colour; exposure pushes it to one end.
+  addTokenRow(panel, logoTile('Mono — dark', ctx, hash, aspect,
+    { filters: { saturation: -1, exposure: -0.55, contrast: 0.35 } }));
+  addTokenRow(panel, logoTile('Mono — light', ctx, hash, aspect,
+    { onDark: true, filters: { saturation: -1, exposure: 0.6, contrast: 0.3 } }));
+  return { panel: panel, reason: null };
+}
+
+async function buildTokenCanvas(cfg, opts) {
   var result = { sections: 0, tokens: 0, reasons: [], unit: 'token' };
   var sys = await collectSystem();
   if (!sys.primitives.length && !sys.responsive.length && !sys.theme.length) {
@@ -7438,6 +7491,14 @@ async function buildTokenCanvas(cfg) {
     }
     page.appendChild(panel.section);
     result.sections++;
+  }
+
+  // The logo leads, as it does on a real kit page.
+  opts = opts || {};
+  if (opts.logo && opts.logo.bytes && opts.logo.bytes.length) {
+    var built = buildLogoPanel(ctx, opts.logo);
+    if (built.panel) { page.appendChild(built.panel.section); result.sections++; result.logo = true; }
+    else if (built.reason) result.reasons.push(built.reason);
   }
 
   addResponsive('Canvas', 'canvas/');
@@ -7758,7 +7819,7 @@ async function handleUiKitMessage(msg) {
           (r.usedComponents.length ? (', using ' + r.usedComponents.join(' and ')) : '') + '.';
       } else { summary = r.reasons.length ? r.reasons[0] : 'Nothing created.'; tone = 'warning'; }
     } else if (msg.type === 'uikit-canvas') {
-      r = await buildTokenCanvas(readBreakpointConfig());
+      r = await buildTokenCanvas(readBreakpointConfig(), { logo: msg.logo });
       if (r.tokens) summary = r.tokens + ' tokens drawn across ' + r.sections + ' sections, each bound to its variable.';
       else { summary = r.reasons.length ? r.reasons[0] : 'Nothing to draw.'; tone = 'warning'; }
     } else if (msg.type === 'uikit-export') {

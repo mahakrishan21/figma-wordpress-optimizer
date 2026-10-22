@@ -2,7 +2,7 @@
 var _id = 0; function nid(p){ return p + (++_id); }
 function F(){ return {
   mixed: Symbol('mixed'),
-  _paintStyles: [], _textStyles: [], _vars: [], _cols: [], _nodes: {}, _gridStyles: [],
+  _paintStyles: [], _textStyles: [], _vars: [], _cols: [], _nodes: {}, _gridStyles: [], _imgSeq: 0,
   showUI: function(){}, on: function(){}, commitUndo: function(){},
   notify: function(){},
   ui: { postMessage: function(m){ (globalThis.__posted = globalThis.__posted || []).push(m); }, resize: function(){}, onmessage: null },
@@ -38,6 +38,13 @@ function F(){ return {
   createText: function(){ var t = mkText(''); t.textAutoResize = 'NONE'; t.fontSize = 12;
                           t.fontName = { family:'Inter', style:'Regular' }; return t; },
   createComponent: function(){ var c = mkFrame({}); c.type = 'COMPONENT'; return c; },
+  createImage: function(bytes){
+    if (!bytes || !bytes.length) throw new Error('Empty image');
+    var h = 'img' + (++figma._imgSeq);
+    figma._images = figma._images || {};
+    figma._images[h] = bytes.length;
+    return { hash: h };
+  },
   createRectangle: function(){ var r = mkFrame({}); r.type = 'RECTANGLE'; delete r.children; r.strokeWeight = 0; r.opacity = 1; return r; },
   combineAsVariants: function(nodes, parent){
     var set = mkFrame({ name: 'Component Set' });

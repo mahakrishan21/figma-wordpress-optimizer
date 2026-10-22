@@ -853,6 +853,14 @@
                  color: var(--text-secondary); background: var(--gray-50); outline: none; }
   .uik-exp-box:focus { border-color: var(--blue-400); box-shadow: 0 0 0 2px var(--blue-50); }
   .uik-pv-empty { font-size: 11px; color: var(--text-muted); margin: 8px 0; }
+  .uik-logo { display: flex; gap: 14px; align-items: flex-start; margin: 4px 0 10px; }
+  .uik-logo-img { max-width: 160px; max-height: 64px; object-fit: contain;
+                  border: 1px solid var(--border); border-radius: var(--radius-sm);
+                  padding: 8px; background: var(--surface); }
+  .uik-logo-empty { width: 160px; height: 64px; display: flex; align-items: center;
+                    justify-content: center; font-size: 10px; color: var(--text-muted);
+                    border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); }
+  .uik-logo-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
   .uik-colorrow { display: flex; gap: 6px; align-items: center; }
   .uik-colorbox { width: 32px; height: 28px; padding: 0; border: 1px solid var(--border);
                   border-radius: var(--radius-sm); background: none; cursor: pointer; flex: 0 0 auto; }
@@ -1459,6 +1467,7 @@
   </div>
   <div id="colorsScreen" class="sm-screen"></div>
   <input type="file" id="colorImageInput" accept="image/png,image/jpeg,image/webp" hidden>
+  <input type="file" id="uikLogoInput" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden>
 </div>
 
 <!-- ═══════════════════ TYPOGRAPHY TAB ════════════════════════════════════ -->
@@ -3812,6 +3821,10 @@
     loadImageFile(e.target.files && e.target.files[0]);
     e.target.value = '';
   });
+  $('uikLogoInput').addEventListener('change', e => {
+    uikLoadLogo(e.target.files && e.target.files[0]);
+    e.target.value = '';
+  });
   // ── Image drop + paste ───────────────────────────────────────────────────
   // The whole Colors panel is the drop target, not just the upload card, and
   // the overlay says up-front whether what's being dragged can be dropped.
@@ -5173,6 +5186,57 @@
     return `<div class="uik-et">${head}${body}</div>${add}`;
   }
 
+  // Brand is the most saturated colour the logo contains that is not
+  // almost-black or almost-white; neutral is the least saturated. Picking by
+  // frequency instead would hand back the background.
+  function uikPickBrand(colors) {
+    let brand = null, neutral = null, bestSat = -1, leastSat = 2;
+    colors.forEach(c => {
+      const rgb = uikHexToRgb(c.hex);
+      if (!rgb) return;
+      const mx = Math.max(rgb.r, rgb.g, rgb.b), mn = Math.min(rgb.r, rgb.g, rgb.b);
+      const l = (mx + mn) / 2;
+      const sat = mx === mn ? 0 : (l > 0.5 ? (mx - mn) / (2 - mx - mn) : (mx - mn) / (mx + mn));
+      if (l > 0.08 && l < 0.94 && sat > bestSat) { bestSat = sat; brand = c.hex; }
+      if (sat < leastSat) { leastSat = sat; neutral = c.hex; }
+    });
+    return { brand: brand, neutral: neutral };
+  }
+
+  function uikLoadLogo(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let colors = [];
+        try { colors = extractPalette(img); } catch (e) { colors = []; }
+        const pick = uikPickBrand(colors);
+        if (pick.brand) uikSetSpec('colors.brandHex', pick.brand);
+        if (pick.neutral) uikSetSpec('colors.neutralHex', pick.neutral);
+
+        // The bytes go to the sandbox as a plain array; a Uint8Array does
+        // not survive every postMessage path.
+        const bytes = Array.from(new Uint8Array(reader.result));
+        KS.spec.logo = { bytes: bytes, width: img.naturalWidth, height: img.naturalHeight,
+                         name: file.name, preview: null };
+        KS.logoPreview = URL.createObjectURL(file);
+        KS.logoColors = colors.slice(0, 8);
+        renderUiKit();
+        reseedFromPresets();
+        showToast('Read ' + plural(colors.length, 'colour') + ' from the logo.', 'success');
+      };
+      img.onerror = () => showToast('Could not read that image.', 'error');
+      // extractPalette needs an <img>, the sandbox needs the raw bytes, so
+      // read the file twice rather than converting between them.
+      const asUrl = new FileReader();
+      asUrl.onload = () => { img.src = asUrl.result; };
+      asUrl.readAsDataURL(file);
+    };
+    reader.onerror = () => showToast('Could not read that file.', 'error');
+    reader.readAsArrayBuffer(file);
+  }
+
   function uikHexToRgb(hex) {
     const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
     if (!m) return null;
@@ -5385,7 +5449,18 @@
             <input type="color" class="uik-colorbox" data-uik-spec="colors.${field}" value="${escHtml(val)}">
             <input class="sm-input" data-uik-spec="colors.${field}" value="${escHtml(val)}">
           </span></label>`;
+      const logo = sp.logo;
       return `
+        <div class="uik-logo">
+          ${KS.logoPreview ? `<img class="uik-logo-img" src="${escHtml(KS.logoPreview)}" alt="">` : '<div class="uik-logo-empty">No logo</div>'}
+          <div class="uik-logo-side">
+            <button class="btn btn-sm" data-act="uik-logo">${logo ? 'Replace logo' : 'Upload a logo'}</button>
+            ${logo ? `<button class="btn btn-sm" data-act="uik-logo-clear">Remove</button>` : ''}
+            <p class="uik-note" style="padding:0">Its colours become the brand and neutral below, and it is drawn on the token page in colour, mono dark and mono light.</p>
+          </div>
+        </div>
+        ${KS.logoColors && KS.logoColors.length ? `<div class="uik-pv">${KS.logoColors.map(c =>
+            `<span class="uik-pv-chip"><i class="uik-pv-dot" style="background:${escHtml(c.hex)}"></i>${escHtml(c.hex)}</span>`).join('')}</div>` : ''}
         <div class="uik-presets" style="padding:0">
           ${swatch('Brand', 'brandHex', sp.colors.brandHex)}
           ${swatch('Neutral', 'neutralHex', sp.colors.neutralHex)}
@@ -5808,7 +5883,12 @@
       }
       KS.busy = false;
       setScopeBusy(KS, false);
-      if (msg.builtSystem) { KS.screen = 'main'; KS.spec = null; KS.previewRows = null; KS.tableDirty = false; }
+      if (msg.builtSystem) {
+        // Keep the logo after the wizard closes, so Document on canvas can
+        // still draw it.
+        KS.lastLogo = KS.spec ? KS.spec.logo : KS.lastLogo;
+        KS.screen = 'main'; KS.spec = null; KS.previewRows = null; KS.tableDirty = false;
+      }
       if (msg.result && typeof msg.result.text === 'string' && msg.result.format) {
         KS.exportText = msg.result.empty ? null : msg.result;
       }
@@ -5964,9 +6044,19 @@
       return;
     }
     if (act === 'uik-sv-all') { KS.surveyAccepted = {}; renderUiKit(); return; }
+    if (act === 'uik-logo') { $('uikLogoInput').click(); return; }
+    if (act === 'uik-logo-clear') {
+      if (KS.spec) KS.spec.logo = null;
+      KS.logoPreview = null; KS.logoColors = null;
+      renderUiKit();
+      return;
+    }
     if (act === 'uik-fluid') { sendUiKit({ type: 'uikit-fluid' }); return; }
     if (act === 'uik-starter') { sendUiKit({ type: 'uikit-starter' }); return; }
-    if (act === 'uik-canvas') { sendUiKit({ type: 'uikit-canvas' }); return; }
+    if (act === 'uik-canvas') {
+      sendUiKit({ type: 'uikit-canvas', logo: (KS.spec && KS.spec.logo) || KS.lastLogo || null });
+      return;
+    }
     if (act === 'uik-export') {
       KS.exportFormat = el.dataset.format;
       KS.exportText = null;
