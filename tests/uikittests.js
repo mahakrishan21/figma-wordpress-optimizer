@@ -294,7 +294,8 @@ async function run() {
 
   var pv = await previewBreakpoint('Mobile');
   eq(pv.applied, 1, 'mode override applied to one frame');
-  eq(hero.explicitModes[pcols.responsive.id], pm.nameToModeId['Mobile'], 'the override is the Mobile mode');
+  eq(hero.explicitVariableModes[pcols.responsive.id], pm.nameToModeId['Mobile'], 'the override is the Mobile mode');
+  eq(hero.resolvedVariableModes[pcols.responsive.id], pm.nameToModeId['Mobile'], 'and it resolves to it');
 
   // the bound token now resolves to the Mobile number, which is what reflows
   var heroVar = figma._vars.filter(function (v) { return v.id === hero.boundVariables.paddingTop.id; })[0];
@@ -302,6 +303,15 @@ async function run() {
   var mobN = await variableValue(heroVar, pm.nameToModeId['Mobile']);
   eq(deskN, 64, 'the same token is 64 at Desktop');
   ok(mobN < deskN, 'and smaller at Mobile  (' + mobN + ')');
+
+  // 15a ── a child inherits the mode its ancestor sets
+  var inner = mkFrame({ name: 'Inner', layoutMode: 'VERTICAL' });
+  hero.appendChild(inner);
+  eq(inner.resolvedVariableModes[pcols.responsive.id], pm.nameToModeId['Mobile'],
+     'a child inherits the mode from its ancestor, with none of its own');
+  eq(Object.keys(inner.explicitVariableModes).length, 0, 'and sets none itself');
+  eq(nodeModeFor(inner, pcols.responsive), pm.nameToModeId['Mobile'],
+     'so nodeModeFor reads Mobile for the child too');
 
   // 15b ── binding AFTER the override matches the Mobile values, not Desktop
   var second = mkFrame({ name: 'Second', layoutMode: 'VERTICAL', paddingTop: mobN });

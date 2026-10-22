@@ -124,6 +124,29 @@ async function run() {
   var ta = await applyAdoption(typeProps, {});
   eq(ta.bound, typeProps.length, 'and binds');
 
+  // ── 7b ── one bound field must not hide the rest of the layer ─────────
+  await system();
+  var t2 = mkText('Hello');
+  t2.fontSize = 24;
+  t2.lineHeight = { unit: 'PERCENT', value: 150 };
+  var box = mkFrame({ name: 'Box', layoutMode: 'VERTICAL', children: [t2] });
+  figma.currentPage.appendChild(box);
+
+  var before7 = await surveyAdoption([box], { fontDelta: 6 });
+  ok(propsFor(before7, 'type', 'fontSize').length > 0, 'font size is offered');
+  ok(propsFor(before7, 'type', 'lineHeight').length > 0, 'and so is line height');
+
+  // bind ONLY the font size, then survey again
+  var sizeOnly = propsFor(before7, 'type', 'fontSize');
+  await applyAdoption(sizeOnly, {});
+  ok(!!t2.boundVariables.fontSize, 'font size is now bound');
+
+  var after7 = await surveyAdoption([box], { fontDelta: 6 });
+  eq(propsFor(after7, 'type', 'fontSize').length, 0, 'the bound font size is not offered again');
+  ok(propsFor(after7, 'type', 'lineHeight').length > 0,
+     'but the UNBOUND line height still is — one bound field no longer hides the layer');
+  ok(after7.alreadyBound > 0, 'and the bound one is counted');
+
   // ── 8 ── through the handler ──────────────────────────────────────────
   await system();
   var live = mkFrame({ name: 'Live', layoutMode: 'VERTICAL', paddingTop: 24, cornerRadius: 8 });

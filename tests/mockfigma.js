@@ -135,7 +135,7 @@ function mkFrame(o){
     itemSpacing: o.itemSpacing || 0, counterAxisSpacing: o.counterAxisSpacing || 0,
     cornerRadius: o.cornerRadius || 0,
     fills: [], strokes: [],
-    boundVariables: {}, explicitModes: {}, _plugin: {},
+    boundVariables: {}, explicitVariableModes: {}, _plugin: {},
     setBoundVariable: function(field, v){
       if (v === null) { delete this.boundVariables[field]; return; }
       if (!v || !v.id) throw new Error('setBoundVariable needs a variable');
@@ -145,9 +145,21 @@ function mkFrame(o){
       if (!col || !col.id) throw new Error('Pass the collection OBJECT, not its id');
       var ok = (col.modes||[]).some(function(m){ return m.modeId === modeId; });
       if (!ok) throw new Error('That mode is not in that collection');
-      this.explicitModes[col.id] = modeId;
+      this.explicitVariableModes[col.id] = modeId;
     },
-    clearExplicitVariableModeForCollection: function(col){ delete this.explicitModes[col.id]; },
+    clearExplicitVariableModeForCollection: function(col){ delete this.explicitVariableModes[col.id]; },
+    // The real property folds in modes inherited from ancestors. Without
+    // that, a child of a mode-overridden frame resolves to the wrong mode
+    // and the tests would never notice.
+    get resolvedVariableModes(){
+      var out = {}, chain = [], at = this;
+      while (at && at.type !== 'PAGE') { chain.unshift(at); at = at.parent; }
+      for (var i = 0; i < chain.length; i++) {
+        var ex = chain[i].explicitVariableModes || {};
+        for (var k in ex) out[k] = ex[k];
+      }
+      return out;
+    },
     setPluginData: function(k, val){ this._plugin[k] = String(val); },
     getPluginData: function(k){ return this._plugin[k] || ''; },
     appendChild: function(c){
@@ -246,7 +258,7 @@ function cloneNode(src){
   copy.locked = src.locked;
   for (var k in src._plugin) copy._plugin[k] = src._plugin[k];
   if (src.boundVariables) { copy.boundVariables = {}; for (var b in src.boundVariables) copy.boundVariables[b] = src.boundVariables[b]; }
-  if (src.explicitModes) { copy.explicitModes = {}; for (var m in src.explicitModes) copy.explicitModes[m] = src.explicitModes[m]; }
+  if (src.explicitVariableModes) { copy.explicitVariableModes = {}; for (var m in src.explicitVariableModes) copy.explicitVariableModes[m] = src.explicitVariableModes[m]; }
   if (src.children) for (var i=0;i<src.children.length;i++) copy.appendChild(cloneNode(src.children[i]));
   return copy;
 }
@@ -254,7 +266,7 @@ globalThis.mkFrame = mkFrame;
 
 function mkText(characters, name){
   var t = { id: nid('T'), type:'TEXT', name: name || characters, characters: characters,
-           visible:true, locked:false, parent:null, boundVariables:{}, explicitModes:{}, _plugin:{},
+           visible:true, locked:false, parent:null, boundVariables:{}, explicitVariableModes:{}, _plugin:{},
            width: 100, height: 20,
            setPluginData:function(k,v){ this._plugin[k]=String(v); },
            getPluginData:function(k){ return this._plugin[k]||''; },

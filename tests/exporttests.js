@@ -69,6 +69,19 @@ async function run() {
      'min from the narrowest canvas, max from the widest  (' + h1.fluid.min + ' -> ' + h1.fluid.max + ')');
   has(parsed.settings.layout.contentSize, 'px', 'content size comes from canvas/content');
 
+  // ── 3b ── the DARK theme must survive the CSS export ──────────────────
+  // The Theme collection holds a value per mode; emitting only the first
+  // threw the dark theme away silently.
+  has(css.text, '[data-theme="dark"]', 'a dark theme block is emitted');
+  var darkBlock = css.text.slice(css.text.indexOf('[data-theme="dark"]'));
+  darkBlock = darkBlock.slice(0, darkBlock.indexOf('}'));
+  has(darkBlock, '--color-text-primary:', 'carrying the semantic colours');
+  var lightText = /--color-text-primary:\s*([^;]+);/.exec(rootBlock);
+  var darkText = /--color-text-primary:\s*([^;]+);/.exec(darkBlock);
+  ok(lightText && darkText && lightText[1].trim() !== darkText[1].trim(),
+     'and a DIFFERENT value to the light one  (' + (lightText && lightText[1].trim()) +
+     ' vs ' + (darkText && darkText[1].trim()) + ')');
+
   // ── 4 ── DTCG ─────────────────────────────────────────────────────────
   var dt = await exportDesignSystem('dtcg');
   var d = JSON.parse(dt.text);

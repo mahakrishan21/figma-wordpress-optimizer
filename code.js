@@ -4899,7 +4899,13 @@ function nodeModeFor(node, collection) {
     var resolved = node.resolvedVariableModes;
     if (resolved && resolved[collection.id]) return resolved[collection.id];
   } catch (e) { /* not every node type exposes it */ }
-  if (node.explicitModes && node.explicitModes[collection.id]) return node.explicitModes[collection.id];
+  // explicitVariableModes is the real property name. resolvedVariableModes
+  // above already folds in modes inherited from ancestors, which is why it
+  // is tried first; this only catches a node that sets its own.
+  try {
+    var explicit = node.explicitVariableModes;
+    if (explicit && explicit[collection.id]) return explicit[collection.id];
+  } catch (e) { /* not every node type exposes it */ }
   return modeOf(collection);
 }
 
@@ -5562,6 +5568,14 @@ async function adoptionPools(cols, modeId) {
 var ADOPT_SPACE_FIELDS = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom',
                           'itemSpacing', 'counterAxisSpacing', 'cornerRadius'];
 
+// Whether one typography field is already driven by a variable. Range-level
+// bindings are not visible here, so a run that is bound per-range may be
+// proposed again — binding it a second time is a no-op, which is a far
+// smaller cost than skipping a whole layer.
+function textFieldBound(node, field) {
+  return !!(node.boundVariables && node.boundVariables[field]);
+}
+
 async function surveyAdoption(roots, opts) {
   opts = opts || {};
   var tol = {
@@ -5629,19 +5643,28 @@ async function surveyAdoption(roots, opts) {
       var runs = await textTypeRuns(node);
       for (var rI = 0; rI < runs.length; rI++) {
         var run = runs[rI];
-        if (hasTextVariableBinding(node)) { out.alreadyBound++; break; }
         // textTypeRuns reports a run's extent under .range, not on the run.
         var at = run.range ? { start: run.range.start, end: run.range.end } : null;
+
+        // Check the FIELD, not the layer. A layer whose font size is already
+        // bound may still have an unbound line height, and skipping the whole
+        // layer on one binding hid the rest of it.
         var size = run.spec ? run.spec.fontSize : null;
         if (typeof size === 'number') {
-          var fm = nearestNumberToken(pools.fonts, size, tol.fontDelta);
-          if (fm) add(node, 'type', 'fontSize', fm, size + 'px', { range: at });
-          else noteUnmatched(size + 'px type');
+          if (textFieldBound(node, 'fontSize')) out.alreadyBound++;
+          else {
+            var fm = nearestNumberToken(pools.fonts, size, tol.fontDelta);
+            if (fm) add(node, 'type', 'fontSize', fm, size + 'px', { range: at });
+            else noteUnmatched(size + 'px type');
+          }
         }
         var lh = run.spec ? run.spec.lineHeight : null;
         if (lh && lh.unit === 'PERCENT' && typeof lh.value === 'number') {
-          var lm = nearestNumberToken(pools.leadings, lh.value, 5);
-          if (lm) add(node, 'type', 'lineHeight', lm, Math.round(lh.value) + '%', { range: at });
+          if (textFieldBound(node, 'lineHeight')) out.alreadyBound++;
+          else {
+            var lm = nearestNumberToken(pools.leadings, lh.value, 5);
+            if (lm) add(node, 'type', 'lineHeight', lm, Math.round(lh.value) + '%', { range: at });
+          }
         }
       }
     }
@@ -6535,6 +6558,30 @@ function exportCss(sys) {
   }
   lines.push('}');
 
+  // The Theme collection holds a value per mode. Emitting only the first
+  // one silently threw the dark theme away.
+  if (sys.theme.length) {
+    var modesByName = {};
+    var anyModes = sys.theme[0].modes || [];
+    for (i = 0; i < anyModes.length; i++) modesByName[anyModes[i].name] = anyModes[i].modeId;
+    var modeNames = Object.keys(modesByName);
+    for (var mI = 1; mI < modeNames.length; mI++) {
+      var modeName = modeNames[mI];
+      var themeBlock = [];
+      for (i = 0; i < sys.theme.length; i++) {
+        var tv2 = sys.theme[i];
+        var here2 = formatValue(tv2, valueFor(tv2, modesByName[modeName]));
+        var base2 = formatValue(tv2, valueFor(tv2, modesByName[modeNames[0]]));
+        if (here2 !== null && here2 !== base2) themeBlock.push('  ' + cssVarName(tv2.name) + ': ' + here2 + ';');
+      }
+      if (!themeBlock.length) continue;
+      lines.push('');
+      lines.push('[data-theme="' + String(modeName).toLowerCase() + '"] {');
+      Array.prototype.push.apply(lines, themeBlock);
+      lines.push('}');
+    }
+  }
+
   for (var b = 1; b < sys.bpNames.length; b++) {
     var bpName = sys.bpNames[b];
     var width = sys.cfg.breakpoints[b] ? sys.cfg.breakpoints[b].width : null;
@@ -6780,7 +6827,7 @@ function sampleRadius(ctx, entry, value) {
   r.name = entry.name;
   r.resize(44, 32);
   kitFill(r, ctx.colors, 'color/brand/subtle');
-  kitStroke(ctx ? r : r, ctx.colors, 'color/brand/default', 1);
+  kitStroke(r, ctx.colors, 'color/brand/default', 1);
   try { r.cornerRadius = Math.max(0, Number(value) || 0); } catch (e) { /* clamp */ }
   try { r.setBoundVariable('topLeftRadius', entry.variable); r.setBoundVariable('topRightRadius', entry.variable);
         r.setBoundVariable('bottomLeftRadius', entry.variable); r.setBoundVariable('bottomRightRadius', entry.variable); }
