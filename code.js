@@ -6968,7 +6968,11 @@ function sectionWithContainer(name, vars, report) {
   if (vpad) { bindNum(section, 'paddingTop', vars, vpad, report); bindNum(section, 'paddingBottom', vars, vpad, report); }
   // The side padding is the margin floor — it stops content touching the
   // edge once the canvas is narrower than the container.
-  var margin = firstOf(vars, ['grid/margin', 'space/300']);
+  //
+  // Every fallback here is RESPONSIVE on purpose. Falling back to a
+  // primitive such as space/300 would give a 1600 page and a 375 one the
+  // same margin, which is exactly what this is meant to avoid.
+  var margin = firstOf(vars, ['grid/margin', 'space/gutter', 'space/section/sm']);
   if (margin) { bindNum(section, 'paddingLeft', vars, margin, report); bindNum(section, 'paddingRight', vars, margin, report); }
 
   var container = figma.createFrame();
@@ -7249,27 +7253,58 @@ function addTokenRow(panel, row) {
   return row;
 }
 
-function tokenRow(ctx, name, valueText, sample) {
+var TOKEN_NAME_W = 170;
+var TOKEN_VALUE_W = 150;
+
+// A responsive token has one value per canvas size, so the cell is a
+// stacked list — "Desktop 1440px" on its own line, in grey. Packing them
+// into one string meant a 96px cell wrapped mid-word and spilled out of
+// the row, which is what made the page look broken.
+function tokenValueCell(ctx, lines) {
+  if (lines.length === 1) {
+    var one = kitText(lines[0], ctx.fonts.medium, 11, ctx.colors, 'color/text/primary');
+    return one;
+  }
+  var stack = figma.createFrame();
+  stack.name = 'Values';
+  stack.layoutMode = 'VERTICAL';
+  stack.resize(TOKEN_VALUE_W, 1);
+  stack.primaryAxisSizingMode = 'AUTO';
+  stack.counterAxisSizingMode = 'FIXED';
+  stack.itemSpacing = 3;
+  stack.fills = [];
+  for (var i = 0; i < lines.length; i++) {
+    var t = kitText(lines[i], ctx.fonts.regular, 10, ctx.colors, 'color/text/secondary');
+    stack.appendChild(t);
+    try { t.textAutoResize = 'HEIGHT'; } catch (e) { /* older API */ }
+    setSizing(t, 'layoutSizingHorizontal', 'FILL');
+  }
+  return stack;
+}
+
+function tokenRow(ctx, name, value, sample) {
   var row = figma.createFrame();
   row.name = name;
   row.layoutMode = 'HORIZONTAL';
   row.resize(TOKEN_COLUMN_WIDTH, 1);        // before the sizing modes
   row.primaryAxisSizingMode = 'FIXED';
   row.counterAxisSizingMode = 'AUTO';
-  row.counterAxisAlignItems = 'CENTER';
+  // Top-aligned: a value that stacks over four lines must not drag the
+  // name and the sample into the middle of the row.
+  row.counterAxisAlignItems = 'MIN';
   row.itemSpacing = 12;
   row.fills = [];
 
   var label = kitText(name, ctx.fonts.regular, 11, ctx.colors, 'color/text/secondary');
   row.appendChild(label);
   label.textAutoResize = 'HEIGHT';
-  label.resize(190, label.height || 16);
+  label.resize(TOKEN_NAME_W, label.height || 16);
   setSizing(label, 'layoutSizingHorizontal', 'FIXED');
 
-  var val = kitText(valueText, ctx.fonts.medium, 11, ctx.colors, 'color/text/primary');
+  var val = (typeof value === 'string') ? tokenValueCell(ctx, [value]) : value;
   row.appendChild(val);
-  val.textAutoResize = 'HEIGHT';
-  val.resize(96, val.height || 16);
+  if (val.type === 'TEXT') { try { val.textAutoResize = 'HEIGHT'; } catch (e) {} }
+  val.resize(TOKEN_VALUE_W, val.height || 16);
   setSizing(val, 'layoutSizingHorizontal', 'FIXED');
 
   if (sample) row.appendChild(sample);
@@ -7464,13 +7499,14 @@ async function buildTokenCanvas(cfg, opts) {
     var panel = tokenSectionFrame(title, ctx);
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
+      // The canvas size written out in full, one per line.
       var parts = [];
       for (var b = 0; b < sys.bpNames.length; b++) {
         var bv = valueFor(e, sys.modeIds[sys.bpNames[b]]);
-        parts.push(sys.bpNames[b].charAt(0) + ' ' + valueLabel(e, bv));
+        parts.push(sys.bpNames[b] + '  ' + valueLabel(e, bv));
       }
       var shown = valueFor(e, sys.modeIds[widest]);
-      addTokenRow(panel, tokenRow(ctx, e.name, parts.join('  '), sampleFor(ctx, e, shown)));
+      addTokenRow(panel, tokenRow(ctx, e.name, tokenValueCell(ctx, parts), sampleFor(ctx, e, shown)));
       result.tokens++;
     }
     page.appendChild(panel.section);

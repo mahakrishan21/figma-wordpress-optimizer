@@ -97,6 +97,34 @@ async function run() {
   var firstCard = row.children[0];
   eq(firstCard.primaryAxisSizingMode, 'AUTO', 'and so does a card');
 
+  // ── 4c ── the side margin must ADAPT with the canvas size ─────────────
+  // A margin bound to a primitive would be the same on a 1600 page and a
+  // 375 one. It has to be the responsive token.
+  var marginBinding = sections[0].boundVariables.paddingLeft;
+  var marginVar = figma._vars.filter(function (v) { return v.id === marginBinding.id; })[0];
+  eq(marginVar.name, 'grid/margin', 'the side margin is bound to grid/margin');
+  var mcols = await getUiKitCollections(false);
+  eq(marginVar.variableCollectionId, mcols.responsive.id,
+     'which lives in Responsive, so it changes with the canvas size');
+  var mm = await ensureModes(mcols.responsive, breakpointNames(CFG));
+  var wide = await variableValue(marginVar, mm.nameToModeId['Desktop']);
+  var narrow = await variableValue(marginVar, mm.nameToModeId['Mobile']);
+  ok(wide > narrow, 'and it really is wider on Desktop than Mobile  (' + wide + ' vs ' + narrow + ')');
+  eq(sections[0].boundVariables.paddingRight.id, marginBinding.id, 'both sides use the same token');
+
+  // 4d ── with the grid family off, the margin must STILL adapt
+  fresh9();
+  writeBreakpointConfig(CFG);
+  await generateScaleVariables(CFG, defaultScaleTable(CFG, { grid: false }));
+  var noGrid = await createStarterCanvas(CFG, {});
+  eq(noGrid.created, 1, 'a canvas is still made without the grid family');
+  var ngPage = starter();
+  var ngSection = ngPage.children[0];
+  var ngVar = figma._vars.filter(function (v) { return v.id === ngSection.boundVariables.paddingLeft.id; })[0];
+  var ngCols = await getUiKitCollections(false);
+  eq(ngVar.variableCollectionId, ngCols.responsive.id,
+     'the fallback margin token is still responsive, not a fixed primitive');
+
   // ── 5 ── the grid style is applied ────────────────────────────────────
   ok(!!page.gridStyleId, 'the grid style for this canvas size is applied');
 

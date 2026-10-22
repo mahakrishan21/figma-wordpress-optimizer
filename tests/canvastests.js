@@ -119,9 +119,20 @@ async function run() {
   ok(!!zeroRow, 'border/none is drawn');
   ok(!zeroRow.width || zeroRow.width >= 1, 'without asking Figma for a zero-sized node');
 
-  // ── 5 ── responsive tokens show every canvas size ─────────────────────
-  var h1Labels = findText(page, 'D ');
-  ok(h1Labels.length > 0, 'responsive rows list each canvas size by initial');
+  // ── 5 ── a responsive token lists every canvas size, written out ──────
+  // Initials packed into one fixed-width cell wrapped mid-word and spilled
+  // out of the row. Each size gets its own line now, in full.
+  var h1Row = deepAll(page, function (n) { return n.name === 'text/size/h1' && n.children; })[0];
+  ok(!!h1Row, 'the h1 row exists');
+  var stack = deepAll(h1Row, function (n) { return n.name === 'Values'; })[0];
+  ok(!!stack, 'its value cell is a stack, not one wrapping string');
+  eq(stack.layoutMode, 'VERTICAL', 'stacked vertically');
+  eq(stack.children.length, CFG.breakpoints.length, 'one line per canvas size');
+  var lines = stack.children.map(function (t) { return String(t.characters || ''); });
+  ok(lines[0].indexOf('Desktop') === 0, 'written out in full, not "D": ' + lines[0]);
+  ok(lines[lines.length - 1].indexOf('Mobile') === 0, 'including the last one: ' + lines[lines.length - 1]);
+  ok(lines.every(function (l) { return /\d/.test(l); }), 'each carries its value');
+  eq(h1Row.counterAxisAlignItems, 'MIN', 'the row is top-aligned so a tall value does not centre the rest');
 
   // ── 6 ── it comes out of a full build too ─────────────────────────────
   fresh6();
