@@ -73,7 +73,18 @@ function F(){ return {
     figma._gridStyles.push(st);
     return st;
   },
-  getStyleByIdAsync: function(){ return Promise.resolve(null); },
+  // Returning null for every id meant the scans' whole "this style is already
+  // in use" branch was dead: collectSource() drops a use when the style cannot
+  // be resolved, so a correctly linked layer looked unlinked to every test.
+  getStyleByIdAsync: function(id){
+    var pools = [this._paintStyles || [], this._textStyles || [], figma._gridStyles || []];
+    for (var i = 0; i < pools.length; i++) {
+      for (var j = 0; j < pools[i].length; j++) {
+        if (pools[i][j].id === id) return Promise.resolve(pools[i][j]);
+      }
+    }
+    return Promise.resolve(null);
+  },
   getNodeByIdAsync: function(id){ return Promise.resolve(figma._nodes[id] || null); },
   createPaintStyle: function(){ var st={id:nid('S'),name:'',paints:[],
       remove:function(){ var i=figma._paintStyles.indexOf(this); if(i>=0) figma._paintStyles.splice(i,1); }};
@@ -156,6 +167,8 @@ function mkFrame(o){
     primaryAxisSizingMode: 'FIXED', counterAxisSizingMode: 'FIXED',
     width: o.width == null ? 100 : o.width, height: o.height == null ? 100 : o.height,
     minWidth: null, maxWidth: null,
+    x: o.x || 0, y: o.y || 0,
+    exportSettings: o.exportSettings || [], isMask: false,
     paddingLeft: o.paddingLeft || 0, paddingRight: o.paddingRight || 0,
     paddingTop: o.paddingTop || 0, paddingBottom: o.paddingBottom || 0,
     itemSpacing: o.itemSpacing || 0, counterAxisSpacing: o.counterAxisSpacing || 0,
@@ -185,6 +198,17 @@ function mkFrame(o){
         for (var k in ex) out[k] = ex[k];
       }
       return out;
+    },
+    // Figma reports a node's box in absolute page coordinates, so it is the
+    // sum of the offsets up the chain — not the node's own x/y.
+    get absoluteBoundingBox(){
+      var ax = 0, ay = 0, at = this;
+      while (at && at.type !== 'PAGE') {
+        ax += (typeof at.x === 'number' ? at.x : 0);
+        ay += (typeof at.y === 'number' ? at.y : 0);
+        at = at.parent;
+      }
+      return { x: ax, y: ay, width: this.width, height: this.height };
     },
     setPluginData: function(k, val){ this._plugin[k] = String(val); },
     getPluginData: function(k){ return this._plugin[k] || ''; },
@@ -258,7 +282,8 @@ var NODE_EXTRAS = ['x','y','fills','strokes','width','height','minWidth','maxWid
                    'characters','fontName','fontSize','lineHeight','letterSpacing',
                    'textAutoResize','textCase','textDecoration','placeholder','constraints',
                    'absoluteBoundingBox','componentPropertyDefinitions','variantProperties',
-                   'componentPropertyReferences','addComponentProperty','defaultVariant'];
+                   'componentPropertyReferences','addComponentProperty','defaultVariant',
+                   'exportSettings','isMask','strokeCap','dashPattern','vectorPaths'];
 // Object.preventExtensions only THROWS in strict mode; in sloppy mode the
 // assignment silently no-ops, which is exactly the failure that let
 // "node.rowHost = x" through. A Proxy throws either way.
@@ -355,7 +380,17 @@ globalThis.mkFrame = mkFrame;
 function mkText(characters, name){
   var t = { id: nid('T'), type:'TEXT', name: name || characters, characters: characters,
            visible:true, locked:false, parent:null, boundVariables:{}, explicitVariableModes:{}, _plugin:{},
-           width: 100, height: 20,
+           width: 100, height: 20, x: 0, y: 0,
+           exportSettings: [], isMask: false,
+           get absoluteBoundingBox(){
+             var ax = 0, ay = 0, at = this;
+             while (at && at.type !== 'PAGE') {
+               ax += (typeof at.x === 'number' ? at.x : 0);
+               ay += (typeof at.y === 'number' ? at.y : 0);
+               at = at.parent;
+             }
+             return { x: ax, y: ay, width: this.width, height: this.height };
+           },
            setPluginData:function(k,v){ this._plugin[k]=String(v); },
            getPluginData:function(k){ return this._plugin[k]||''; },
            setBoundVariable:function(f,v){ if (v===null) delete this.boundVariables[f]; else this.boundVariables[f]={type:'VARIABLE_ALIAS',id:v.id}; },

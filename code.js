@@ -1022,7 +1022,14 @@ async function renameGenericLayers() {
     // whose inferred name depended on a sibling/parent being renamed first.
     var candidates;
     if (pass === 0) {
-      candidates = await getActionNodes(['generic-name']);
+      // Without an audit there is no flagged-node list, and pass 0 would come
+      // back empty and break the loop before the re-scan passes ever ran — so
+      // the button did nothing at all. Fall back to the scope, exactly as
+      // Mark exports and Outline strokes already do. isGenericName() and
+      // getBlockedReason() still decide each node, so nothing extra is touched.
+      candidates = lastAuditNodeIds.length
+        ? await getActionNodes(['generic-name'])
+        : getAllNodes(getScopeNodes()).map(function (x) { return x.node; });
     } else {
       candidates = getAllNodes(getScopeNodes()).map(function(x) { return x.node; });
     }
@@ -1060,7 +1067,14 @@ async function renameGenericLayers() {
 }
 
 async function removeHiddenLayers() {
-  const nodes = (await getActionNodes(['hidden-layer']))
+  // Pressed before an audit, the flagged-node list is empty and this reported
+  // "0 changed" with hidden layers sitting right there. Each node is still
+  // re-checked for !visible below, so the scope fallback removes no more than
+  // the audit would have flagged.
+  const flagged = lastAuditNodeIds.length
+    ? await getActionNodes(['hidden-layer'])
+    : getAllNodes(getScopeNodes()).map(function (x) { return x.node; });
+  const nodes = flagged
     .map(node => ({ node, depth: nodePath(node).split('›').length }))
     .sort((a, b) => b.depth - a.depth)
     .map(x => x.node);
@@ -1210,7 +1224,12 @@ function copyVisualStyle(sourceNode, targetNode) {
 }
 
 async function convertButtonsToAutoLayout() {
-  const nodes = await getActionNodes(['button-no-auto-layout']);
+  // Same fallback as the other fixes: isLikelyButton() below is the real
+  // filter, so running without an audit converts the same buttons the audit
+  // would have flagged rather than nothing at all.
+  const nodes = lastAuditNodeIds.length
+    ? await getActionNodes(['button-no-auto-layout'])
+    : getAllNodes(getScopeNodes()).map(function (x) { return x.node; });
   let changed = 0;
   let skipped = 0;
   const reasons = [];
