@@ -190,8 +190,13 @@ async function run() {
   var container = allFloat.filter(function (e) { return e.variable.name === 'container/max'; })[0];
   ok(!!container, 'container/max exists');
   var cDesk = container.variable.valuesByMode[m4.nameToModeId['Desktop']];
-  eq(typeof cDesk, 'number', 'container/max Desktop is a raw number — no primitive is 1376');
-  eq(cDesk, 1376, 'and it is 1440 minus two 32px gutters');
+  eq(typeof cDesk, 'number', 'container/max Desktop is a raw number, not an alias');
+  // The container is CHOSEN and the margin derived from it: a 1440 canvas
+  // takes a 1120 content column, leaving (1440-1120)/2 = 160 a side.
+  eq(cDesk, 1120, 'the content column for a 1440 canvas');
+  var marginRow = allFloat.filter(function (e) { return e.variable.name === 'grid/margin'; })[0];
+  eq(marginRow.variable.valuesByMode[m4.nameToModeId['Desktop']], 160,
+     'and the margin is what is left over, halved');
 
   // 11e ── every breakpoint actually got a value
   var mobileVal = await variableValue(sectionSm.variable, m4.nameToModeId['Mobile']);

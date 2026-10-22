@@ -43,20 +43,36 @@ async function run() {
   eq(page.width, 1440, 'and sized to it');
   eq(page.layoutMode, 'VERTICAL', 'as an auto-layout frame');
 
-  // ── 3 ── it is on the system, not full of loose numbers ───────────────
-  ok(!!page.boundVariables.paddingTop, 'section padding is bound');
-  ok(!!page.boundVariables.paddingLeft, 'the margin is bound');
-  ok(!!page.boundVariables.itemSpacing, 'the gutter is bound');
+  // ── 3 ── full-bleed sections, each holding a centred container ────────
+  // A real page is a full-width band with a content column inside it, so an
+  // image can reach the edge while the copy stays in the column.
+  eq(page.paddingLeft, 0, 'the page itself has no side padding — its sections are full-bleed');
+  var sections = (page.children || []);
+  ok(sections.length >= 3, 'it has sections  (' + sections.length + ')');
+  sections.forEach(function (sec, i) {
+    eq(sec.layoutSizingHorizontal, 'FILL', 'section ' + i + ' runs the full width');
+    eq(sec.counterAxisAlignItems, 'CENTER', 'section ' + i + ' centres its container');
+    ok(!!sec.boundVariables.paddingTop, 'section ' + i + ' has its vertical padding bound');
+    ok(!!sec.boundVariables.paddingLeft, 'section ' + i + ' has the margin floor bound');
+  });
+
+  var container = sections[0].children.filter(function (c) { return c.name === 'Container'; })[0];
+  ok(!!container, 'the first section holds a Container');
+  eq(container.layoutSizingHorizontal, 'FILL', 'which fills...');
+  ok(!!container.boundVariables.maxWidth, '...up to a bound max width — the content column');
+  var maxVar = figma._vars.filter(function (v) { return v.id === container.boundVariables.maxWidth.id; })[0];
+  eq(maxVar.name, 'container/max', 'and that token is container/max');
+
   ok(page.fills && page.fills[0] && page.fills[0].boundVariables &&
      page.fills[0].boundVariables.color, 'the background is a colour token');
 
-  var padVar = figma._vars.filter(function (v) { return v.id === page.boundVariables.paddingTop.id; })[0];
-  eq(padVar.name, 'space/section/lg', 'and the padding token is the responsive one');
+  var padVar = figma._vars.filter(function (v) { return v.id === sections[0].boundVariables.paddingTop.id; })[0];
+  eq(padVar.name, 'space/section/lg', 'and the section padding token is the responsive one');
 
   // ── 4 ── fluid from birth ─────────────────────────────────────────────
   eq(page.minWidth, 375, 'a floor from the narrowest canvas size');
   eq(page.maxWidth, 1440, 'a ceiling from the widest');
-  var row = deep(page, function (n) { return n.name === 'Cards'; })[0];
+  var row = deep(page, function (n) { return n.name === 'Card row'; })[0];
   ok(!!row, 'there is a card row');
   eq(row.layoutWrap, 'WRAP', 'and it already wraps');
   eq(row.children.length, 3, 'with three cards');
@@ -76,6 +92,8 @@ async function run() {
   ok(!!hero, 'there is a hero section');
   eq(hero.primaryAxisSizingMode, 'AUTO', 'and it hugs its height too');
   eq(hero.counterAxisSizingMode, 'FIXED', 'while its width is driven by the parent');
+  var heroContainer = hero.children.filter(function (c) { return c.name === 'Container'; })[0];
+  eq(heroContainer.primaryAxisSizingMode, 'AUTO', 'and its container hugs too');
   var firstCard = row.children[0];
   eq(firstCard.primaryAxisSizingMode, 'AUTO', 'and so does a card');
 

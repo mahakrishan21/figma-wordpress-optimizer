@@ -364,8 +364,10 @@ It opens with a choice, the way the Colors tab does:
 
 | Family | Tier | Notes |
 |---|---|---|
-| Canvas width & content width | Responsive | each breakpoint's width is editable |
-| Grid — columns, gutter, margin | Responsive | plus **one grid style per canvas size**, since a grid style cannot carry modes |
+| `canvas/width` | Responsive | the page width; editable per canvas size |
+| `container/max` | Responsive | the **content column** — the number you actually choose |
+| `grid/margin` | Responsive | **derived**: `(canvas − container) / 2`, held at a floor on narrow canvases |
+| Grid — columns, gutter | Responsive | plus **one grid style per canvas size**, since a grid style cannot carry modes |
 | Spacing, radius | Primitive | multiples of an editable base |
 | Type sizes | Responsive | the ratio tightens as the canvas narrows; the base holds, so body copy never shrinks |
 | Line heights, border widths, icon sizes, opacity, breakpoint widths | Primitive | |
@@ -376,9 +378,20 @@ Semantic colour aliasing per mode is what makes a dark theme one edit rather tha
 
 Every step is editable row by row — name, a value per canvas size, a preview, and rename/remove on each row, with **+ Add** per family. Editing a cell keeps it; only changing a preset, base or ratio rebuilds the rows.
 
+### Canvas, container, margin
+
+A page is a canvas width *and* a content column. A 1600 page with a 1200 column leaves 200 a side; 1920 with 1400 leaves 260. **The container is what you choose; the margin falls out of it.**
+
+| | Desktop 1600 | Tablet 768 | Mobile 375 |
+|---|---|---|---|
+| Container | 1200 | 720 | 343 |
+| Margin | 200 | 24 | 16 |
+
+On a narrow canvas the margin holds at a floor and the container gives way instead — which is what stops content touching the edge of a phone. Typing a margin overrides the derivation, for when the brand specifies the margin rather than the column.
+
 ### A canvas to design in
 
-Tokens and components are a foundation, not a starting point. **New design canvas** creates the artboard the design gets built in:
+Tokens and components are a foundation, not a starting point. **New design canvas** creates the artboard the design gets built in — as **full-bleed sections, each holding a centred Container** bound to `container/max`, which is what lets an image reach the edge of the page while the copy stays in the column:
 
 - at the **widest canvas size**, carrying that size's grid style
 - **bound to the system** — section padding, margin, gutter, background and type scale all come from tokens

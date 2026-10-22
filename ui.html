@@ -804,8 +804,12 @@
   .uik-wid { width: 74px; flex: 0 0 74px; text-align: right; padding: 3px 6px;
              font-variant-numeric: tabular-nums; }
   .uik-gridtable { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; }
-  .uik-gt-head, .uik-gt-row { display: grid; grid-template-columns: 68px 52px 52px 52px 1fr;
-                              gap: 6px; align-items: center; }
+  .uik-gt-head, .uik-gt-row { display: grid;
+                              grid-template-columns: 62px 48px 62px 52px 44px 50px 1fr;
+                              gap: 5px; align-items: center; }
+  .uik-gt-fixed { font-size: 10px; color: var(--text-muted); text-align: right;
+                  font-variant-numeric: tabular-nums; }
+  .uik-gt-derived { color: var(--text-muted); }
   .uik-gt-head span { font-size: 9px; font-weight: 600; color: var(--text-muted);
                       text-transform: uppercase; letter-spacing: .04em; text-align: center; }
   .uik-gt-in { padding: 3px 5px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -5252,23 +5256,41 @@
 
   // The grid, drawn as columns.
   function uikGridDiagram(bpName) {
-    const cols = Number((KS.spec.grid.columns || {})[bpName]) || uikGridDefault('columns', bpName);
-    const gutter = Number((KS.spec.grid.gutter || {})[bpName]) || uikGridDefault('gutter', bpName);
-    const margin = Number((KS.spec.grid.margin || {})[bpName]) || uikGridDefault('margin', bpName);
+    const cols = uikGridValue('columns', bpName);
+    const gutter = uikGridValue('gutter', bpName);
+    const margin = uikGridValue('margin', bpName);
     const n = Math.max(1, Math.min(24, cols));
     return `<span class="uik-griddiag" style="padding:0 ${Math.min(14, margin / 3)}px; gap:${Math.min(6, gutter / 5)}px">
       ${Array.apply(null, { length: n }).map(() => '<i></i>').join('')}
     </span>`;
   }
 
-  // Mirrors defaultColumnsFor / defaultGutterFor / defaultMarginFor in
+  // Mirrors defaultColumnsFor / defaultGutterFor / defaultContainerFor in
   // code.js, so an untouched field shows the number it will actually get.
   function uikGridDefault(field, bpName) {
     const bp = KS.spec.breakpoints.filter(b => b.name === bpName)[0];
     const w = (bp && bp.width) || 1440;
     if (field === 'columns') return w >= 900 ? 12 : (w >= 700 ? 8 : (w >= 480 ? 6 : 4));
     if (field === 'gutter') return w >= 900 ? 24 : (w >= 600 ? 20 : 16);
-    return w >= 1200 ? 32 : (w >= 700 ? 24 : 16);
+    if (field === 'container') {
+      if (w >= 1536) return 1200;
+      if (w >= 1280) return 1120;
+      if (w >= 1024) return 960;
+      if (w >= 768) return 720;
+      if (w >= 600) return 560;
+      return Math.max(240, w - 32);
+    }
+    // The margin is what is LEFT OVER once the content column is placed,
+    // never smaller than a floor so content cannot touch the edge.
+    const want = uikGridValue('container', bpName);
+    const floor = w >= 700 ? 24 : 16;
+    return Math.max(floor, Math.round((w - want) / 2));
+  }
+
+  // The value in play: an override if the designer set one, else the default.
+  function uikGridValue(field, bpName) {
+    const over = (KS.spec.grid[field] || {})[bpName];
+    return typeof over === 'number' ? over : uikGridDefault(field, bpName);
   }
 
   function uikStepBody(key) {
@@ -5296,18 +5318,31 @@
     if (key === 'grid') {
       return `
         <div class="uik-gridtable">
-          <div class="uik-gt-head"><span></span><span>Cols</span><span>Gutter</span><span>Margin</span><span></span></div>
-          ${sp.breakpoints.map(b => `
+          <div class="uik-gt-head">
+            <span></span><span>Canvas</span><span>Container</span><span>Margin</span><span>Cols</span><span>Gutter</span><span></span>
+          </div>
+          ${sp.breakpoints.map(b => {
+            const w = b.width || 0;
+            const container = uikGridValue('container', b.name);
+            const margin = uikGridValue('margin', b.name);
+            const clamped = container > w - 2 * margin;
+            return `
             <div class="uik-gt-row">
               <span class="uik-barname">${escHtml(b.name)}</span>
-              ${['columns', 'gutter', 'margin'].map(f => `
-                <input class="sm-input uik-gt-in" type="number" min="0"
-                       data-uik-grid="${f}" data-bp="${escHtml(b.name)}"
-                       value="${escHtml(String((sp.grid[f] || {})[b.name] !== undefined ? sp.grid[f][b.name] : uikGridDefault(f, b.name)))}">`).join('')}
+              <span class="uik-gt-fixed">${escHtml(String(w))}</span>
+              <input class="sm-input uik-gt-in" type="number" min="0"
+                     data-uik-grid="container" data-bp="${escHtml(b.name)}" value="${escHtml(String(container))}">
+              <input class="sm-input uik-gt-in${clamped ? '' : ' uik-gt-derived'}" type="number" min="0"
+                     data-uik-grid="margin" data-bp="${escHtml(b.name)}" value="${escHtml(String(margin))}">
+              <input class="sm-input uik-gt-in" type="number" min="0"
+                     data-uik-grid="columns" data-bp="${escHtml(b.name)}" value="${escHtml(String(uikGridValue('columns', b.name)))}">
+              <input class="sm-input uik-gt-in" type="number" min="0"
+                     data-uik-grid="gutter" data-bp="${escHtml(b.name)}" value="${escHtml(String(uikGridValue('gutter', b.name)))}">
               ${uikGridDiagram(b.name)}
-            </div>`).join('')}
+            </div>`;
+          }).join('')}
         </div>
-        <p class="uik-note" style="padding:0">One grid style per canvas size — a grid style cannot carry modes. The numbers are tokens too.</p>`;
+        <p class="uik-note" style="padding:0">Set the <b>container</b> and the <b>margin</b> follows — a 1600 canvas with a 1200 container leaves 200 a side. Type a margin to override it. One grid style per canvas size, because a grid style cannot carry modes.</p>`;
     }
 
     if (key === 'spacing') {

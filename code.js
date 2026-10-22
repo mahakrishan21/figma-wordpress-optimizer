@@ -4450,11 +4450,9 @@ function defaultResponsiveRows(cfg) {
     { name: 'space/gutter', tier: 'responsive', scopes: SPACING_SCOPES, values: ramp(32, 16) }
   ];
 
-  var container = {};
-  for (var c = 0; c < bps.length; c++) {
-    container[bps[c].name] = Math.max(0, (bps[c].width || widest) - 2 * (ramp(32, 16)[bps[c].name] || 16));
-  }
-  rows.push({ name: 'container/max', tier: 'responsive', scopes: ['WIDTH_HEIGHT'], values: container });
+  // container/max is owned by the grid family, which derives it from the
+  // canvas width and the chosen content column. Emitting it here too would
+  // mean two rows with the same name racing to be written.
   return rows;
 }
 
@@ -4580,18 +4578,46 @@ function defaultColumnsFor(width) {
   return 4;
 }
 function defaultGutterFor(width) { return width >= 900 ? 24 : (width >= 600 ? 20 : 16); }
-function defaultMarginFor(width) { return width >= 1200 ? 32 : (width >= 700 ? 24 : 16); }
+
+// The CONTENT COLUMN is the number a designer actually picks — "1600 page,
+// 1200 container". The side margin is then whatever is left over, halved.
+// Measured in a real production file: 1600 page, content at x=200 w=1200,
+// which is exactly (1600 - 1200) / 2 on each side.
+function defaultContainerFor(width) {
+  if (width >= 1536) return 1200;
+  if (width >= 1280) return 1120;
+  if (width >= 1024) return 960;
+  if (width >= 768) return 720;
+  if (width >= 600) return 560;
+  return Math.max(240, width - 32);
+}
+
+// Never let the margin collapse to nothing on a phone, however wide the
+// container is asked to be.
+function minMarginFor(width) { return width >= 1200 ? 24 : (width >= 700 ? 24 : 16); }
 
 // Fill in whatever the designer has not overridden.
 function resolveGridSpec(cfg, grid) {
   grid = grid || {};
   var bps = (cfg && cfg.breakpoints) ? cfg.breakpoints : [];
-  var out = { columns: {}, gutter: {}, margin: {} };
+  var out = { columns: {}, gutter: {}, margin: {}, container: {} };
   for (var i = 0; i < bps.length; i++) {
     var n = bps[i].name, w = bps[i].width || 1440;
     out.columns[n] = (grid.columns && typeof grid.columns[n] === 'number') ? grid.columns[n] : defaultColumnsFor(w);
     out.gutter[n] = (grid.gutter && typeof grid.gutter[n] === 'number') ? grid.gutter[n] : defaultGutterFor(w);
-    out.margin[n] = (grid.margin && typeof grid.margin[n] === 'number') ? grid.margin[n] : defaultMarginFor(w);
+
+    // The container is the chosen number; the margin falls out of it. A
+    // margin override still wins, because sometimes the margin is the
+    // thing the brand specifies.
+    var wanted = (grid.container && typeof grid.container[n] === 'number')
+      ? grid.container[n] : defaultContainerFor(w);
+    var floor = minMarginFor(w);
+    var margin = (grid.margin && typeof grid.margin[n] === 'number')
+      ? grid.margin[n]
+      : Math.max(floor, Math.round((w - wanted) / 2));
+    out.margin[n] = margin;
+    // Whatever was asked for, the container can never exceed the room left.
+    out.container[n] = Math.max(0, Math.min(wanted, w - 2 * margin));
   }
   return out;
 }
@@ -4602,21 +4628,21 @@ function gridRows(cfg, opts) {
   if (!bps.length) return [];
   var g = resolveGridSpec(cfg, opts.grid);
 
-  var cols = {}, gut = {}, mar = {}, canvas = {}, content = {};
+  var cols = {}, gut = {}, mar = {}, canvas = {}, container = {};
   for (var i = 0; i < bps.length; i++) {
     var n = bps[i].name, w = bps[i].width || 1440;
     cols[n] = g.columns[n];
     gut[n] = g.gutter[n];
     mar[n] = g.margin[n];
     canvas[n] = w;
-    content[n] = Math.max(0, w - 2 * g.margin[n]);
+    container[n] = g.container[n];
   }
   return [
     { name: 'grid/columns', tier: 'responsive', scopes: [], values: cols },
     { name: 'grid/gutter', tier: 'responsive', scopes: ['GAP'], values: gut },
     { name: 'grid/margin', tier: 'responsive', scopes: ['GAP'], values: mar },
     { name: 'canvas/width', tier: 'responsive', scopes: ['WIDTH_HEIGHT'], values: canvas },
-    { name: 'canvas/content', tier: 'responsive', scopes: ['WIDTH_HEIGHT'], values: content }
+    { name: 'container/max', tier: 'responsive', scopes: ['WIDTH_HEIGHT'], values: container }
   ];
 }
 
@@ -6651,7 +6677,7 @@ function exportThemeJson(sys) {
 
   var layout = {};
   for (i = 0; i < sys.responsive.length; i++) {
-    if (sys.responsive[i].name === 'canvas/content') {
+    if (sys.responsive[i].name === 'container/max') {
       var cw = valueFor(sys.responsive[i], sys.modeIds[widest]);
       if (typeof cw === 'number') layout.contentSize = cw + 'px';
     }
@@ -6831,21 +6857,67 @@ function firstOf(varsByName, names) {
   return null;
 }
 
-function sectionFrame(name, ctx, vars) {
+// A section runs the full width of the page; its CONTAINER holds the
+// content at the content-column width, centred. This is the structure of
+// every real page: a 1600 band with a 1200 column inside it, which is what
+// lets an image break out to the edge while the copy stays in the column.
+//
+// Returns both, because callers put content in the container and set the
+// background on the section.
+function sectionWithContainer(name, vars, report) {
+  var section = figma.createFrame();
+  section.name = name;
+  section.layoutMode = 'VERTICAL';
+  section.resize(1440, 1);                 // before the sizing modes
+  section.primaryAxisSizingMode = 'AUTO';
+  section.counterAxisSizingMode = 'FIXED';
+  section.counterAxisAlignItems = 'CENTER';   // centres the container
+  section.itemSpacing = 0;
+  section.paddingTop = 96; section.paddingBottom = 96;
+  section.paddingLeft = 24; section.paddingRight = 24;
+  section.fills = [];
+
+  var vpad = firstOf(vars, ['space/section/lg', 'space/section/md', 'space/700']);
+  if (vpad) { bindNum(section, 'paddingTop', vars, vpad, report); bindNum(section, 'paddingBottom', vars, vpad, report); }
+  // The side padding is the margin floor — it stops content touching the
+  // edge once the canvas is narrower than the container.
+  var margin = firstOf(vars, ['grid/margin', 'space/300']);
+  if (margin) { bindNum(section, 'paddingLeft', vars, margin, report); bindNum(section, 'paddingRight', vars, margin, report); }
+
+  var container = figma.createFrame();
+  container.name = 'Container';
+  container.layoutMode = 'VERTICAL';
+  container.resize(1200, 1);
+  container.primaryAxisSizingMode = 'AUTO';
+  container.counterAxisSizingMode = 'FIXED';
+  container.itemSpacing = 24;
+  container.fills = [];
+  section.appendChild(container);
+  setSizing(container, 'layoutSizingHorizontal', 'FILL');
+  // FILL up to the content column, then stop — the CSS max-width rule.
+  if (vars['container/max']) {
+    try { container.setBoundVariable('maxWidth', vars['container/max']); if (report) report.bound++; }
+    catch (e) { /* older API */ }
+  }
+  bindNum(container, 'itemSpacing', vars, firstOf(vars, ['space/300', 'space/md']) || '', report);
+
+  return { section: section, container: container };
+}
+
+function cardFrame(vars, report) {
   var f = figma.createFrame();
-  f.name = name;
+  f.name = 'Card';
   f.layoutMode = 'VERTICAL';
-  f.resize(800, 1);                   // before the sizing modes — see makeCard
+  f.resize(320, 1);
   f.primaryAxisSizingMode = 'AUTO';
   f.counterAxisSizingMode = 'FIXED';
-  f.itemSpacing = 24;
-  f.paddingLeft = 32; f.paddingRight = 32; f.paddingTop = 32; f.paddingBottom = 32;
-  bindNum(f, 'itemSpacing', vars, firstOf(vars, ['space/300', 'space/md', 'space/3']) || '');
-  var pad = firstOf(vars, ['space/400', 'space/lg', 'space/4']);
-  if (pad) {
-    bindNum(f, 'paddingLeft', vars, pad); bindNum(f, 'paddingRight', vars, pad);
-    bindNum(f, 'paddingTop', vars, pad); bindNum(f, 'paddingBottom', vars, pad);
+  f.itemSpacing = 16;
+  f.paddingLeft = 24; f.paddingRight = 24; f.paddingTop = 24; f.paddingBottom = 24;
+  var pad = firstOf(vars, ['space/300', 'space/md']);
+  if (pad) for (var i = 0; i < 4; i++) {
+    bindNum(f, ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom'][i], vars, pad, report);
   }
+  bindNum(f, 'itemSpacing', vars, firstOf(vars, ['space/200', 'space/sm']) || '', report);
   bindFill(f, vars, 'color/bg/surface');
   bindRadius(f, vars, firstOf(vars, ['radius/lg', 'radius/md']) || '');
   return f;
@@ -6909,22 +6981,19 @@ async function createStarterCanvas(cfg, opts) {
   var widest = bps[0];
   var narrowest = bps[bps.length - 1];
 
+  // The page carries NO horizontal padding: its sections run full width so
+  // an image can reach the edge, and each section's container holds the
+  // content column.
   var page = figma.createFrame();
   page.name = widest.name + ' — ' + (widest.width || 1440);
   page.layoutMode = 'VERTICAL';
   page.resize(widest.width || 1440, 1);   // before the sizing modes
   page.primaryAxisSizingMode = 'AUTO';
   page.counterAxisSizingMode = 'FIXED';
-  page.itemSpacing = 64;
-  page.paddingTop = 64; page.paddingBottom = 64; page.paddingLeft = 32; page.paddingRight = 32;
+  page.itemSpacing = 0;
+  page.paddingTop = 0; page.paddingBottom = 0; page.paddingLeft = 0; page.paddingRight = 0;
   bindFill(page, vars, 'color/bg/canvas');
-
-  var sectionPad = firstOf(vars, ['space/section/lg', 'space/section/md', 'space/700']);
-  if (sectionPad) { bindNum(page, 'paddingTop', vars, sectionPad, result); bindNum(page, 'paddingBottom', vars, sectionPad, result); }
-  var margin = firstOf(vars, ['grid/margin', 'space/400']);
-  if (margin) { bindNum(page, 'paddingLeft', vars, margin, result); bindNum(page, 'paddingRight', vars, margin, result); }
   var gutter = firstOf(vars, ['space/gutter', 'space/600', 'space/700']);
-  if (gutter) bindNum(page, 'itemSpacing', vars, gutter, result);
 
   // Fluid from birth: a floor and a ceiling taken from the canvas sizes.
   try { page.minWidth = narrowest.width || null; } catch (e) { /* older API */ }
@@ -6940,31 +7009,36 @@ async function createStarterCanvas(cfg, opts) {
   } catch (e) { /* grid styles unavailable */ }
 
   // ── A hero that already uses the type scale ──────────────────────────
-  var hero = sectionFrame('Hero', null, vars);
-  page.appendChild(hero);
-  setSizing(hero, 'layoutSizingHorizontal', 'FILL');
-  addFilling(hero, canvasText('Headline goes here', fonts.bold, 61, vars,
+  var heroPair = sectionWithContainer('Hero', vars, result);
+  page.appendChild(heroPair.section);
+  setSizing(heroPair.section, 'layoutSizingHorizontal', 'FILL');
+  addFilling(heroPair.container, canvasText('Headline goes here', fonts.bold, 61, vars,
     'color/text/primary', firstOf(vars, ['text/size/h1', 'text/size/display'])));
-  addFilling(hero, canvasText(
+  addFilling(heroPair.container, canvasText(
     'Subheading copy. Every value on this canvas is a token, so changing the scale changes the design.',
     fonts.regular, 16, vars, 'color/text/secondary', firstOf(vars, ['text/size/body'])));
   var btn = findKitComponent('Button');
   if (btn) {
-    try { hero.appendChild(btn.createInstance()); result.usedComponents.push('Button'); }
+    try { heroPair.container.appendChild(btn.createInstance()); result.usedComponents.push('Button'); }
     catch (e) { /* instance refused */ }
   }
   result.sections++;
 
-  // ── A card row that already wraps ────────────────────────────────────
+  // ── A card row that already wraps, inside the container ──────────────
+  var cardsPair = sectionWithContainer('Cards', vars, result);
+  page.appendChild(cardsPair.section);
+  setSizing(cardsPair.section, 'layoutSizingHorizontal', 'FILL');
+  bindFill(cardsPair.section, vars, 'color/bg/surface');
+
   var row = figma.createFrame();
-  row.name = 'Cards';
+  row.name = 'Card row';
   row.layoutMode = 'HORIZONTAL';
-  row.resize(800, 1);                     // before the sizing modes
+  row.resize(1200, 1);                    // before the sizing modes
   row.primaryAxisSizingMode = 'FIXED';
   row.counterAxisSizingMode = 'AUTO';
   row.itemSpacing = 24;
   row.fills = [];
-  page.appendChild(row);
+  cardsPair.container.appendChild(row);
   setSizing(row, 'layoutSizingHorizontal', 'FILL');
   try { row.layoutWrap = 'WRAP'; } catch (e) { /* older API */ }
   if (gutter) { bindNum(row, 'itemSpacing', vars, gutter, result); bindNum(row, 'counterAxisSpacing', vars, gutter, result); }
@@ -6976,7 +7050,7 @@ async function createStarterCanvas(cfg, opts) {
       try { card = cardComp.createInstance(); } catch (e) { card = null; }
     }
     if (!card) {
-      card = sectionFrame('Card', null, vars);
+      card = cardFrame(vars, result);
       addFilling(card, canvasText('Card title', fonts.bold, 18, vars, 'color/text/primary', null));
       addFilling(card, canvasText('Supporting copy.', fonts.regular, 16, vars,
         'color/text/secondary', firstOf(vars, ['text/size/body'])));
@@ -6991,10 +7065,11 @@ async function createStarterCanvas(cfg, opts) {
   result.sections++;
 
   // ── An empty section to carry on in ──────────────────────────────────
-  var blank = sectionFrame('Section', null, vars);
-  page.appendChild(blank);
-  setSizing(blank, 'layoutSizingHorizontal', 'FILL');
-  addFilling(blank, canvasText('Next section', fonts.bold, 18, vars, 'color/text/primary', null));
+  var blankPair = sectionWithContainer('Section', vars, result);
+  page.appendChild(blankPair.section);
+  setSizing(blankPair.section, 'layoutSizingHorizontal', 'FILL');
+  addFilling(blankPair.container, canvasText('Next section', fonts.bold, 18, vars,
+    'color/text/primary', null));
   result.sections++;
 
   var maxX = 0, minY = 0, kids = figma.currentPage.children;

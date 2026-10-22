@@ -138,13 +138,44 @@ async function run() {
   eq(row(gr, 'grid/gutter').values['Desktop'], 24, 'wide gutter on desktop');
   ok(row(gr, 'grid/gutter').values['Mobile'] < 24, 'tighter on mobile');
   eq(row(gr, 'canvas/width').values['Desktop'], 1440, 'canvas width is the breakpoint width');
-  eq(row(gr, 'canvas/content').values['Desktop'], 1440 - 64, 'content width is the canvas minus both margins');
+
+  // ── the container drives the margin, not the other way round ──────────
+  // Measured in a real file: a 1600 page with content at x=200 w=1200,
+  // which is exactly (1600 - 1200) / 2 a side.
+  var page1600 = { preset: 'custom', breakpoints: [{ name: 'Desktop', width: 1600 }, { name: 'Mobile', width: 375 }] };
+  var g1600 = gridRows(page1600, { grid: { container: { Desktop: 1200 } } });
+  eq(row(g1600, 'container/max').values['Desktop'], 1200, 'a 1600 page with a 1200 container');
+  eq(row(g1600, 'grid/margin').values['Desktop'], 200, 'gives a 200 margin a side — derived, not chosen');
+
+  var g1920 = gridRows({ preset: 'custom', breakpoints: [{ name: 'Desktop', width: 1920 }] },
+                       { grid: { container: { Desktop: 1400 } } });
+  eq(row(g1920, 'container/max').values['Desktop'], 1400, '1920 page, 1400 container');
+  eq(row(g1920, 'grid/margin').values['Desktop'], 260, 'margin is (1920 - 1400) / 2');
+
+  // on a phone the margin floor wins and the container gives way
+  eq(row(g1600, 'grid/margin').values['Mobile'], 16, 'a phone keeps a 16px margin floor');
+  eq(row(g1600, 'container/max').values['Mobile'], 375 - 32, 'and the container is whatever is left');
+
+  // a container wider than the canvas cannot win
+  var tooWide = gridRows(page1600, { grid: { container: { Desktop: 5000 } } });
+  ok(row(tooWide, 'container/max').values['Desktop'] <= 1600,
+     'a container wider than the page is clamped  (' + row(tooWide, 'container/max').values['Desktop'] + ')');
 
   // overrides win
   var custom = gridRows(CFG, { grid: { columns: { Desktop: 16 }, gutter: { Desktop: 40 } } });
   eq(row(custom, 'grid/columns').values['Desktop'], 16, 'an override is respected');
   eq(row(custom, 'grid/gutter').values['Desktop'], 40, 'and so is a gutter override');
   eq(row(custom, 'grid/columns').values['Mobile'], 4, 'while the rest keep their defaults');
+
+  // an explicit margin still beats the derived one
+  var marginWins = gridRows(page1600, { grid: { container: { Desktop: 1200 }, margin: { Desktop: 80 } } });
+  eq(row(marginWins, 'grid/margin').values['Desktop'], 80, 'an explicit margin overrides the derivation');
+  eq(row(marginWins, 'container/max').values['Desktop'], 1200, 'and the container still fits');
+
+  // exactly one row owns container/max
+  var full = defaultScaleTable(CFG, {});
+  eq(full.filter(function (r) { return r.name === 'container/max'; }).length, 1,
+     'only one row owns container/max — two would race to be written');
 
   // ── 10 ── grid STYLES, one per breakpoint ─────────────────────────────
   fresh4();
@@ -156,7 +187,8 @@ async function run() {
   ok(!!deskStyle, 'named per breakpoint');
   eq(deskStyle.layoutGrids[0].count, 12, 'with 12 columns');
   eq(deskStyle.layoutGrids[0].gutterSize, 24, 'the gutter');
-  eq(deskStyle.layoutGrids[0].offset, 32, 'and the margin as the offset');
+  // 1440 canvas, 1120 container -> (1440-1120)/2 = 160 a side
+  eq(deskStyle.layoutGrids[0].offset, 160, 'and the DERIVED margin as the offset');
   eq(deskStyle.layoutGrids[0].pattern, 'COLUMNS', 'as a column grid');
 
   var again = await createGridStyles(CFG, {});
