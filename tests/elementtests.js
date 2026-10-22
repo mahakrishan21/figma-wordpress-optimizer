@@ -62,6 +62,36 @@ async function run() {
   eq(btnSet.counterAxisSizingMode, 'AUTO', 'hugging its height so no row is clipped');
   ok(btnSet.counterAxisSpacing > 0, 'with a row gap for the wrapped rows');
 
+  // ── 3c ── Button carries real component properties ────────────────────
+  // Verified against Figma first: a SET takes TEXT and BOOLEAN properties,
+  // and layers bind to them through componentPropertyReferences.
+  var defs = btnSet.componentPropertyDefinitions || {};
+  ok(!!defs['Label'], 'Button has a Label property');
+  eq(defs['Label'].type, 'TEXT', 'typed TEXT so the copy is editable per instance');
+  ok(!!defs['Icon leading'] && !!defs['Icon trailing'], 'and a toggle for each icon');
+  eq(defs['Icon leading'].type, 'BOOLEAN', 'typed BOOLEAN');
+  eq(defs['Icon leading'].defaultValue, false, 'off by default');
+
+  var aVariant = btnSet.children[0];
+  var labelLayer = aVariant.children.filter(function (c) { return c.name === 'Label'; })[0];
+  ok(!!labelLayer, 'each variant has a Label layer');
+  ok(labelLayer.componentPropertyReferences &&
+     labelLayer.componentPropertyReferences.characters, 'bound to the TEXT property');
+  var lead = aVariant.children.filter(function (c) { return c.name === 'Icon leading'; })[0];
+  ok(!!lead, 'and a leading icon');
+  eq(lead.visible, false, 'hidden until the instance turns it on');
+  ok(lead.componentPropertyReferences && lead.componentPropertyReferences.visible,
+     'its visibility bound to the BOOLEAN');
+
+  // ── 3d ── the label follows the TYPE SCALE, not a fixed size ──────────
+  // This is why one Button serves every canvas size.
+  ok(!!labelLayer.boundVariables.fontSize, 'the label font size is bound to a token');
+  var fsVar = figma._vars.filter(function (v) { return v.id === labelLayer.boundVariables.fontSize.id; })[0];
+  eq(fsVar.name, 'text/size/body', 'to text/size/body');
+  var ecols = await getUiKitCollections(false);
+  eq(fsVar.variableCollectionId, ecols.responsive.id,
+     'which is RESPONSIVE — so no per-breakpoint Button variants are needed');
+
   // ── 4 ── bound to the tokens, not to loose numbers ────────────────────
   var primary = btnSet.children.filter(function (c) { return c.name === 'Variant=Primary, State=Default'; })[0];
   ok(!!primary.boundVariables.paddingLeft, 'button padding is bound to a token');

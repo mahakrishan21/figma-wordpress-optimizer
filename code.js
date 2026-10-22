@@ -5203,6 +5203,20 @@ async function numericTokenIndex(cols) {
   return index;
 }
 
+// Responsive tokens by name. A control's TYPE should shrink with the canvas
+// even when its padding does not, and that is what stops a component
+// needing one variant per breakpoint.
+async function responsiveTokenIndex(cols) {
+  var byName = {};
+  if (!cols.responsive) return byName;
+  var all = await localVariablesAllModes('FLOAT');
+  for (var i = 0; i < all.length; i++) {
+    if (all[i].variable.variableCollectionId !== cols.responsive.id) continue;
+    byName[all[i].variable.name] = all[i].variable;
+  }
+  return byName;
+}
+
 // ── The elements themselves ────────────────────────────────────────────────
 
 function makeButton(ctx, variant, state) {
@@ -5233,8 +5247,59 @@ function makeButton(ctx, variant, state) {
   bindNumber(c, 'itemSpacing', ctx.nums, 8);
   bindNumber(c, 'cornerRadius', ctx.nums, 8);
 
-  c.appendChild(kitText('Button', ctx.fonts.medium, 14, ctx.colors, fg));
+  // Leading icon, label, trailing icon — in that order, so the property
+  // bindings below can find them by name.
+  c.appendChild(buttonIcon('Icon leading', ctx, fg));
+  var label = kitText('Button', ctx.fonts.medium, 14, ctx.colors, fg);
+  label.name = 'Label';
+  c.appendChild(label);
+  // The label follows the type scale, so one Button serves every canvas
+  // size instead of needing a variant per breakpoint.
+  if (ctx.resp && ctx.resp['text/size/body']) {
+    try { label.setBoundVariable('fontSize', ctx.resp['text/size/body']); } catch (e) { /* older API */ }
+  }
+  c.appendChild(buttonIcon('Icon trailing', ctx, fg));
   return c;
+}
+
+function buttonIcon(name, ctx, colourName) {
+  var i = figma.createFrame();
+  i.name = name;
+  i.resize(16, 16);
+  try { i.cornerRadius = 8; } catch (e) { /* older API */ }
+  kitFill(i, ctx.colors, colourName);
+  i.visible = false;                 // off until the instance turns it on
+  return i;
+}
+
+// Component properties can only be added once the SET exists, so this runs
+// after combineAsVariants. Each is attempted on its own: a property Figma
+// refuses must not cost the others.
+function applyButtonProperties(set, result) {
+  var added = [];
+  function prop(name, type, dflt) {
+    try { var id = set.addComponentProperty(name, type, dflt); added.push(name); return id; }
+    catch (e) { return null; }
+  }
+  var labelProp = prop('Label', 'TEXT', 'Button');
+  var leadProp = prop('Icon leading', 'BOOLEAN', false);
+  var trailProp = prop('Icon trailing', 'BOOLEAN', false);
+
+  var kids = set.children || [];
+  for (var v = 0; v < kids.length; v++) {
+    var variant = kids[v];
+    var children = variant.children || [];
+    for (var c = 0; c < children.length; c++) {
+      var node = children[c];
+      try {
+        if (node.name === 'Label' && labelProp) node.componentPropertyReferences = { characters: labelProp };
+        else if (node.name === 'Icon leading' && leadProp) node.componentPropertyReferences = { visible: leadProp };
+        else if (node.name === 'Icon trailing' && trailProp) node.componentPropertyReferences = { visible: trailProp };
+      } catch (e) { /* reference refused on this layer */ }
+    }
+  }
+  if (result) result.properties = added;
+  return added;
 }
 
 function makeInput(ctx, state) {
@@ -5430,7 +5495,8 @@ async function generateKitElements(cfg, opts) {
   var cols = await getUiKitCollections(true);
   var colors = await ensureKitColorVariables(cols);
   var nums = await numericTokenIndex(cols);
-  var ctx = { fonts: fonts, colors: colors, nums: nums };
+  var resp = await responsiveTokenIndex(cols);
+  var ctx = { fonts: fonts, colors: colors, nums: nums, resp: resp };
 
   var page = figma.createFrame();
   page.name = 'UI Kit — Elements';
@@ -5484,6 +5550,7 @@ async function generateKitElements(cfg, opts) {
         holder.itemSpacing = 16;
         holder.counterAxisSpacing = 16;
         holder.paddingLeft = 16; holder.paddingRight = 16; holder.paddingTop = 16; holder.paddingBottom = 16;
+        if (def.key === 'button') applyButtonProperties(holder, result);
       } catch (err2) {
         // Without a variant set the components are still usable, just loose.
         result.reasons.push(def.label + ': variants could not be combined, so they were left as separate components.');

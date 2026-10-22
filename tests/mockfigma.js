@@ -2,7 +2,7 @@
 var _id = 0; function nid(p){ return p + (++_id); }
 function F(){ return {
   mixed: Symbol('mixed'),
-  _paintStyles: [], _textStyles: [], _vars: [], _cols: [], _nodes: {}, _gridStyles: [], _imgSeq: 0,
+  _paintStyles: [], _textStyles: [], _vars: [], _cols: [], _nodes: {}, _gridStyles: [], _imgSeq: 0, _propSeq: 0,
   showUI: function(){}, on: function(){}, commitUndo: function(){},
   notify: function(){},
   ui: { postMessage: function(m){ (globalThis.__posted = globalThis.__posted || []).push(m); }, resize: function(){}, onmessage: null },
@@ -49,6 +49,16 @@ function F(){ return {
   combineAsVariants: function(nodes, parent){
     var set = mkFrame({ name: 'Component Set' });
     set.type = 'COMPONENT_SET';
+    set.componentPropertyDefinitions = {};
+    set.addComponentProperty = function(name, type, dflt){
+      if (this.type !== 'COMPONENT_SET') throw new Error('Only a component set takes properties');
+      if (['TEXT','BOOLEAN','INSTANCE_SWAP','VARIANT'].indexOf(type) === -1) {
+        throw new Error('Unknown property type ' + type);
+      }
+      var id = name + '#' + (++figma._propSeq) + ':0';
+      this.componentPropertyDefinitions[name] = { type: type, defaultValue: dflt };
+      return id;
+    };
     for (var i = 0; i < nodes.length; i++) set.appendChild(nodes[i]);
     if (parent && parent.appendChild) parent.appendChild(set);
     return set;
@@ -247,7 +257,8 @@ var NODE_EXTRAS = ['x','y','fills','strokes','width','height','minWidth','maxWid
                    'itemReverseZIndex','strokesIncludedInLayout','clipsContent','description',
                    'characters','fontName','fontSize','lineHeight','letterSpacing',
                    'textAutoResize','textCase','textDecoration','placeholder','constraints',
-                   'absoluteBoundingBox','componentPropertyDefinitions','variantProperties'];
+                   'absoluteBoundingBox','componentPropertyDefinitions','variantProperties',
+                   'componentPropertyReferences','addComponentProperty','defaultVariant'];
 // Object.preventExtensions only THROWS in strict mode; in sloppy mode the
 // assignment silently no-ops, which is exactly the failure that let
 // "node.rowHost = x" through. A Proxy throws either way.
