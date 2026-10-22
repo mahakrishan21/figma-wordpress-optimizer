@@ -7188,10 +7188,19 @@ async function createStarterCanvas(cfg, opts) {
 // variable, so the page is not a snapshot — retune a token and the page
 // retunes with it.
 
-// One titled panel. The page lays these out SIDE BY SIDE, top-aligned —
-// the way a UI kit page is actually read, rather than as one tall column
-// nobody scrolls to the bottom of.
+// One titled panel, laid out SIDE BY SIDE with the others and top-aligned.
+//
+// The spacing is measured from a real UI kit page: 120 padding, a rule
+// under every title 30 below it, content 50 below the rule, and 214
+// between sections. Auto layout applies ONE itemSpacing per frame, so the
+// title and rule live in their own header group to get 30 above and 50
+// below from a single section gap.
 var TOKEN_COLUMN_WIDTH = 520;
+var TOKEN_PAGE_PAD = 120;      // measured: 118–120
+var TOKEN_BAND_GAP = 214;      // measured: identical across 7 gaps
+var TOKEN_TITLE_GAP = 30;      // title -> rule
+var TOKEN_RULE_GAP = 50;       // rule -> first content
+var TOKEN_ROW_GAP = 12;
 
 function tokenSectionFrame(title, ctx) {
   var f = figma.createFrame();
@@ -7200,21 +7209,50 @@ function tokenSectionFrame(title, ctx) {
   f.resize(TOKEN_COLUMN_WIDTH, 1);          // before the sizing modes
   f.primaryAxisSizingMode = 'AUTO';
   f.counterAxisSizingMode = 'FIXED';
-  f.itemSpacing = 10;
+  f.itemSpacing = TOKEN_RULE_GAP;
   f.fills = [];
 
-  var heading = kitText(title, ctx.fonts.bold, 15, ctx.colors, 'color/text/primary');
-  f.appendChild(heading);
+  var header = figma.createFrame();
+  header.name = 'Header';
+  header.layoutMode = 'VERTICAL';
+  header.resize(TOKEN_COLUMN_WIDTH, 1);
+  header.primaryAxisSizingMode = 'AUTO';
+  header.counterAxisSizingMode = 'FIXED';
+  header.itemSpacing = TOKEN_TITLE_GAP;
+  header.fills = [];
+  f.appendChild(header);
+  setSizing(header, 'layoutSizingHorizontal', 'FILL');
 
-  // The rule under the title, as in the reference page.
+  header.appendChild(kitText(title, ctx.fonts.bold, 15, ctx.colors, 'color/text/primary'));
+
   var rule = figma.createRectangle();
   rule.name = 'Line';
   rule.resize(TOKEN_COLUMN_WIDTH, 1);
   kitFill(rule, ctx.colors, 'color/border');
-  f.appendChild(rule);
+  header.appendChild(rule);
   setSizing(rule, 'layoutSizingHorizontal', 'FILL');
 
+  // Rows go in their own group so the section gap stays the rule gap.
+  var body = figma.createFrame();
+  body.name = 'Rows';
+  body.layoutMode = 'VERTICAL';
+  body.resize(TOKEN_COLUMN_WIDTH, 1);
+  body.primaryAxisSizingMode = 'AUTO';
+  body.counterAxisSizingMode = 'FIXED';
+  body.itemSpacing = TOKEN_ROW_GAP;
+  body.fills = [];
+  f.appendChild(body);
+  setSizing(body, 'layoutSizingHorizontal', 'FILL');
+
+  f.rowHost = body;
   return f;
+}
+
+// Rows belong in the section's body group, not directly on the section.
+function addTokenRow(section, row) {
+  (section.rowHost || section).appendChild(row);
+  setSizing(row, 'layoutSizingHorizontal', 'FILL');
+  return row;
 }
 
 function tokenRow(ctx, name, valueText, sample) {
@@ -7364,8 +7402,9 @@ async function buildTokenCanvas(cfg) {
   page.primaryAxisSizingMode = 'AUTO';
   page.counterAxisSizingMode = 'AUTO';
   page.counterAxisAlignItems = 'MIN';
-  page.itemSpacing = 64;
-  page.paddingLeft = 64; page.paddingRight = 64; page.paddingTop = 64; page.paddingBottom = 64;
+  page.itemSpacing = TOKEN_BAND_GAP;
+  page.paddingLeft = TOKEN_PAGE_PAD; page.paddingRight = TOKEN_PAGE_PAD;
+  page.paddingTop = TOKEN_PAGE_PAD; page.paddingBottom = TOKEN_PAGE_PAD;
   kitFill(page, colors, 'color/surface');
 
   var widest = sys.bpNames.length ? sys.bpNames[0] : null;
@@ -7384,7 +7423,7 @@ async function buildTokenCanvas(cfg) {
         parts.push(sys.bpNames[b].charAt(0) + ' ' + valueLabel(e, bv));
       }
       var shown = valueFor(e, sys.modeIds[widest]);
-      section.appendChild(tokenRow(ctx, e.name, parts.join('  '), sampleFor(ctx, e, shown)));
+      addTokenRow(section, tokenRow(ctx, e.name, parts.join('  '), sampleFor(ctx, e, shown)));
       result.tokens++;
     }
     page.appendChild(section);
@@ -7400,7 +7439,7 @@ async function buildTokenCanvas(cfg) {
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
       var v = valueFor(e, null);
-      section.appendChild(tokenRow(ctx, e.name, valueLabel(e, v), sampleFor(ctx, e, v)));
+      addTokenRow(section, tokenRow(ctx, e.name, valueLabel(e, v), sampleFor(ctx, e, v)));
       result.tokens++;
     }
     page.appendChild(section);
@@ -7428,7 +7467,7 @@ async function buildTokenCanvas(cfg) {
     var themeSection = tokenSectionFrame('Semantic colour', ctx);
     for (var t = 0; t < sys.theme.length; t++) {
       var te = sys.theme[t];
-      themeSection.appendChild(tokenRow(ctx, te.name, valueLabel(te, valueFor(te, null)), sampleSwatch(ctx, te)));
+      addTokenRow(themeSection, tokenRow(ctx, te.name, valueLabel(te, valueFor(te, null)), sampleSwatch(ctx, te)));
       result.tokens++;
     }
     page.appendChild(themeSection);

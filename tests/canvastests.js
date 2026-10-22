@@ -47,10 +47,20 @@ async function run() {
   eq(page.counterAxisAlignItems, 'MIN', 'top-aligned, so columns of different length line up');
   var sections = page.children || [];
   ok(sections.length >= 10, 'one panel per family  (' + sections.length + ')');
+  // The spacing is measured from a real UI kit page: 120 padding, 214
+  // between sections, a rule 30 under each title, content 50 under the rule.
+  eq(page.itemSpacing, 214, 'sections sit 214 apart, as measured');
+  eq(page.paddingLeft, 120, 'with 120 padding');
   sections.forEach(function (sec, i) {
     eq(sec.primaryAxisSizingMode, 'AUTO', 'panel ' + i + ' hugs its height');
-    ok((sec.children || []).some(function (c) { return c.name === 'Line'; }),
+    eq(sec.itemSpacing, 50, 'panel ' + i + ' puts 50 under its rule');
+    var header = (sec.children || []).filter(function (c) { return c.name === 'Header'; })[0];
+    ok(!!header, 'panel ' + i + ' has a header group');
+    eq(header.itemSpacing, 30, 'panel ' + i + ' puts 30 under its title');
+    ok((header.children || []).some(function (c) { return c.name === 'Line'; }),
        'panel ' + i + ' has a rule under its title');
+    var body = (sec.children || []).filter(function (c) { return c.name === 'Rows'; })[0];
+    ok(!!body && body.children.length > 0, 'panel ' + i + ' holds its rows in a body group');
   });
 
   // section headings are present
