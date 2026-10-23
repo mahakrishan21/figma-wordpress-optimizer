@@ -5008,7 +5008,10 @@
     state: null,          // last uikit-state from the sandbox
     table: null,          // the editable scale table
     preset: 'standard',
-    collapsed: {}, expanded: {}, pages: {}, names: {}, editing: null,
+    // Export earns its place in the tab but not its screen space: the block
+    // is there, closed, until someone wants it.
+    collapsed: { 'uik-export': true }, pendingType: null,
+    expanded: {}, pages: {}, names: {}, editing: null,
     ramp: { spacing: 'grid4', spacingBase: null, radius: 'rounded', radiusBase: null },
     screen: 'entry',   // entry | wizard | main
     step: 0,
@@ -5678,7 +5681,8 @@
         id: 'uik-scale', title: 'Scale', count: (KS.table || []).length,
         sub: st.tableFromFile ? 'Read from the variables in this file.' : 'A proposal — check every value, then Generate.',
         body: uikTableHtml()
-      })}`;
+      })}
+      ${uikExportHtml()}`;
   }
 
   // ── Responsive generation ───────────────────────────────────────────────
@@ -5874,15 +5878,25 @@
   }
 
   // ── Messages ────────────────────────────────────────────────────────────
-  function uikApplyState(st) {
+  // Every reply carries fresh state, and applying it used to replace the
+  // table outright — so a value typed but not yet generated, or a token just
+  // added, disappeared as soon as any other button was pressed. Keep the
+  // designer's table unless this reply is one that is entitled to redefine
+  // it: either they asked for a new one, or theirs has just been written.
+  const UIK_REDEFINES_TABLE = ['uikit-generate', 'uikit-parse', 'uikit-reseed',
+    'uikit-scan', 'uikit-from-file', 'uikit-from-design', 'uikit-build'];
+  function uikApplyState(st, redefines) {
     KS.state = st;
-    KS.table = st && st.table ? st.table : null;
+    if (redefines || !KS.tableDirty || !KS.table) {
+      KS.table = st && st.table ? st.table : null;
+      KS.tableDirty = false;
+    }
     if (st && st.config && st.config.preset) KS.preset = st.config.preset;
   }
 
   function handleUiKitUiMessage(msg) {
     if (msg.type === 'uikit-state') {
-      uikApplyState(msg);
+      uikApplyState(msg, true);
       // Land on the system if the file already has one, otherwise offer the
       // choice. Never jump past a wizard the designer is partway through.
       if (KS.screen !== 'wizard') KS.screen = msg.config ? 'main' : 'entry';
@@ -5933,7 +5947,7 @@
       if (msg.result && typeof msg.result.bound === 'number' && KS.survey) {
         KS.survey = null; KS.surveyAccepted = {};
       }
-      if (msg.state) uikApplyState(msg.state);
+      if (msg.state) uikApplyState(msg.state, UIK_REDEFINES_TABLE.indexOf(KS.pendingType) !== -1);
       renderUiKit();
       if (msg.message) showToast(msg.message, msg.tone || 'success');
       return true;
@@ -5953,6 +5967,9 @@
     KS.busy = true;
     setScopeBusy(KS, true);
     msg.requestId = 'k' + (++uikReqSeq);
+    // The busy lock means only one request is ever in flight, so one slot is
+    // enough to remember what the reply will be answering.
+    KS.pendingType = msg.type;
     parent.postMessage({ pluginMessage: msg }, '*');
   }
 
@@ -5987,11 +6004,6 @@
     const act = el.dataset.act;
     if (act === 'toggle') { KS.collapsed[el.dataset.id] = !KS.collapsed[el.dataset.id]; renderUiKit(); return; }
     if (act === 'uik-rescan') { parent.postMessage({ pluginMessage: { type: 'uikit-scan' } }, '*'); return; }
-    if (act === 'uik-setup') {
-      const presets = (KS.state && KS.state.presets) || {};
-      sendUiKit({ type: 'uikit-save-breakpoints', preset: KS.preset, breakpoints: presets[KS.preset] || [] });
-      return;
-    }
     if (act === 'uik-reset') { KS.screen = 'entry'; renderUiKit(); return; }
     if (act === 'uik-wizard') {
       KS.spec = uikDefaultSpec();
@@ -6113,7 +6125,7 @@
     if (act === 'uik-row-edit') { KS.editing = Number(el.dataset.row); renderUiKit(); return; }
     if (act === 'uik-row-del') {
       const i = Number(el.dataset.row);
-      if (KS.table && KS.table[i]) { KS.table.splice(i, 1); KS.editing = null; renderUiKit(); }
+      if (KS.table && KS.table[i]) { KS.table.splice(i, 1); KS.editing = null; KS.tableDirty = true; renderUiKit(); }
       return;
     }
     if (act === 'uik-row-add') {
@@ -6121,6 +6133,7 @@
       const tier = el.dataset.tier === 'primitive' ? 'primitive' : 'responsive';
       KS.table.push({ name: tier === 'primitive' ? 'space/new' : 'space/section/new',
                       tier: tier, scopes: ['GAP', 'WIDTH_HEIGHT'], values: {} });
+      KS.tableDirty = true;
       KS.editing = KS.table.length - 1;
       renderUiKit();
       const inp = $('uikitScreen').querySelector('[data-uik-name]');
@@ -6312,9 +6325,10 @@
     const row = KS.table[Number(cell.dataset.row)];
     if (!row) return;
     const raw = cell.value.trim();
-    if (raw === '') { delete row.values[cell.dataset.key]; return; }
+    if (raw === '') { delete row.values[cell.dataset.key]; KS.tableDirty = true; return; }
     const n = Number(raw);
     if (!isNaN(n) && isFinite(n)) row.values[cell.dataset.key] = n;
+    KS.tableDirty = true;
   });
 
   renderColors();

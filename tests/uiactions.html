@@ -42,7 +42,9 @@ const BASE_STATE = {
   valueKey:'*', selectionCount:1, selectionName:'Homepage',
   fileHas:{ paintStyles:14, textStyles:9 }
 };
-function state(over) { return Object.assign({}, BASE_STATE, over); }
+function state(over) {
+  return JSON.parse(JSON.stringify(Object.assign({}, BASE_STATE, over)));
+}
 const NO_SYSTEM = { config:null, collections:{primitives:false,theme:false,responsive:false,responsiveModes:[]},
                     table:null, tableFromFile:false };
 const BUILT = { config:{ preset:'standard', breakpoints: BPS },
@@ -82,6 +84,13 @@ function heading() {
   const lines = text().split('\n').map(x => x.trim()).filter(Boolean);
   const i = lines.findIndex(x => /^STEP \d+ OF \d+$/.test(x));
   return i === -1 ? (lines[0] || '') : (lines[i] + ' — ' + (lines[i+1] || ''));
+}
+// The Scale block carries its own count, which is the honest row total.
+function scaleCount() {
+  const head = panel().querySelector('[data-block="uik-scale"] .sm-block-head');
+  if (!head) return -1;
+  const m = head.innerText.match(/(\d+)/);
+  return m ? Number(m[1]) : -1;
 }
 function must(a, where) {
   const el = act(a);
@@ -308,16 +317,22 @@ async function run() {
       JSON.stringify(el.posted));
   reply();
 
-  // The export box was taken off the tab. uikExportHtml() still exists but
-  // nothing calls it, so neither of these buttons can be reached any more.
+  // The export block is on the tab but starts closed, and a closed block
+  // renders no body at all — so it has to be opened first, as a designer would.
+  const closed = !act('uik-export');
+  const head = panel().querySelector('[data-act="toggle"][data-id="uik-export"]');
+  rec('(export block)', 'main screen', head ? (closed ? 'present, and starts closed' : 'present but ALREADY OPEN')
+      : 'MISSING FROM THE TAB', head ? head.innerText.trim().split('\n')[0] : '');
+  if (head) head.click();
   const ex = click('uik-export');
-  rec('uik-export', 'export block', ex.missing ? 'UNREACHABLE — nothing renders the export block'
+  rec('uik-export', 'export block', ex.missing ? 'MISSING once the block is open'
       : (ex.posted.join(',') === 'uikit-export' ? 'posts uikit-export' : 'UNEXPECTED: ' + ex.posted.join(',')),
-      ex.missing ? 'uikExportHtml() is defined but never called' : JSON.stringify(ex.posted));
-  if (!ex.missing) reply({ result:{ format:'css', label:'CSS', text:':root{--space-300:24px}', counts:{primitives:1,responsive:0,theme:0} } });
+      ex.missing ? '' : JSON.stringify(ex.posted));
+  if (!ex.missing) reply({ result:{ format:'css', label:'CSS', filename:'design-system.css',
+    text:':root{--space-300:24px}', counts:{primitives:1,responsive:0,theme:0} } });
   const cp = click('uik-copy');
-  rec('uik-copy', 'export block', cp.missing ? 'UNREACHABLE — only renders beside an export result' : 'copies the export',
-      cp.missing ? 'reachable only from the export block above' : '');
+  rec('uik-copy', 'export block', cp.missing ? 'MISSING beside the export result' : 'copies the export out',
+      cp.missing ? '' : 'the result is on screen to copy');
 
   fresh('built');
   const pv = click('uik-preview');
@@ -374,14 +389,27 @@ async function run() {
   rec('uik-infer', 'responsive', inf.missing ? 'MISSING'
       : (inf.posted.join(',') === 'uikit-infer' ? 'posts uikit-infer' : 'UNEXPECTED: ' + inf.posted.join(',')),
       JSON.stringify(inf.posted));
-  reply({ result:{ proposals:[
-    { key:'r1', nodeId:'N1', nodeName:'Cards', rule:'stack', at:'Mobile', why:'four cards will not fit 375' },
-    { key:'r2', nodeId:'N1', nodeName:'Cards', rule:'cols: 2', at:'Tablet', why:'four columns are too narrow at 768' }
-  ], byNode:{} } });
+  const layout = [
+    { nodeId:'N1', name:'Cards', breakpoint:'Mobile', rule:'stack',   value:true, reason:'four cards will not fit 375' },
+    { nodeId:'N1', name:'Cards', breakpoint:'Tablet', rule:'cols',    value:2,    reason:'four columns are too narrow at 768' },
+    { nodeId:'N2', name:'Nav',   breakpoint:'Mobile', rule:'hide',    value:true, reason:'a seven-item nav does not fit' }
+  ];
+  reply({ result:{ proposals: layout, byNode:{ N1:{ name:'Cards', rules:{} }, N2:{ name:'Nav', rules:{} } } } });
+  const ticks = [...panel().querySelectorAll('[data-uik-prop]')];
+  rec('(layout proposals)', 'responsive', ticks.length === layout.length
+      ? 'one tick per proposal' : 'EXPECTED ' + layout.length + ' TICKS, GOT ' + ticks.length,
+      ticks.map(t => t.dataset.uikProp).join(' · '));
+  const keys = new Set(ticks.map(t => t.dataset.uikProp));
+  rec('(layout proposals)', 'responsive', keys.size === ticks.length
+      ? 'every tick has its own key' : 'KEYS COLLIDE — one tick would toggle several rows',
+      [...keys].join(' · '));
+  if (ticks.length) { ticks[0].checked = false; ticks[0].dispatchEvent(new W.Event('change', { bubbles:true })); }
   const rsp = click('uik-responsive');
+  const sentRsp = sent[0];
   rec('uik-responsive', 'responsive', rsp.missing ? 'MISSING'
       : (rsp.posted.join(',') === 'uikit-responsive' ? 'posts uikit-responsive' : 'UNEXPECTED: ' + rsp.posted.join(',')),
-      JSON.stringify(rsp.posted));
+      sentRsp ? ('unticked row sent as accepted[' + Object.keys(sentRsp.accepted || {})[0] + ']=' +
+                 Object.values(sentRsp.accepted || {})[0]) : '');
   reply();
 
   // ─── 7. nothing threw, and nothing is left stuck ────────────────────
@@ -410,6 +438,51 @@ async function run() {
     }
   }
 
+  // ─── 9. an unsaved edit to the Scale table ──────────────────────────
+  // Every reply carries fresh state. A value typed but not yet generated must
+  // survive pressing some unrelated button — but Re-scan, which is a request
+  // to re-read the file, is still entitled to replace it.
+  fresh('built');
+  const cell = panel().querySelector('[data-uik-cell]');
+  if (!cell) {
+    rec('(scale table)', 'unsaved edit', 'NO VALUE CELL FOUND', '');
+  } else {
+    const row = cell.dataset.row, key = cell.dataset.key, was = cell.value;
+    cell.value = '999';
+    cell.dispatchEvent(new W.Event('input', { bubbles: true }));
+    // press something unrelated and let its reply land
+    click('uik-canvas');
+    reply();
+    const after = panel().querySelector('[data-uik-cell][data-row="' + row + '"][data-key="' + key + '"]');
+    rec('(scale table)', 'edit + an unrelated action', after && after.value === '999'
+        ? 'the edit survives' : 'LOST — the reply overwrote it',
+        was + ' → 999 → ' + (after ? after.value : 'gone'));
+  }
+  // a token added but not yet generated, same question
+  const addBtn = act('uik-row-add');
+  if (addBtn) {
+    const was = scaleCount();
+    addBtn.click();
+    const added = scaleCount();
+    click('uik-starter');
+    reply();
+    rec('(scale table)', 'new token + an unrelated action', scaleCount() === added
+        ? 'the new token survives' : 'LOST — the reply overwrote it',
+        was + ' → ' + added + ' → ' + scaleCount());
+  }
+  // Re-scan means "read the file again", so it must still refresh
+  const rescanCell = panel().querySelector('[data-uik-cell]');
+  if (rescanCell) {
+    rescanCell.value = '777';
+    rescanCell.dispatchEvent(new W.Event('input', { bubbles: true }));
+    click('uik-rescan');
+    send(state(BUILT));
+    const back = panel().querySelector('[data-uik-cell]');
+    rec('(scale table)', 'edit + Re-scan', back && back.value !== '777'
+        ? 'Re-scan still re-reads the file' : 'RE-SCAN NO LONGER REFRESHES',
+        '777 → ' + (back ? back.value : 'gone'));
+  }
+
   rec('(whole tab)', 'console', errs.length ? 'ERRORS: ' + errs.join(' | ') : 'no script errors', '');
 
   // Outcomes that are expected rather than broken. Everything else that
@@ -421,7 +494,7 @@ async function run() {
     'correctly disabled with nothing ticked'
   ];
   const bad = results.filter(r => !EXPECTED.includes(r.outcome) &&
-    /MISSING|UNEXPECTED|FAILED|DID NOT|NOT |NEVER|ERRORS:|^NO /.test(r.outcome));
+    /MISSING|UNEXPECTED|FAILED|DID NOT|NOT |NEVER|ERRORS:|LOST|COLLIDE|^NO /.test(r.outcome));
   document.getElementById('results').textContent =
     JSON.stringify(results, null, 1) +
     '\nVERDICT: ' + (bad.length ? ('FAIL — ' + bad.length + ' of ' + results.length)
