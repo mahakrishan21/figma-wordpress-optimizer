@@ -88,6 +88,10 @@ async function run() {
   var inf2 = inferResponsiveRules(page, CFG);
   await saveResponsiveRules(inf2.byNode, {});
 
+  // Make fluid comes first, as the workflow does: generating from a design
+  // whose children cannot shrink is what produced four broken frames in a
+  // real file, and is now refused.
+  await makeFrameFluid(page, { narrowestWidth: 375 });
   figma.currentPage.selection = [page];
   var g = await generateResponsiveFrames(CFG, {});
   eq(g.created, 2, 'one frame per narrower breakpoint');
@@ -169,6 +173,7 @@ async function run() {
   writeBreakpointConfig(CFG);
   var page2 = buildPage();
   figma.currentPage.appendChild(page2);
+  await makeFrameFluid(page2, { narrowestWidth: 375 });
   figma.currentPage.selection = [page2];
   globalThis.__posted = [];
   await figma.ui.onmessage({ type: 'uikit-infer', requestId: 'x1' });
@@ -193,6 +198,7 @@ async function run() {
   var rejected = {};
   rejected[navProp.nodeId + '|Mobile|hide'] = false;
   await saveResponsiveRules(inf3.byNode, rejected);
+  await makeFrameFluid(page3, { narrowestWidth: 375 });
   figma.currentPage.selection = [page3];
   await generateResponsiveFrames(CFG, {});
   var m3 = figma.currentPage.children.filter(function (c) { return c.name === 'Home — Mobile'; })[0];

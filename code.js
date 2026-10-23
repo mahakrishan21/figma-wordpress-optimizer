@@ -7880,6 +7880,45 @@ var UNSTAMPED_WARNING = 'This file would not let the plugin record which frames 
   'They were still drawn, but a second run will not recognise them \u2014 it will add new ones ' +
   'beside them rather than updating these, and it cannot protect them once you edit them.';
 
+// Whether a design can survive being made narrower.
+//
+// A child with a fixed width inside an auto-layout parent does not shrink
+// when the parent does. Generate four frames from a design full of those
+// and you get four broken ones: measured on a real page, a 1428px card sat
+// inside a parent that had collapsed to 544px, and at 375 a 644px block sat
+// in a parent 1px wide. Nothing about that is recoverable afterwards, so it
+// is worth refusing before the frames exist rather than after.
+function fluidReadiness(source) {
+  var rigid = [], flexible = 0, checked = 0;
+  (function walk(node, depth) {
+    if (!node || depth > 10) return;
+    var kids = (node.children || []).filter(function (k) { return k.visible !== false; });
+    var parentIsAuto = isAutoLayoutFrame(node);
+    for (var i = 0; i < kids.length; i++) {
+      var k = kids[i];
+      if (parentIsAuto && (k.width || 0) > 200) {
+        checked++;
+        // Only a child that takes up most of its parent matters: a 24px icon
+        // staying its own size is correct, a 1200px column is not.
+        var share = (node.width || 1) > 0 ? (k.width || 0) / (node.width || 1) : 0;
+        if (k.layoutSizingHorizontal === 'FIXED' && share > 0.6) {
+          if (rigid.length < 6) rigid.push(String(k.name || '').slice(0, 30) + ' (' + Math.round(k.width) + 'px)');
+        } else if (k.layoutSizingHorizontal === 'FILL') {
+          flexible++;
+        }
+      }
+      walk(k, depth + 1);
+    }
+  })(source, 0);
+  var rigidCount = rigid.length;
+  return {
+    checked: checked, flexible: flexible, rigid: rigidCount, names: rigid,
+    // A design that has been through Make fluid has its wide children on
+    // FILL. One where almost none of them are has not.
+    ready: checked === 0 || flexible > 0 && rigidCount <= flexible
+  };
+}
+
 async function generateResponsiveFrames(cfg, opts) {
   opts = opts || {};
   var result = { created: 0, replaced: 0, skipped: 0, applied: 0, failed: 0,
@@ -7893,6 +7932,20 @@ async function generateResponsiveFrames(cfg, opts) {
   if (!hasChildren(source)) { result.reasons.push('"' + source.name + '" has no children to lay out.'); return result; }
   if (source.getPluginData(UIKIT_FROM_KEY)) {
     result.reasons.push('"' + source.name + '" was itself generated. Select the original instead.');
+    return result;
+  }
+
+  // Refuse a design that cannot reflow, rather than producing frames that
+  // look generated and are not usable.
+  var ready = fluidReadiness(source);
+  result.readiness = ready;
+  if (!ready.ready && opts.force !== true) {
+    result.reasons.push('"' + source.name + '" is not ready to be made narrower. ' +
+      ready.names.length + ' of its layers have a fixed width and fill most of the space they sit in \u2014 ' +
+      ready.names.slice(0, 3).join(', ') + (ready.names.length > 3 ? ', \u2026' : '') +
+      '. They will not shrink with the frame, so the narrower versions would come out with content ' +
+      'spilling past the edge and containers collapsed around it. Press Make fluid first, then ' +
+      'generate again.');
     return result;
   }
 

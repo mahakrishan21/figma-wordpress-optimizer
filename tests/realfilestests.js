@@ -585,6 +585,7 @@ async function run() {
     provRow.appendChild(pc);
   }
 
+  await makeFrameFluid(provPage, { narrowestWidth: 375 });
   figma.currentPage.selection = [provPage];
   var gen1 = await generateResponsiveFrames(provCfg, {});
   ok(gen1.created > 0, 'provenance: frames are generated  (' + gen1.created + ')');
@@ -623,6 +624,7 @@ async function run() {
   nsRow.layoutMode = 'HORIZONTAL';
   noStore.appendChild(nsRow);
   nsRow.appendChild(mkFrame({ name: 'Card', width: 580, height: 200 }));
+  await makeFrameFluid(noStore, { narrowestWidth: 375 });
   var realSet = noStore.setPluginData;
   figma.currentPage.selection = [noStore];
   // every clone's stamp throws, as a locked or restricted file would
@@ -646,6 +648,56 @@ async function run() {
   eq(writeBreakpointConfig({ preset: 'custom', breakpoints: [{ name: 'Desktop', width: 1440 }] }), false,
      'config: a refused save reports failure instead of throwing');
   figma.root.setPluginData = realRoot;
+
+  // ══ 15 ══ generating from a design that cannot reflow is refused ══════
+  // Reproduces what a real page did: four frames generated from a design
+  // whose children were all fixed width. At 1024 a 1428px card sat inside a
+  // parent that had collapsed to 544px; at 375 a 644px block sat in a
+  // parent 1px wide.
+  freshR();
+  var rigidCfg = { preset: 'custom', breakpoints: [
+    { name: 'Desktop', width: 1920 }, { name: 'Tablet', width: 768 }, { name: 'Mobile', width: 375 }] };
+  writeBreakpointConfig(rigidCfg);
+  await generateScaleVariables(rigidCfg, defaultScaleTable(rigidCfg, {}));
+
+  var rigidPage = mkFrame({ name: 'Services Page', width: 1920, height: 2000 });
+  rigidPage.layoutMode = 'VERTICAL'; rigidPage.itemSpacing = 40;
+  figma.currentPage.appendChild(rigidPage);
+  var rigidRow = mkFrame({ name: 'Service Cards Container', width: 1428, height: 600 });
+  rigidRow.layoutMode = 'HORIZONTAL'; rigidRow.itemSpacing = 24;
+  rigidRow.layoutSizingHorizontal = 'FIXED';
+  rigidPage.appendChild(rigidRow);
+  for (var rc = 0; rc < 4; rc++) {
+    var rcard = mkFrame({ name: 'service_' + (rc + 1), width: 1428, height: 600 });
+    rcard.layoutMode = 'VERTICAL';
+    rcard.layoutSizingHorizontal = 'FIXED';
+    rcard.y = 0;
+    rigidRow.appendChild(rcard);
+  }
+
+  var readiness = fluidReadiness(rigidPage);
+  eq(readiness.ready, false, 'rigid: the design is reported as not ready to narrow');
+  ok(readiness.rigid > 0, 'rigid: the fixed-width layers are counted  (' + readiness.rigid + ')');
+  ok(readiness.names.join(' ').indexOf('service_') !== -1,
+     'rigid: and named  (' + readiness.names.slice(0, 3).join(', ') + ')');
+
+  figma.currentPage.selection = [rigidPage];
+  var refused = await generateResponsiveFrames(rigidCfg, {});
+  eq(refused.created, 0, 'rigid: no frames are generated');
+  ok(refused.reasons.join(' ').indexOf('Make fluid first') !== -1,
+     'rigid: and it says to make it fluid first  ("' + refused.reasons[0] + '")');
+  var madeAnything = figma.currentPage.children.filter(function (c) {
+    return /Tablet|Mobile/.test(c.name);
+  });
+  eq(madeAnything.length, 0, 'rigid: nothing half-built is left behind');
+
+  // once it IS fluid, the same design generates
+  await makeFrameFluid(rigidPage, { narrowestWidth: 375 });
+  var readyNow = fluidReadiness(rigidPage);
+  eq(readyNow.ready, true, 'rigid: Make fluid makes it ready  (' + readyNow.flexible + ' flexible)');
+  figma.currentPage.selection = [rigidPage];
+  var allowed = await generateResponsiveFrames(rigidCfg, {});
+  ok(allowed.created >= 2, 'rigid: and then the frames generate  (' + allowed.created + ')');
 
   print('');
   if (fail === 0) print('ALL PASS (' + pass + ' assertions)');
