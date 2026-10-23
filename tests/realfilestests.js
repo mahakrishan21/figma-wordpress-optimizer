@@ -446,9 +446,37 @@ async function run() {
   var fr = await makeFrameFluid(absPage, { narrowestWidth: 375, minCardWidth: 260 });
   eq(absPage.width, 1440, 'fluid: a hand-placed frame keeps its width');
   eq(absPage.height, 700, 'fluid: and its height, instead of hugging down to nothing');
-  ok(fr.heldSize > 0, 'fluid: the frames it held are counted  (' + fr.heldSize + ')');
-  ok(fr.reasons.join(' ').indexOf('will not reflow') !== -1,
-     'fluid: and it says they will not reflow on their own');
+  // Measured in Figma: the offset child used to snap to 0,0. Its offsets are
+  // now carried across as padding, so it sits exactly where it sat.
+  eq(Math.round(heroBlock.x), 170, 'fluid: the offset child keeps its x');
+  eq(Math.round(heroBlock.y), 120, 'fluid: and its y');
+  eq(absPage.paddingLeft, 170, 'fluid: because the offset became padding');
+  eq(absPage.paddingTop, 120, 'fluid: on both axes');
+
+  // ══ 11b ══ a composition auto layout cannot express is left alone ═════
+  // Measured in Figma: a caption deliberately sitting ON a backdrop was
+  // moved 840px to the right and placed beside it, widening the frame from
+  // 900 to 1300.
+  freshR();
+  var art = mkFrame({ name: 'Art directed', width: 900, height: 500 });
+  figma.currentPage.appendChild(art);
+  var backdrop = mkFrame({ name: 'Backdrop', width: 900, height: 500 });
+  backdrop.x = 0; backdrop.y = 0;
+  art.appendChild(backdrop);
+  var caption = mkFrame({ name: 'Caption over it', width: 400, height: 120 });
+  caption.x = 60; caption.y = 320;
+  art.appendChild(caption);
+
+  var fa = await makeFrameFluid(art, { narrowestWidth: 375 });
+  eq(art.layoutMode, 'NONE', 'overlap: the frame is left without auto layout');
+  eq(Math.round(art.width), 900, 'overlap: its width is unchanged');
+  eq(Math.round(caption.x), 60, 'overlap: the caption stays where it was put');
+  eq(Math.round(caption.y), 320, 'overlap: on both axes');
+  ok(fa.unconvertible > 0, 'overlap: it is counted as unconvertible  (' + fa.unconvertible + ')');
+  ok(fa.reasons.join(' ').indexOf('auto layout cannot reproduce') !== -1,
+     'overlap: and it says why, rather than silently rearranging it');
+  ok(fa.unconvertibleNames.indexOf('Art directed') !== -1,
+     'overlap: naming the frame it left alone  (' + fa.unconvertibleNames.join(', ') + ')');
 
   // ══ 12 ══ a column floor must fit the narrowest canvas ════════════════
   // Measured: a 260px floor inside a 1440 frame with 120px side padding
@@ -474,6 +502,86 @@ async function run() {
      'floor: no column floor exceeds what a 375 canvas affords  (' + floors.join(', ') + ' vs ' + affordable + ')');
   ok(fr2.reasons.join(' ').indexOf('only has') !== -1,
      'floor: and it explains why the floor is small, and how to win the room back');
+
+  // ══ 13 ══ provenance that cannot be written is reported, not assumed ══
+  freshR();
+  var provCfg = { preset: 'custom', breakpoints: [
+    { name: 'Desktop', width: 1440 }, { name: 'Tablet', width: 768 }, { name: 'Mobile', width: 375 }] };
+  writeBreakpointConfig(provCfg);
+  await generateScaleVariables(provCfg, defaultScaleTable(provCfg, {}));
+  var provPage = mkFrame({ name: 'Home', width: 1440, height: 900 });
+  provPage.layoutMode = 'VERTICAL'; provPage.itemSpacing = 24;
+  figma.currentPage.appendChild(provPage);
+  var provRow = mkFrame({ name: 'Cards', width: 1200, height: 300 });
+  provRow.layoutMode = 'HORIZONTAL'; provRow.itemSpacing = 24;
+  provPage.appendChild(provRow);
+  for (var pq = 0; pq < 3; pq++) {
+    var pc = mkFrame({ name: 'Card', width: 380, height: 300 });
+    pc.x = pq * 404; pc.y = 0;
+    provRow.appendChild(pc);
+  }
+
+  figma.currentPage.selection = [provPage];
+  var gen1 = await generateResponsiveFrames(provCfg, {});
+  ok(gen1.created > 0, 'provenance: frames are generated  (' + gen1.created + ')');
+  eq(gen1.unstamped || 0, 0, 'provenance: and all of them are recorded');
+  var madeNames = gen1.frames.map(function (f) { return f.name + '@' + f.breakpoint; });
+  ok(madeNames.length >= 2, 'provenance: the reply names them  (' + madeNames.join(', ') + ')');
+
+  // a second run updates rather than duplicating
+  figma.currentPage.selection = [provPage];
+  var gen2 = await generateResponsiveFrames(provCfg, {});
+  eq(gen2.created, 0, 'provenance: a second run creates nothing new');
+  var tabletCount = figma.currentPage.children.filter(function (c) {
+    return /Tablet/.test(c.name);
+  }).length;
+  eq(tabletCount, 1, 'provenance: and there is still exactly one Tablet frame');
+
+  // a hand-edited generated frame is protected
+  var tabletFrame = figma.currentPage.children.filter(function (c) { return /Tablet/.test(c.name); })[0];
+  ok(!!tabletFrame, 'provenance: the Tablet frame is there to edit');
+  if (tabletFrame) {
+    tabletFrame.appendChild(mkText('A note the designer added', 'Note'));
+    figma.currentPage.selection = [provPage];
+    var gen3 = await generateResponsiveFrames(provCfg, {});
+    ok(gen3.skipped > 0, 'provenance: an edited frame is left alone  (' + gen3.skipped + ' skipped)');
+    ok(gen3.reasons.join(' ').length > 0, 'provenance: with a reason given');
+  }
+
+  // and when the file refuses to store provenance, it says so
+  freshR();
+  writeBreakpointConfig(provCfg);
+  await generateScaleVariables(provCfg, defaultScaleTable(provCfg, {}));
+  var noStore = mkFrame({ name: 'Home', width: 1440, height: 900 });
+  noStore.layoutMode = 'VERTICAL'; noStore.itemSpacing = 24;
+  figma.currentPage.appendChild(noStore);
+  var nsRow = mkFrame({ name: 'Cards', width: 1200, height: 200 });
+  nsRow.layoutMode = 'HORIZONTAL';
+  noStore.appendChild(nsRow);
+  nsRow.appendChild(mkFrame({ name: 'Card', width: 580, height: 200 }));
+  var realSet = noStore.setPluginData;
+  figma.currentPage.selection = [noStore];
+  // every clone's stamp throws, as a locked or restricted file would
+  var origClone = noStore.clone;
+  noStore.clone = function () {
+    var c = origClone.call(this);
+    c.setPluginData = function () { throw new Error('plugin data unavailable'); };
+    return c;
+  };
+  var gen4 = await generateResponsiveFrames(provCfg, {});
+  ok((gen4.unstamped || 0) > 0, 'provenance: unstampable frames are counted  (' + gen4.unstamped + ')');
+  ok(gen4.reasons.join(' ').indexOf('will not recognise them') !== -1,
+     'provenance: and the warning explains the consequence');
+
+  // ══ 14 ══ a config that cannot be saved reports false ═════════════════
+  freshR();
+  eq(writeBreakpointConfig({ preset: 'custom', breakpoints: [{ name: 'Desktop', width: 1440 }] }), true,
+     'config: a normal save reports success');
+  var realRoot = figma.root.setPluginData;
+  figma.root.setPluginData = function () { throw new Error('read-only file'); };
+  eq(writeBreakpointConfig({ preset: 'custom', breakpoints: [{ name: 'Desktop', width: 1440 }] }), false,
+     'config: a refused save reports failure instead of throwing');
+  figma.root.setPluginData = realRoot;
 
   print('');
   if (fail === 0) print('ALL PASS (' + pass + ' assertions)');

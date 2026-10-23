@@ -294,16 +294,65 @@ function inferItemSpacing(node, axis) {
 // its content is fine; a section losing two thirds of its height is not, so
 // a large change is treated as a collapse and the frame keeps its size.
 var AUTO_LAYOUT_COLLAPSE = 0.25;
+
+// Turn a hand-placed frame into an auto-layout one WITHOUT moving anything.
+//
+// Two things had to be learned the hard way, both measured in Figma. A child
+// sitting at 170,120 snapped to the corner, because auto layout has no idea
+// those offsets were deliberate — so the offsets become padding first. And a
+// caption deliberately overlapping a backdrop was placed BESIDE it instead,
+// 840px to the right, widening the frame from 900 to 1300: auto layout
+// cannot express overlap at all. There is no padding that fixes that, so the
+// conversion is tried, the result is checked, and a composition that did not
+// survive is put back exactly as it was.
 function applySmartAutoLayout(frame) {
-  const beforeW = frame.width, beforeH = frame.height;
-  const axis = inferAutoLayoutAxis(frame);
+  var kids = getVisibleEditableChildren(frame);
+  var beforeW = frame.width, beforeH = frame.height;
+  var snapshot = kids.map(function (k) { return { node: k, x: k.x || 0, y: k.y || 0 }; });
+
+  var axis = inferAutoLayoutAxis(frame);
+  // Measured from the ORIGINAL positions: once layoutMode is set they move.
+  var spacing = inferItemSpacing(frame, axis);
+  var minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+  for (var i = 0; i < kids.length; i++) {
+    var k = kids[i];
+    minX = Math.min(minX, k.x || 0);
+    minY = Math.min(minY, k.y || 0);
+    maxX = Math.max(maxX, (k.x || 0) + (k.width || 0));
+    maxY = Math.max(maxY, (k.y || 0) + (k.height || 0));
+  }
+
   frame.layoutMode = axis;
+  if (kids.length) {
+    try {
+      frame.paddingLeft = Math.max(0, Math.round(minX));
+      frame.paddingTop = Math.max(0, Math.round(minY));
+      frame.paddingRight = Math.max(0, Math.round(beforeW - maxX));
+      frame.paddingBottom = Math.max(0, Math.round(beforeH - maxY));
+    } catch (e) { /* some node types refuse padding */ }
+  }
   frame.primaryAxisSizingMode = 'AUTO';
   frame.counterAxisSizingMode = 'AUTO';
   frame.primaryAxisAlignItems = 'MIN';
   frame.counterAxisAlignItems = 'MIN';
-  frame.itemSpacing = inferItemSpacing(frame, axis);
+  frame.itemSpacing = spacing;
   if ('strokesIncludedInLayout' in frame) frame.strokesIncludedInLayout = true;
+
+  // Did the composition survive the conversion?
+  var moved = 0;
+  for (var m = 0; m < snapshot.length; m++) {
+    var s = snapshot[m];
+    if (Math.abs((s.node.x || 0) - s.x) > 1 || Math.abs((s.node.y || 0) - s.y) > 1) moved++;
+  }
+  if (moved) {
+    frame.layoutMode = 'NONE';
+    try { frame.resize(beforeW, beforeH); } catch (e) { /* locked or odd type */ }
+    for (var r = 0; r < snapshot.length; r++) {
+      try { snapshot[r].node.x = snapshot[r].x; snapshot[r].node.y = snapshot[r].y; }
+      catch (e) { /* nothing more we can do for this one */ }
+    }
+    return { axis: null, keptSize: true, reverted: true, moved: moved, name: frame.name };
+  }
 
   var shrankW = beforeW > 0 && (beforeW - frame.width) / beforeW > AUTO_LAYOUT_COLLAPSE;
   var shrankH = beforeH > 0 && (beforeH - frame.height) / beforeH > AUTO_LAYOUT_COLLAPSE;
@@ -314,9 +363,9 @@ function applySmartAutoLayout(frame) {
       frame.primaryAxisSizingMode = 'FIXED';
       frame.counterAxisSizingMode = 'FIXED';
     } catch (e) { /* older API */ }
-    return { axis: axis, keptSize: true };
+    return { axis: axis, keptSize: true, reverted: false };
   }
-  return { axis: axis, keptSize: false };
+  return { axis: axis, keptSize: false, reverted: false };
 }
 
 function isVectorLikeNode(node) {
@@ -4372,8 +4421,17 @@ function readBreakpointConfig() {
   } catch (e) { return null; }
 }
 
+// The config is the only thing that survives closing the plugin. If the
+// write fails the plugin still works for this session and then forgets
+// everything, which looks like the system vanished — so it is reported
+// rather than swallowed.
 function writeBreakpointConfig(cfg) {
-  figma.root.setPluginData(UIKIT_CONFIG_KEY, JSON.stringify(cfg));
+  try {
+    figma.root.setPluginData(UIKIT_CONFIG_KEY, JSON.stringify(cfg));
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 function breakpointNames(cfg) {
@@ -7323,7 +7381,8 @@ function similarWidths(kids, tolerance) {
 async function makeFrameFluid(root, opts) {
   opts = opts || {};
   var report = { autoLayout: 0, wrapped: 0, filled: 0, text: 0, minWidths: 0, maxWidths: 0,
-                 fixedKept: 0, heldSize: 0, refused: 0, reasons: [], unit: 'layer' };
+                 fixedKept: 0, heldSize: 0, unconvertible: 0, unconvertibleNames: [],
+                 refused: 0, reasons: [], unit: 'layer' };
   if (!root) { report.reasons.push('Select a frame first.'); return report; }
 
   var minCard = typeof opts.minCardWidth === 'number' ? opts.minCardWidth : 260;
@@ -7345,8 +7404,13 @@ async function makeFrameFluid(root, opts) {
       if (!isAutoLayoutFrame(node) && (node.type === 'FRAME' || node.type === 'COMPONENT')) {
         try {
           var held = applySmartAutoLayout(node);
-          report.autoLayout++;
-          if (held && held.keptSize) report.heldSize = (report.heldSize || 0) + 1;
+          if (held && held.reverted) {
+            report.unconvertible = (report.unconvertible || 0) + 1;
+            if (report.unconvertibleNames.length < 4) report.unconvertibleNames.push(node.name);
+          } else {
+            report.autoLayout++;
+            if (held && held.keptSize) report.heldSize = (report.heldSize || 0) + 1;
+          }
         } catch (e) { report.refused++; }
       }
     }
@@ -7416,6 +7480,14 @@ async function makeFrameFluid(root, opts) {
     report.reasons.push('"' + root.name + '" has no auto layout of its own, so it cannot flow. Its children were still set up.');
   }
 
+  if (report.unconvertible) {
+    report.reasons.push(report.unconvertible + ' frame(s) were left exactly as they are \u2014 ' +
+      report.unconvertibleNames.join(', ') +
+      (report.unconvertible > report.unconvertibleNames.length ? ', \u2026' : '') +
+      '. Their layers overlap or sit in positions auto layout cannot reproduce, so converting them ' +
+      'would have rearranged the composition. Adapt those by hand, or let the responsive versions ' +
+      'handle them.');
+  }
   if (report.heldSize) {
     report.reasons.push(report.heldSize + ' frame(s) were hand-placed and would have collapsed when given auto layout, so they kept their size. They hold their shape but will not reflow on their own \u2014 the responsive versions are where those get adapted.');
   }
@@ -7720,6 +7792,10 @@ function findGeneratedFrame(sourceId, bpName) {
 // A frame that someone has edited since it was generated is REPORTED AND
 // SKIPPED, never overwritten. Silently destroying hand-made changes is the
 // single fastest way to make a generator untrustworthy.
+var UNSTAMPED_WARNING = 'This file would not let the plugin record which frames it generated. ' +
+  'They were still drawn, but a second run will not recognise them \u2014 it will add new ones ' +
+  'beside them rather than updating these, and it cannot protect them once you edit them.';
+
 async function generateResponsiveFrames(cfg, opts) {
   opts = opts || {};
   var result = { created: 0, replaced: 0, skipped: 0, applied: 0, failed: 0,
@@ -7778,9 +7854,19 @@ async function generateResponsiveFrames(cfg, opts) {
 
     walkApply(clone, bp.name, counts);
 
-    clone.setPluginData(UIKIT_FROM_KEY, source.id);
-    clone.setPluginData(UIKIT_BP_KEY, bp.name);
-    clone.setPluginData(UIKIT_HASH_KEY, structureHash(clone));
+    // Provenance is what stops the next run duplicating this frame and what
+    // protects a hand-edited one from being replaced. A clone that cannot be
+    // stamped is a clone the plugin will not recognise again, so say so.
+    var stamped = true;
+    try {
+      clone.setPluginData(UIKIT_FROM_KEY, source.id);
+      clone.setPluginData(UIKIT_BP_KEY, bp.name);
+      clone.setPluginData(UIKIT_HASH_KEY, structureHash(clone));
+    } catch (e) { stamped = false; }
+    if (!stamped) {
+      result.unstamped = (result.unstamped || 0) + 1;
+      if (result.reasons.indexOf(UNSTAMPED_WARNING) === -1) result.reasons.push(UNSTAMPED_WARNING);
+    }
 
     clone.x = x;
     clone.y = source.y;
@@ -9223,13 +9309,27 @@ async function handleUiKitMessage(msg) {
       if (msg.byNode) await saveResponsiveRules(msg.byNode, msg.accepted);
       r = await generateResponsiveFrames(vcfg, msg);
       if (r.frames.length) {
-        summary = r.created + ' created' + (r.replaced ? (', ' + r.replaced + ' replaced') : '') +
-          (r.skipped ? (', ' + r.skipped + ' left alone') : '') + '.';
+        var widthOf = {};
+        for (var vb = 0; vb < vcfg.breakpoints.length; vb++) {
+          widthOf[vcfg.breakpoints[vb].name] = vcfg.breakpoints[vb].width;
+        }
+        var named = r.frames.map(function (f) {
+          return '"' + f.name + '" at ' + (widthOf[f.breakpoint] || '?') + 'px';
+        });
+        var rb = [r.created + ' created'];
+        if (r.replaced) rb.push(r.replaced + ' updated');
+        if (r.skipped) rb.push(r.skipped + ' left alone because you had edited them');
+        if (r.unstamped) rb.push(r.unstamped + ' could not be recorded');
+        summary = rb.join(', ') + ' \u2014 ' + named.join(', ') + '.';
+        if (r.applied) summary += ' ' + r.applied + ' layout change' + (r.applied === 1 ? '' : 's') + ' applied';
+        if (r.unsupported) summary += ', ' + r.unsupported + ' unsupported';
+        if (r.failed) summary += ', ' + r.failed + ' refused';
+        if (r.applied || r.unsupported || r.failed) summary += '.';
       } else {
         summary = r.reasons.length ? r.reasons[0] : 'Nothing generated.';
         tone = 'warning';
       }
-      if (r.skipped) tone = 'warning';
+      if (r.skipped || r.unstamped) tone = 'warning';
     } else if (msg.type === 'uikit-preview-table') {
       r = { rows: previewTable(msg.spec || {}) };
       summary = '';

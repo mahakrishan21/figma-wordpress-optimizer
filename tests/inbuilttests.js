@@ -175,8 +175,15 @@ async function run() {
   figma.currentPage.appendChild(p4);
   var s1 = mkFrame({ name: 'Features Section', width: 1440, height: 500 });
   p4.appendChild(s1);
-  s1.appendChild(mkFrame({ name: 'Feature A', width: 300, height: 200 }));
-  s1.appendChild(mkFrame({ name: 'Feature B', width: 300, height: 200 }));
+  // Side by side, as a real section's children are. Both at 0,0 would be
+  // two frames sitting exactly on top of each other, which auto layout
+  // cannot express and the converter now declines to rearrange.
+  var featA = mkFrame({ name: 'Feature A', width: 300, height: 200 });
+  featA.x = 0; featA.y = 0;
+  var featB = mkFrame({ name: 'Feature B', width: 300, height: 200 });
+  featB.x = 340; featB.y = 0;
+  s1.appendChild(featA);
+  s1.appendChild(featB);
   figma.currentPage.selection = [p4];
   await send({ type: 'section-auto-layout' });
   ok(s1.layoutMode === 'VERTICAL' || s1.layoutMode === 'HORIZONTAL', 'a section gets auto layout  (' + s1.layoutMode + ')');

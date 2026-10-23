@@ -294,6 +294,29 @@ var NODE_EXTRAS = ['x','y','fills','strokes','width','height','minWidth','maxWid
 // Object.preventExtensions only THROWS in strict mode; in sloppy mode the
 // assignment silently no-ops, which is exactly the failure that let
 // "node.rowHost = x" through. A Proxy throws either way.
+// What Figma does when a frame has auto layout: it PLACES the children in
+// sequence along the axis. Without this the mock let a child keep whatever
+// coordinates it was given, so converting an art-directed frame looked
+// harmless here while in Figma it moved a caption 840px and widened the
+// frame by 400 — the composition-destroying bug this models.
+function relayout(f){
+  if (!f || !f.layoutMode || f.layoutMode === 'NONE') return;
+  var kids = (f.children || []).filter(function(k){ return k.visible !== false; });
+  if (!kids.length) return;
+  var x = f.paddingLeft || 0, y = f.paddingTop || 0, gap = f.itemSpacing || 0;
+  for (var i = 0; i < kids.length; i++) {
+    var k = kids[i];
+    if (f.layoutMode === 'HORIZONTAL') {
+      k.x = x; k.y = f.paddingTop || 0;
+      x += (k.width || 0) + gap;
+    } else {
+      k.x = f.paddingLeft || 0; k.y = y;
+      y += (k.height || 0) + gap;
+    }
+  }
+  hugToContent(f);
+}
+
 // What Figma does when an axis is set to AUTO: the frame shrinks to fit
 // what is inside it, padding included.
 function hugToContent(f){
@@ -332,6 +355,11 @@ function sealNode(n){
       // threw a real hero's children hundreds of pixels outside it.
       if ((key === 'primaryAxisSizingMode' || key === 'counterAxisSizingMode') && value === 'AUTO') {
         hugToContent(target);
+      }
+      // Setting the layout, its spacing or its padding re-places the children.
+      if (key === 'layoutMode' || key === 'itemSpacing' || key === 'paddingLeft' ||
+          key === 'paddingTop' || key === 'paddingRight' || key === 'paddingBottom') {
+        relayout(target);
       }
       return true;
     }
