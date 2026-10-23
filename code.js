@@ -5942,7 +5942,7 @@ async function adoptPaintStyles(cols, report) {
 }
 
 async function adoptTextStyles(cfg, cols, report) {
-  var out = { adopted: 0, reused: 0, skipped: 0 };
+  var out = { adopted: 0, reused: 0, skipped: 0, bound: 0 };
   if (!cols.responsive) return out;
   var styles = (await figma.getLocalTextStylesAsync()).filter(function (st) { return !st.remote; });
   if (!styles.length) return out;
@@ -5981,6 +5981,13 @@ async function adoptTextStyles(cfg, cols, report) {
     }
     existing[name] = v;
     out.adopted++;
+
+    // Bind the style itself, the way a paint style is bound. Without this the
+    // token exists but the style stays a fixed size, so every layer wearing it
+    // keeps its desktop size on a phone — which is the one thing this whole
+    // path is for.
+    try { st.setBoundVariable('fontSize', v); out.bound++; }
+    catch (e) { /* older API, or a style Figma will not let us bind */ }
   }
   if (out.skipped && report) report.push(out.skipped + ' text style(s) had no readable size.');
   return out;

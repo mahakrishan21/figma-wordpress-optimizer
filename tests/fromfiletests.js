@@ -213,6 +213,10 @@ async function run() {
   eq(withStyles.paints.adopted, 2, 'every colour style became a token');
   eq(withStyles.paints.bound, 2, 'and each style now follows its token');
   eq(withStyles.texts.adopted, 1, 'the text style too');
+  eq(withStyles.texts.bound, 1, 'and the text style now follows its size token');
+  var ts0 = figma._textStyles.filter(function (t) { return t.name === 'Heading / H1'; })[0];
+  ok(ts0 && ts0.boundVars && ts0.boundVars.fontSize,
+     'so a layer wearing that style resizes with the canvas instead of staying at its desktop size');
   var named = (await localVariablesWithValues('COLOR')).map(function (e) { return e.variable.name; });
   ok(named.indexOf('color/brand/primary') !== -1,
      'keeping the name the designer chose  (' + named.slice(0, 5).join(', ') + ')');
