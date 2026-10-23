@@ -6203,7 +6203,11 @@ async function surveyExistingFile() {
 // Group numbers that are near enough to be the same decision. 23 and 24 in a
 // hand-built design are one spacing step the designer eyeballed twice, not
 // two steps, and emitting both would put the noise into the system.
-function clusterNumbers(values, tol) {
+// decimals: how many to keep. Spacing is whole pixels; tracking is not —
+// rounding 2.4px of letter spacing to 2 is a visible change to every word.
+function clusterNumbers(values, tol, decimals) {
+  var factor = Math.pow(10, decimals || 0);
+  function round(v) { return Math.round(v * factor) / factor; }
   var clusters = [];
   var sorted = values.slice().sort(function (a, b) { return a - b; });
   for (var i = 0; i < sorted.length; i++) {
@@ -6215,10 +6219,10 @@ function clusterNumbers(values, tol) {
     if (at) {
       at.count++;
       at.total += v;
-      // The cluster sits where its members sit, rounded to a whole pixel.
-      at.value = Math.round(at.total / at.count);
+      // The cluster sits where its members sit.
+      at.value = round(at.total / at.count);
     } else {
-      clusters.push({ value: Math.round(v), total: v, count: 1 });
+      clusters.push({ value: round(v), total: v, count: 1 });
     }
   }
   return clusters;
@@ -6547,8 +6551,20 @@ function measureLeading(nodes) {
 // style recording 20 PERCENT renders as 2.4px at 12px and 11px at 55px.
 // Normalising to percent-of-size is the only form that survives the type
 // scale moving underneath it.
+// Tracking, measured in the unit Figma will APPLY it in.
+//
+// A variable bound to letterSpacing is always read as pixels — measured in
+// a real file, binding a variable holding 20 to text set at 20 PERCENT
+// flipped the unit to PIXELS and took the line from 171px wide to 470px.
+// So a token holding the percentage is a trap: it looks like the design's
+// 20% and lands as 20px. Clustering on the pixel value instead makes the
+// token mean what it says, and every run inside a cluster shares that exact
+// pixel tracking, so one number is right for all of them.
+//
+// The percentage is kept alongside for the report, because that is what the
+// designer typed and what they will recognise.
 async function measureLetterSpacing(nodes) {
-  var vals = [], pixelBased = 0, percentBased = 0;
+  var vals = [], pixelBased = 0, percentBased = 0, byPx = {};
   for (var i = 0; i < nodes.length; i++) {
     var n = nodes[i];
     if (n.type !== 'TEXT') continue;
@@ -6559,13 +6575,28 @@ async function measureLetterSpacing(nodes) {
       var ls = spec.letterSpacing, size = spec.fontSize;
       if (!ls || typeof ls.value !== 'number' || typeof size !== 'number' || !size) continue;
       if (ls.value === 0) continue;          // no tracking is not a token
-      var pct;
-      if (ls.unit === 'PERCENT') { pct = ls.value; percentBased++; }
-      else { pct = (ls.value / size) * 100; pixelBased++; }
-      if (pct > -20 && pct < 60) vals.push(Math.round(pct * 10) / 10);
+      var px, pct;
+      if (ls.unit === 'PERCENT') { pct = ls.value; px = (ls.value / 100) * size; percentBased++; }
+      else { px = ls.value; pct = (ls.value / size) * 100; pixelBased++; }
+      if (px <= -20 || px >= 40) continue;   // not tracking, something odd
+      var rounded = Math.round(px * 100) / 100;
+      vals.push(rounded);
+      var key = String(Math.round(px * 4) / 4);
+      if (!byPx[key]) byPx[key] = { pcts: [], sizes: {} };
+      byPx[key].pcts.push(Math.round(pct * 10) / 10);
+      byPx[key].sizes[Math.round(size)] = true;
     }
   }
-  var out = clusterNumbers(vals, 1).sort(byCountDesc);
+  var out = clusterNumbers(vals, 0.25, 2).sort(byCountDesc);
+  // Hang the percentage and the sizes it came from off each cluster, so the
+  // report can say "2.4px, which is the 20% this design uses at 12px".
+  for (var c = 0; c < out.length; c++) {
+    var k = String(Math.round(out[c].value * 4) / 4);
+    var rec = byPx[k];
+    if (!rec) continue;
+    out[c].percent = rec.pcts.length ? rec.pcts[0] : null;
+    out[c].sizes = Object.keys(rec.sizes).map(Number).sort(function (a, b) { return a - b; });
+  }
   out.pixelBased = pixelBased;
   out.percentBased = percentBased;
   return out;
@@ -6798,7 +6829,9 @@ async function measureDesign(root, cfg) {
     type: type.steps.slice(),
     colours: colours.slice(0, 12).map(function (c) { return { hex: c.hex, opacity: c.opacity, count: c.count }; }),
     leading: pairs(leading, 4),
-    tracking: pairs(tracking, 4),
+    tracking: tracking.slice(0, 4).map(function (c) {
+      return { value: c.value, count: c.count, percent: c.percent, sizes: c.sizes };
+    }),
     trackingUnits: { px: tracking.pixelBased, percent: tracking.percentBased },
     strokes: pairs(strokes, 4),
     icons: pairs(icons, 4),
@@ -6884,15 +6917,24 @@ async function measureDesign(root, cfg) {
     lv[UIKIT_VALUE_KEY] = lsorted[li].value;
     out.rows.push({ name: 'text/leading/' + LNAMES[li], tier: 'primitive', scopes: ['LINE_HEIGHT'], values: lv });
   }
-  // Tracking is stored as percent of size, which is what makes it survive a
-  // responsive type scale. The scope is LETTER_SPACING so it can never be
-  // mistaken for a length.
-  var tsorted = tracking.slice(0, 3).map(function (c) { return c.value; })
-                        .sort(function (a2, b2) { return a2 - b2; });
+  // Tracking is stored in PIXELS, because that is the only unit Figma reads
+  // a bound letterSpacing variable in. The scope is LETTER_SPACING so it can
+  // never be mistaken for a length.
+  var tsorted = tracking.slice(0, 3).sort(function (a2, b2) { return a2.value - b2.value; });
   for (var ti = 0; ti < tsorted.length; ti++) {
+    var cluster = tsorted[ti];
+    // A pixel tracking is only right at the size it was measured at. Where
+    // one tracking is shared across several sizes there is no single pixel
+    // value that suits them all, so it is reported rather than tokenised.
+    if (cluster.sizes && cluster.sizes.length > 1) {
+      out.reasons.push(cluster.percent + '% tracking appears at ' + cluster.sizes.join('px, ') +
+        'px. Figma reads a letter-spacing variable in pixels, so one token cannot serve them all \u2014 ' +
+        'left as it is.');
+      continue;
+    }
     var tv = {};
-    tv[UIKIT_VALUE_KEY] = tsorted[ti];
-    out.rows.push({ name: 'text/tracking/' + (tsorted[ti] < 0 ? 'tight' : (ti === 0 ? 'normal' : 'wide' + ti)),
+    tv[UIKIT_VALUE_KEY] = cluster.value;
+    out.rows.push({ name: 'text/tracking/' + (cluster.value < 0 ? 'tight' : (ti === 0 ? 'normal' : 'wide' + ti)),
                     tier: 'primitive', scopes: ['LETTER_SPACING'], values: tv });
   }
 

@@ -322,14 +322,46 @@ async function run() {
 
   var ls = await measureLetterSpacing(styleScanNodes([lsPage]));
   var lsVals = ls.map(function (c) { return c.value; });
-  ok(lsVals.some(function (v) { return Math.abs(v - 20) < 1.5; }),
-     'tracking: 20% and 2.4px-at-12px read as the same value  (' + lsVals.join(', ') + ')');
-  var twenty = ls.filter(function (c) { return Math.abs(c.value - 20) < 1.5; })[0];
-  eq(twenty && twenty.count, 2, 'tracking: both spellings land in one cluster');
-  ok(lsVals.some(function (v) { return v < -2 && v > -4; }),
-     'tracking: -2.64px at 88px is about -3%, not -2.64  (' + lsVals.join(', ') + ')');
+  // Measured in Figma: a variable bound to letterSpacing is read as PIXELS
+  // and flips the unit, so a token holding the percentage 20 lands as 20px
+  // and took a line from 171px wide to 470px. Tokens are pixels.
+  ok(lsVals.some(function (v) { return Math.abs(v - 2.4) < 0.3; }),
+     'tracking: 20% at 12px is stored as 2.4px, not as 20  (' + lsVals.join(', ') + ')');
+  ok(!lsVals.some(function (v) { return Math.abs(v - 20) < 1; }),
+     'tracking: the raw percentage is never the token value');
+  var twoFour = ls.filter(function (c) { return Math.abs(c.value - 2.4) < 0.3; })[0];
+  eq(twoFour && twoFour.count, 2, 'tracking: 20% and 2.4px are the same tracking, so one cluster');
+  eq(twoFour && twoFour.percent, 20, 'tracking: the percentage is kept for the report');
+  ok(lsVals.some(function (v) { return Math.abs(v + 2.64) < 0.3; }),
+     'tracking: -2.64px stays -2.64px  (' + lsVals.join(', ') + ')');
   eq(ls.pixelBased, 2, 'tracking: the pixel-based ones are counted');
   eq(ls.percentBased, 1, 'tracking: and so are the percent-based ones');
+
+  // and a token is only emitted when one pixel value suits every size using it
+  var lsCfg = { preset: 'custom', breakpoints: [
+    { name: 'Desktop', width: 1440 }, { name: 'Tablet', width: 768 }, { name: 'Mobile', width: 375 }] };
+  var lsMeasured = await measureDesign(lsPage, lsCfg);
+  var trackRows = lsMeasured.rows.filter(function (r) { return r.name.indexOf('text/tracking/') === 0; });
+  trackRows.forEach(function (r) {
+    var val = r.values[UIKIT_VALUE_KEY];
+    ok(Math.abs(val) < 12, 'tracking: every token is a plausible pixel tracking  (' + r.name + '=' + val + ')');
+  });
+
+  // the same 20% used at two different sizes cannot share one pixel token
+  freshR();
+  var sharedPage = mkFrame({ name: 'Shared tracking', width: 1440, height: 600 });
+  figma.currentPage.appendChild(sharedPage);
+  var small = mkText('SMALL EYEBROW', 'S');
+  small.fontSize = 12; small.letterSpacing = { unit: 'PERCENT', value: 20 };
+  sharedPage.appendChild(small);
+  var big = mkText('BIG EYEBROW', 'B');
+  big.fontSize = 48; big.letterSpacing = { unit: 'PERCENT', value: 20 };
+  sharedPage.appendChild(big);
+  var sharedMeasured = await measureDesign(sharedPage, lsCfg);
+  var sharedRows = sharedMeasured.rows.filter(function (r) { return r.name.indexOf('text/tracking/') === 0; });
+  var pxValues = sharedRows.map(function (r) { return r.values[UIKIT_VALUE_KEY]; });
+  ok(pxValues.indexOf(2.4) === -1 || pxValues.indexOf(9.6) === -1 || sharedRows.length <= 2,
+     'tracking: 20% at 12px and at 48px are different pixel values  (' + pxValues.join(', ') + ')');
 
   // ══ 8 ══ NEAR matches are reported, never silently applied ═════════════
   freshR();
