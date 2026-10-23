@@ -203,13 +203,39 @@ async function run() {
   ok(!!heading, 'the h1 is still 56px');
   if (heading) ok(!!heading.boundVariables.fontSize, 'and now follows the h1 token');
 
-  // ── 8 ── styles the file already names are kept, not overruled ────────
+  // ── 8a ── a file with styles is asked about before anything is written ─
   fresh10();
   paintStyle('Brand / Primary', '#2563EB');
   paintStyle('Neutral / Body', '#6B7280');
   textStyle('Heading / H1', 61);
   page = selectPage(designPage({ width: 1440 }));
-  var withStyles = await buildFromExistingFile({ bindSelection: false });
+  var asked = await buildFromExistingFile({ bindSelection: false });
+  ok(!!asked.needsStyleChoice, 'it stops and asks what to do with the styles');
+  if (asked.needsStyleChoice) {
+    eq(asked.needsStyleChoice.paintStyles, 2, 'counting the colour styles');
+    eq(asked.needsStyleChoice.textStyles, 1, 'and the text styles');
+  }
+  eq(asked.measured, null, 'and measures nothing until it has an answer');
+  eq((await localVariablesWithValues('COLOR')).length, 0, 'writing nothing either');
+
+  // ── 8b ── converting them uses the same conversion the Colors tab runs ─
+  fresh10();
+  paintStyle('Brand / Primary', '#2563EB');
+  paintStyle('Neutral / Body', '#6B7280');
+  textStyle('Heading / H1', 61);
+  page = selectPage(designPage({ width: 1440 }));
+  var converted = await buildFromExistingFile({ bindSelection: false, styleChoice: 'convert' });
+  ok(!!converted.converted, 'convert runs the conversion');
+  ok(!!converted.measured, 'and then measures the frame');
+  ok(converted.generated.created > 0, 'and writes the system  (' + converted.generated.created + ')');
+
+  // ── 8c ── keeping them binds each style to a token instead ────────────
+  fresh10();
+  paintStyle('Brand / Primary', '#2563EB');
+  paintStyle('Neutral / Body', '#6B7280');
+  textStyle('Heading / H1', 61);
+  page = selectPage(designPage({ width: 1440 }));
+  var withStyles = await buildFromExistingFile({ bindSelection: false, styleChoice: 'keep' });
   eq(withStyles.paints.adopted, 2, 'every colour style became a token');
   eq(withStyles.paints.bound, 2, 'and each style now follows its token');
   eq(withStyles.texts.adopted, 1, 'the text style too');
@@ -231,7 +257,7 @@ async function run() {
   gradient.paints = [{ type: 'GRADIENT_LINEAR' }];
   paintStyle('Brand', '#2563EB');
   selectPage(designPage({ width: 1440 }));
-  var g = await buildFromExistingFile({ bindSelection: false });
+  var g = await buildFromExistingFile({ bindSelection: false, styleChoice: 'keep' });
   eq(g.paints.adopted, 1, 'only the solid one is adopted');
   eq(g.paints.skipped, 1, 'the gradient is skipped');
   ok(g.reasons.join(' ').indexOf('single solid colour') !== -1, 'and said so');
@@ -253,8 +279,16 @@ async function run() {
   ok(!!d, 'it reports done');
   if (d) {
     eq(d.tone, 'success', 'and succeeds');
-    ok(d.message.indexOf('measured "Homepage" at 1440px') !== -1,
-       'saying what it measured: "' + d.message + '"');
+    ok(d.message.indexOf('read 31 layers in "Homepage" at 1440px') !== -1,
+       'saying what it read: "' + d.message + '"');
+    ok(/measured .*type sizes.*spacing steps.*colours/.test(d.message),
+       'and counting every family it found');
+    // Leading space, or "21 tokens" would look like "1 tokens".
+    var badPlurals = [' 1 radii', ' 1 line heights', ' 1 colours', ' 1 controls',
+                      ' 1 type sizes', ' 1 font families', ' 1 opacities', ' 1 tokens',
+                      ' 1 variables', ' 1 spacing steps'];
+    ok(badPlurals.every(function (x) { return d.message.indexOf(x) === -1; }),
+       'and counts one of something as one: "' + d.message + '"');
     ok(d.message.indexOf('bound back into the design') !== -1, 'and that it was applied back');
     ok(!!d.result.measured, 'the reply carries the measurements for the UI to show');
     ok(!!d.state.fileHas, 'and the state reports what the file holds');

@@ -5079,6 +5079,27 @@
       'heading sizes and colours become the system, then it is applied back.' + keeps;
   }
 
+  // Ask once, in the designer's words, and send the answer straight back.
+  async function uikAskAboutStyles(info) {
+    const bits = [];
+    if (info.paintStyles) bits.push(plural(info.paintStyles, 'colour style'));
+    if (info.textStyles) bits.push(plural(info.textStyles, 'text style'));
+    const answer = await smDialog({
+      title: 'This file already has styles',
+      body: `<p>It defines ${bits.join(' and ')}. Those can become variables, which is what
+        makes them respond to a canvas size — or they can stay as styles, each bound to a
+        variable of its own so nothing has to be re-applied.</p>
+        <p class="uik-note">Converting is the same conversion the Colors and Typography
+        tabs run, so the result is the same either way you do it.</p>`,
+      buttons: [
+        { label: 'Keep the styles', value: 'keep' },
+        { label: 'Convert to variables', value: 'convert', primary: true }
+      ]
+    });
+    if (!answer || !answer.value) return;          // dismissed: change nothing
+    sendUiKit({ type: 'uikit-from-file', styleChoice: answer.value });
+  }
+
   function uikEntryHtml() {
     const st = KS.state || {};
     const cols = st.collections || {};
@@ -5942,6 +5963,17 @@
       }
       if (msg.result && typeof msg.result.text === 'string' && msg.result.format) {
         KS.exportText = msg.result.empty ? null : msg.result;
+      }
+      // A file that already defines styles gets asked about before anything
+      // is written. The conversion offered here is the same one the Colors
+      // and Typography tabs run.
+      if (msg.result && msg.result.needsStyleChoice) {
+        uikAskAboutStyles(msg.result.needsStyleChoice);
+        KS.busy = false;
+        setScopeBusy(KS, false);
+        if (msg.state) uikApplyState(msg.state, false);
+        renderUiKit();
+        return true;
       }
       if (msg.result && msg.result.proposals) {
         // A survey and an inferred layout both carry "proposals"; only the

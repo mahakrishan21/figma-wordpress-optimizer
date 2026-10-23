@@ -98,6 +98,13 @@ function F(){ return {
     getLocalVariableCollectionsAsync: function(){ return Promise.resolve(figma._cols.slice()); },
     createVariableCollection: function(name){
       var c = { id:nid('C'), name:name, modes:[], defaultModeId:null,
+        // Real collections always report the variables they hold; leaving it
+        // undefined meant anything reading it threw only outside the tests.
+        get variableIds(){
+          return (figma._vars || []).filter(function(v){
+            return v.variableCollectionId === this.id;
+          }, this).map(function(v){ return v.id; });
+        },
         // The real API throws once the plan's ceiling is reached. figma._modeCap
         // makes that ceiling settable so a test can exercise both outcomes.
         addMode: function(mname){

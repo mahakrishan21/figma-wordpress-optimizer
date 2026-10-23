@@ -6163,6 +6163,152 @@ function measureColours(nodes) {
   return seen.sort(byCountDesc);
 }
 
+// Leading, normalised to a percentage of the size it is set at, because that
+// is the only form that survives a type scale changing underneath it.
+function measureLeading(nodes) {
+  var vals = [];
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (n.type !== 'TEXT') continue;
+    var lh = n.lineHeight, size = n.fontSize;
+    if (!lh || lh.unit === 'AUTO') continue;
+    if (typeof size !== 'number' || !size) continue;
+    var pct = lh.unit === 'PERCENT' ? lh.value : (lh.value / size) * 100;
+    if (pct > 80 && pct < 260) vals.push(pct);
+  }
+  return clusterNumbers(vals, 4).sort(byCountDesc);
+}
+
+function measureStrokeWeights(nodes) {
+  var vals = [];
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    var sw = n.strokeWeight;
+    var has = Array.isArray(n.strokes) && n.strokes.length;
+    if (has && typeof sw === 'number' && isFinite(sw) && sw > 0 && sw <= 16) vals.push(sw);
+  }
+  return clusterNumbers(vals, 0.4).sort(byCountDesc);
+}
+
+// Icons are the small square things. Their sizes are a scale of their own and
+// a responsive layout needs them, because an icon that does not shrink with
+// its label stops lining up.
+function measureIconSizes(nodes) {
+  var vals = [];
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    var w = n.width, h = n.height;
+    if (!w || !h || w > 64 || h > 64) continue;
+    if (Math.abs(w - h) > Math.max(2, w * 0.12)) continue;
+    var named = /icon|ico\b/i.test(String(n.name || ''));
+    if (!isVectorLikeNode(n) && !named) continue;
+    vals.push(Math.round((w + h) / 2));
+  }
+  return clusterNumbers(vals, 1).sort(byCountDesc);
+}
+
+function measureOpacities(nodes) {
+  var vals = [];
+  for (var i = 0; i < nodes.length; i++) {
+    var o = nodes[i].opacity;
+    if (typeof o === 'number' && isFinite(o) && o > 0.02 && o < 0.99) vals.push(Math.round(o * 100));
+  }
+  return clusterNumbers(vals, 2).sort(byCountDesc);
+}
+
+// Buttons and the like. Their height and side padding are what makes a
+// control feel the same everywhere, and both have to hold on a phone — where
+// the height has a floor the design cannot go under and still be tappable.
+var MIN_TAP_TARGET = 44;
+function measureControls(nodes) {
+  var heights = [], padsX = [], radii = [], count = 0;
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (!isLikelyButton(n)) continue;
+    count++;
+    if (n.height > 0 && n.height <= 140) heights.push(n.height);
+    var pl = n.paddingLeft, pr = n.paddingRight;
+    if (typeof pl === 'number' && pl > 0) padsX.push(pl);
+    if (typeof pr === 'number' && pr > 0) padsX.push(pr);
+    if (typeof n.cornerRadius === 'number' && n.cornerRadius > 0) radii.push(n.cornerRadius);
+  }
+  return {
+    found: count,
+    height: heights.length ? clusterNumbers(heights, 2).sort(byCountDesc)[0].value : null,
+    padX: padsX.length ? clusterNumbers(padsX, 2).sort(byCountDesc)[0].value : null,
+    radius: radii.length ? clusterNumbers(radii, 1).sort(byCountDesc)[0].value : null
+  };
+}
+
+// How many equal columns the page puts side by side, and the gap between
+// them. This is the one measurement that decides what a narrower canvas has
+// to do, because columns are what stop fitting first.
+function measureGrid(root) {
+  var rows = [];
+  (function walk(node, depth) {
+    if (!node || depth > 6) return;
+    var kids = (node.children || []).filter(function (k) { return k.visible !== false && k.width; });
+    if (kids.length >= 2) {
+      var w = kids[0].width, equal = true;
+      for (var i = 1; i < kids.length; i++) {
+        if (Math.abs(kids[i].width - w) > w * 0.12) { equal = false; break; }
+      }
+      // A row of equal things only counts as a grid if it actually spans
+      // something — two icons side by side are not a column layout.
+      if (equal && kids.length * w > (root.width || 0) * 0.4) {
+        rows.push({ cols: kids.length, gutter: Math.round(node.itemSpacing || 0) });
+      }
+    }
+    for (var c = 0; c < kids.length; c++) walk(kids[c], depth + 1);
+  })(root, 0);
+  if (!rows.length) return { columns: null, gutter: null, rows: 0 };
+
+  var byCols = {};
+  for (var r = 0; r < rows.length; r++) {
+    var k = rows[r].cols;
+    if (!byCols[k]) byCols[k] = { cols: k, count: 0, gutters: [] };
+    byCols[k].count++;
+    if (rows[r].gutter > 0) byCols[k].gutters.push(rows[r].gutter);
+  }
+  var best = null;
+  for (var key in byCols) if (!best || byCols[key].count > best.count) best = byCols[key];
+  var gut = best.gutters.length ? clusterNumbers(best.gutters, 2).sort(byCountDesc)[0].value : null;
+  return { columns: best.cols, gutter: gut, rows: rows.length };
+}
+
+// The vertical rhythm between bands of the page — the spacing that has to
+// collapse hardest when the canvas narrows.
+function measureSectionRhythm(root) {
+  var vals = [];
+  if (root.layoutMode === 'VERTICAL' && root.itemSpacing > 0) vals.push(root.itemSpacing);
+  var kids = (root.children || []).filter(function (k) { return k.visible !== false; });
+  for (var i = 0; i < kids.length; i++) {
+    var k = kids[i];
+    if (typeof k.paddingTop === 'number' && k.paddingTop >= 24) vals.push(k.paddingTop);
+    if (typeof k.paddingBottom === 'number' && k.paddingBottom >= 24) vals.push(k.paddingBottom);
+    if (k.layoutMode === 'VERTICAL' && k.itemSpacing >= 24) vals.push(k.itemSpacing);
+  }
+  return clusterNumbers(vals, 4).sort(function (a, b) { return a.value - b.value; });
+}
+
+function measureFonts(nodes) {
+  var fams = {};
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (n.type !== 'TEXT' || !n.fontName || n.fontName === figma.mixed) continue;
+    var f = n.fontName.family;
+    if (!f) continue;
+    if (!fams[f]) fams[f] = { family: f, styles: {}, count: 0 };
+    fams[f].count++;
+    fams[f].styles[n.fontName.style] = true;
+  }
+  var out = [];
+  for (var k in fams) {
+    out.push({ family: k, count: fams[k].count, styles: Object.keys(fams[k].styles).sort() });
+  }
+  return out.sort(byCountDesc);
+}
+
 // How much a measured desktop value should give up at a narrower canvas.
 // The widest canvas keeps exactly what was measured — the design is the
 // specification there, and changing it would be the plugin overruling it.
@@ -6188,16 +6334,42 @@ function measureDesign(root, cfg) {
   var radii = measureRadii(nodes);
   var type = measureTypeSizes(nodes);
   var colours = measureColours(nodes);
+  var leading = measureLeading(nodes);
+  var strokes = measureStrokeWeights(nodes);
+  var icons = measureIconSizes(nodes);
+  var opacities = measureOpacities(nodes);
+  var controls = measureControls(nodes);
+  var grid = measureGrid(root);
+  var rhythm = measureSectionRhythm(root);
+  var fonts = measureFonts(nodes);
+
+  function pairs(list, n) {
+    return list.slice(0, n).map(function (c) { return { value: c.value, count: c.count }; });
+  }
+  var texts = 0, frames = 0;
+  for (var ni = 0; ni < nodes.length; ni++) {
+    if (nodes[ni].type === 'TEXT') texts++; else frames++;
+  }
 
   out.measured = {
     canvasWidth: Math.round(root.width || 0),
     frameName: String(root.name || ''),
     margin: margin,
-    spacing: spacing.slice(0, 10).map(function (c) { return { value: c.value, count: c.count }; }),
-    radii: radii.slice(0, 6).map(function (c) { return { value: c.value, count: c.count }; }),
+    spacing: pairs(spacing, 10),
+    radii: pairs(radii, 6),
     type: type.steps.slice(),
     colours: colours.slice(0, 12).map(function (c) { return { hex: c.hex, opacity: c.opacity, count: c.count }; }),
-    nodes: nodes.length
+    leading: pairs(leading, 4),
+    strokes: pairs(strokes, 4),
+    icons: pairs(icons, 4),
+    opacities: pairs(opacities, 4),
+    controls: controls,
+    grid: grid,
+    rhythm: pairs(rhythm, 4),
+    fonts: fonts,
+    nodes: nodes.length,
+    textLayers: texts,
+    otherLayers: frames
   };
 
   // ── spacing, as primitives on the ladder the design actually climbs ────
@@ -6254,6 +6426,88 @@ function measureDesign(root, cfg) {
                     scopes: ['WIDTH_HEIGHT'], values: cv });
   }
 
+  // ── leading, borders, icons, opacity: the small scales ─────────────────
+  var LNAMES = ['tight', 'body', 'loose', 'looser'];
+  var lsorted = leading.slice(0, 4).sort(function (a2, b2) { return a2.value - b2.value; });
+  for (var li = 0; li < lsorted.length; li++) {
+    var lv = {};
+    lv[UIKIT_VALUE_KEY] = lsorted[li].value;
+    out.rows.push({ name: 'text/leading/' + LNAMES[li], tier: 'primitive', scopes: ['LINE_HEIGHT'], values: lv });
+  }
+  var bsorted = strokes.slice(0, 3).map(function (c) { return c.value; }).sort(function (a2, b2) { return a2 - b2; });
+  var BNAMES = ['hairline', 'default', 'thick'];
+  for (var bi = 0; bi < bsorted.length; bi++) {
+    var bv = {};
+    bv[UIKIT_VALUE_KEY] = bsorted[bi];
+    out.rows.push({ name: 'border/' + BNAMES[bi], tier: 'primitive', scopes: ['STROKE_FLOAT'], values: bv });
+  }
+  var isorted = icons.slice(0, 3).map(function (c) { return c.value; }).sort(function (a2, b2) { return a2 - b2; });
+  var INAMES = ['sm', 'md', 'lg'];
+  for (var ii = 0; ii < isorted.length; ii++) {
+    var iv = {};
+    iv[UIKIT_VALUE_KEY] = isorted[ii];
+    out.rows.push({ name: 'icon/' + INAMES[ii], tier: 'primitive', scopes: ['WIDTH_HEIGHT'], values: iv });
+  }
+  var osorted = opacities.slice(0, 4).map(function (c) { return c.value; }).sort(function (a2, b2) { return a2 - b2; });
+  for (var oi = 0; oi < osorted.length; oi++) {
+    var ov = {};
+    ov[UIKIT_VALUE_KEY] = osorted[oi] / 100;
+    out.rows.push({ name: 'opacity/' + osorted[oi], tier: 'primitive', scopes: ['OPACITY'], values: ov });
+  }
+
+  // ── controls, which have to stay tappable however narrow it gets ───────
+  if (controls.height) {
+    var hv = {};
+    for (var ch = 0; ch < bps.length; ch++) {
+      // A button does not shrink with the canvas. If anything it has to grow,
+      // because a thumb is the same size on every screen.
+      hv[names[ch]] = ch === 0 ? controls.height : Math.max(MIN_TAP_TARGET, controls.height);
+    }
+    out.rows.push({ name: 'size/control/height', tier: 'responsive', scopes: ['WIDTH_HEIGHT'], values: hv });
+  }
+  if (controls.padX) {
+    var pv = {};
+    for (var cp = 0; cp < bps.length; cp++) {
+      var pf = narrowerFactor(cfg, cp);
+      pv[names[cp]] = cp === 0 ? controls.padX : Math.max(12, Math.round(controls.padX * (1 - 0.35 * pf)));
+    }
+    out.rows.push({ name: 'space/control/x', tier: 'responsive', scopes: SPACING_SCOPES, values: pv });
+  }
+
+  // ── the grid: what actually stops fitting ──────────────────────────────
+  if (grid.columns && grid.columns > 1) {
+    var gv = {};
+    for (var gc = 0; gc < bps.length; gc++) {
+      var gf = narrowerFactor(cfg, gc);
+      // Columns halve rather than taper, because a column count is a whole
+      // number and a layout either fits it or does not.
+      gv[names[gc]] = gc === 0 ? grid.columns
+        : (gf >= 0.99 ? 1 : Math.max(1, Math.ceil(grid.columns / 2)));
+    }
+    out.rows.push({ name: 'grid/columns', tier: 'responsive', scopes: [], values: gv });
+  }
+  if (grid.gutter) {
+    var gtv = {};
+    for (var gg = 0; gg < bps.length; gg++) {
+      var ggf = narrowerFactor(cfg, gg);
+      gtv[names[gg]] = gg === 0 ? grid.gutter : Math.max(8, Math.round(grid.gutter * (1 - 0.5 * ggf)));
+    }
+    out.rows.push({ name: 'grid/gutter', tier: 'responsive', scopes: SPACING_SCOPES, values: gtv });
+  }
+
+  // ── the vertical rhythm between bands ──────────────────────────────────
+  var RNAMES2 = ['sm', 'md', 'lg', 'xl'];
+  for (var ri = 0; ri < rhythm.length && ri < 4; ri++) {
+    var sv = {};
+    for (var rb = 0; rb < bps.length; rb++) {
+      var rf = narrowerFactor(cfg, rb);
+      sv[names[rb]] = rb === 0 ? rhythm[ri].value
+        : Math.max(24, Math.round(rhythm[ri].value * (1 - 0.55 * rf)));
+    }
+    out.rows.push({ name: 'space/section/' + RNAMES2[ri], tier: 'responsive',
+                    scopes: SPACING_SCOPES, values: sv });
+  }
+
   // ── colour ─────────────────────────────────────────────────────────────
   var taken = new Set();   // uniqueName() adds to it itself
   for (var k = 0; k < colours.length && k < 12; k++) {
@@ -6266,6 +6520,31 @@ function measureDesign(root, cfg) {
     out.rows.push({ name: 'color/' + slugToken(label), tier: 'primitive', type: 'COLOR',
                     scopes: [], values: cvals });
   }
+
+  // What was found, counted. A measurement nobody can see is a claim.
+  var byFamily = {};
+  for (var fr = 0; fr < out.rows.length; fr++) {
+    var fam = String(out.rows[fr].name).split('/')[0];
+    byFamily[fam] = (byFamily[fam] || 0) + 1;
+  }
+  out.measured.counts = {
+    layers: nodes.length,
+    textLayers: texts,
+    spacing: spacing.length,
+    radii: radii.length,
+    typeSizes: type.steps.length,
+    colours: colours.length,
+    leading: leading.length,
+    strokes: strokes.length,
+    icons: icons.length,
+    opacities: opacities.length,
+    controls: controls.found,
+    gridRows: grid.rows,
+    rhythm: rhythm.length,
+    fonts: fonts.length,
+    tokens: out.rows.length,
+    byFamily: byFamily
+  };
 
   if (!out.rows.length) out.reasons.push('Nothing measurable in that frame — no spacing, type or colour to read.');
   return out;
@@ -6320,6 +6599,21 @@ async function buildFromExistingFile(opts) {
   }
   result.cfg = cfg;
 
+  // ── styles first, and only with an answer ──────────────────────────────
+  // A file that already defines styles has two reasonable futures, and the
+  // plugin should not pick one silently: either those styles become
+  // variables — the Colors and Typography tabs already do exactly that — or
+  // they stay as styles and get bound to a token each. Ask, then go.
+  var file = await surveyExistingFile();
+  var hasStyles = (file.paintStyles || 0) + (file.textStyles || 0) > 0;
+  var choice = opts.styleChoice;
+  if (hasStyles && choice !== 'convert' && choice !== 'keep') {
+    result.needsStyleChoice = { paintStyles: file.paintStyles, textStyles: file.textStyles };
+    result.reasons.push('This file already defines styles. Say what should happen to them first.');
+    return result;
+  }
+  result.styleChoice = hasStyles ? choice : 'none';
+
   var cols = await getUiKitCollections(true);
 
   async function tokenNames() {
@@ -6331,10 +6625,24 @@ async function buildFromExistingFile(opts) {
     return seen;
   }
 
-  // ── 1 ── what the file already names, it keeps ─────────────────────────
+  // ── 1 ── what the file already names ───────────────────────────────────
   var beforeAdopt = await tokenNames();
-  result.paints = await adoptPaintStyles(cols, result.reasons);
-  result.texts = await adoptTextStyles(cfg, cols, result.reasons);
+  if (choice === 'convert') {
+    // The same conversion the Colors and Typography tabs run, so a style
+    // turned into a variable here is the same thing it would be there.
+    result.converted = { paint: null, text: null };
+    if (file.paintStyles) {
+      result.converted.paint = await runConversion('paint', { scope: 'file', direction: 'to-variable' });
+      Array.prototype.push.apply(result.reasons, result.converted.paint.reasons);
+    }
+    if (file.textStyles) {
+      result.converted.text = await runConversion('text', { scope: 'file', direction: 'to-variable' });
+      Array.prototype.push.apply(result.reasons, result.converted.text.reasons);
+    }
+  } else if (choice === 'keep') {
+    result.paints = await adoptPaintStyles(cols, result.reasons);
+    result.texts = await adoptTextStyles(cfg, cols, result.reasons);
+  }
   var afterAdopt = await tokenNames();
 
   // Only the names this run took from a style are protected. Filtering on
@@ -8406,24 +8714,51 @@ async function handleUiKitMessage(msg) {
     } else if (msg.type === 'uikit-from-file') {
       r = await buildFromExistingFile(msg);
       var md = r.measured;
-      if (!md || !r.generated || (!r.generated.created && !r.generated.reused)) {
+      if (r.needsStyleChoice) {
+        var ns = r.needsStyleChoice;
+        var sb = [];
+        if (ns.paintStyles) sb.push(ns.paintStyles + ' colour style' + (ns.paintStyles === 1 ? '' : 's'));
+        if (ns.textStyles) sb.push(ns.textStyles + ' text style' + (ns.textStyles === 1 ? '' : 's'));
+        summary = 'This file already defines ' + sb.join(' and ') + '. Choose what happens to them.';
+        tone = 'warning';
+      } else if (!md || !r.generated || (!r.generated.created && !r.generated.reused)) {
         summary = r.reasons.length ? r.reasons[0] : 'There was nothing in that frame to build from.';
         tone = 'warning';
       } else {
+        var c = md.counts || {};
         var ff = [];
-        ff.push('measured "' + md.frameName + '" at ' + md.canvasWidth + 'px');
-        if (md.type && md.type.length) ff.push(md.type.length + ' type sizes');
-        if (md.spacing && md.spacing.length) ff.push(md.spacing.length + ' spacing steps');
-        if (md.colours && md.colours.length) ff.push(md.colours.length + ' colours');
-        if (md.margin) ff.push('a ' + md.margin + 'px margin');
-        if (r.paints && r.paints.adopted) ff.push(r.paints.adopted + ' colour styles kept');
-        if (r.texts && r.texts.adopted) ff.push(r.texts.adopted + ' text styles kept');
-        ff.push(r.generated.created + ' variables written');
+        ff.push('read ' + c.layers + ' layers in "' + md.frameName + '" at ' + md.canvasWidth + 'px');
+        if (r.converted) {
+          var cv = 0;
+          if (r.converted.paint) cv += r.converted.paint.created;
+          if (r.converted.text) cv += r.converted.text.created;
+          ff.push(cv + ' styles converted to variables');
+        } else if (r.paints || r.texts) {
+          var kept = (r.paints ? r.paints.adopted : 0) + (r.texts ? r.texts.adopted : 0);
+          if (kept) ff.push(kept + ' styles kept and bound to a token');
+        }
+        function many(n, one, more) { return n + ' ' + (n === 1 ? one : (more || one + 's')); }
+        var found = [];
+        if (c.typeSizes) found.push(many(c.typeSizes, 'type size'));
+        if (c.spacing) found.push(many(c.spacing, 'spacing step'));
+        if (c.colours) found.push(many(c.colours, 'colour'));
+        if (c.radii) found.push(many(c.radii, 'radius', 'radii'));
+        if (c.leading) found.push(many(c.leading, 'line height'));
+        if (c.strokes) found.push(many(c.strokes, 'border width'));
+        if (c.icons) found.push(many(c.icons, 'icon size'));
+        if (c.opacities) found.push(many(c.opacities, 'opacity', 'opacities'));
+        if (c.controls) found.push(many(c.controls, 'control'));
+        if (c.fonts) found.push(many(c.fonts, 'font family', 'font families'));
+        if (md.grid && md.grid.columns) found.push(md.grid.columns + ' columns');
+        if (md.margin) found.push('a ' + md.margin + 'px margin');
+        if (found.length) ff.push('measured ' + found.join(', '));
+        ff.push(many(c.tokens, 'token') + ' from the design, ' +
+                many(r.generated.created, 'variable') + ' written');
         if (r.applied && r.applied.bound) {
           ff.push(r.applied.bound + ' bound back into the design' +
             (r.nudged ? (', ' + r.nudged + ' nudged onto the scale') : ''));
         }
-        summary = ff.join(', ') + '.' +
+        summary = ff.join('; ') + '.' +
           (r.seededBreakpoints ? ' Desktop, Tablet and Mobile were set up around it.' : '');
         if (r.applied && !r.applied.bound) tone = 'warning';
       }

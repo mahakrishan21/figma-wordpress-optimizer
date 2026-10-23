@@ -387,13 +387,20 @@ async function run() {
   // Building from a file measures the frame the designer picked, so it needs
   // one — with nothing selected it asks for a frame instead of guessing.
   figma.currentPage.selection = [];
-  var ffNone = await send({ type: 'uikit-from-file' });
+  var ffNone = await send({ type: 'uikit-from-file', styleChoice: 'keep' });
   if (ffNone.reply && ffNone.reply.type === 'uikit-done') {
     eq(ffNone.reply.tone, 'warning', 'with nothing selected, building from the file warns');
     ok(/Select the frame/.test(ffNone.reply.message), 'and asks for a frame  ("' + ffNone.reply.message + '")');
   }
   figma.currentPage.selection = [makeDesign()];
-  var ff = await send({ type: 'uikit-from-file' });
+  // The file has styles, so it asks what to do with them before writing.
+  var asked = await send({ type: 'uikit-from-file' });
+  if (asked.reply && asked.reply.result) {
+    ok(!!asked.reply.result.needsStyleChoice, 'a file with styles is asked about first');
+    eq(asked.reply.tone, 'warning', 'and that reads as a question, not a success');
+  }
+  figma.currentPage.selection = [makeDesign()];
+  var ff = await send({ type: 'uikit-from-file', styleChoice: 'keep' });
   var ffr = okReply(ff, 'a system is built from the file');
   if (ffr) {
     ok(!!ffr.result.measured, 'it measured the frame');
@@ -405,7 +412,7 @@ async function run() {
     var named = (await localVariablesAllModes('COLOR')).map(function (v) { return v.variable.name; });
     ok(named.indexOf('color/brand/primary') !== -1, 'the token keeps the style name  (' + named.join(', ') + ')');
   }
-  var ff2 = await send({ type: 'uikit-from-file' });
+  var ff2 = await send({ type: 'uikit-from-file', styleChoice: 'keep' });
   if (ff2.reply && ff2.reply.result && ff2.reply.result.paints) {
     eq(ff2.reply.result.paints.adopted, 0, 'adopting twice adopts nothing new');
     eq(ff2.reply.result.generated.created, 0, 'and writes no new variables');

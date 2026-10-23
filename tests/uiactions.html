@@ -452,6 +452,36 @@ async function run() {
     }
   }
 
+  // ─── 8b. a file with styles is asked about before anything is written ─
+  fresh('entry');
+  sent = [];
+  send({ type:'uikit-done', requestId:'k1', tone:'warning',
+         message:'This file already defines 14 colour styles and 9 text styles. Choose what happens to them.',
+         result:{ needsStyleChoice:{ paintStyles:14, textStyles:9 } }, state: state(NO_SYSTEM) });
+  const dlg = D.querySelector('.sm-dialog-overlay');
+  rec('(style choice)', 'build from a file with styles',
+      dlg ? 'asks before writing anything' : 'NO PROMPT SHOWN',
+      dlg ? dlg.querySelector('h3').textContent.trim() : '');
+  if (dlg) {
+    const btns = [...dlg.querySelectorAll('button[data-i]')].map(b => b.textContent.trim());
+    rec('(style choice)', 'the two ways out', btns.length === 2 ? btns.join(' · ') : 'EXPECTED 2 BUTTONS, GOT ' + btns.length, '');
+    rec('(style choice)', 'what it offers',
+        /same conversion the Colors and Typography/.test(dlg.innerText)
+          ? 'says it is the conversion those tabs already run' : 'DOES NOT SAY WHERE THE CONVERSION COMES FROM', '');
+    sent = [];
+    const convertBtn = [...dlg.querySelectorAll('button[data-i]')]
+      .filter(b => /convert/i.test(b.textContent))[0];
+    if (convertBtn) convertBtn.click();
+    await until(() => sent.length > 0, 1500);
+    const askMsg = sent[0];
+    rec('(style choice)', 'converting',
+        askMsg && askMsg.type === 'uikit-from-file' && askMsg.styleChoice === 'convert'
+          ? 'sends the answer back with the build' : 'ANSWER NOT SENT',
+        askMsg ? JSON.stringify({ type: askMsg.type, styleChoice: askMsg.styleChoice }) : '');
+    rec('(style choice)', 'after answering',
+        !D.querySelector('.sm-dialog-overlay') ? 'the prompt closes' : 'PROMPT STAYED OPEN', '');
+  }
+
   // ─── 9. an unsaved edit to the Scale table ──────────────────────────
   // Every reply carries fresh state. A value typed but not yet generated must
   // survive pressing some unrelated button — but Re-scan, which is a request
