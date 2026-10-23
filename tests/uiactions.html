@@ -1,0 +1,436 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Build design system — every action</title>
+<!--
+  Drives every data-act on the Build design system tab and records what each
+  one does. ui.html is loaded in a same-origin iframe, so the test clicks the
+  real buttons the real render produced rather than a copy of them.
+
+  Run:  tests/uiactions.sh
+-->
+<iframe id="app" src="../ui.html" style="width:760px;height:860px;border:0"></iframe>
+<pre id="results">running…</pre>
+<script>
+const BPS = [{name:'Desktop',width:1440},{name:'Tablet',width:768},{name:'Mobile',width:375}];
+const hex = h => { const n = parseInt(h.slice(1),16);
+  return { r:((n>>16)&255)/255, g:((n>>8)&255)/255, b:(n&255)/255, a:1 }; };
+
+// A table shaped the way the sandbox really sends one.
+const ROWS = [
+  { name:'brand/50',  tier:'primitive', type:'COLOR', scopes:[], values:{ '*': hex('#EEF3FF') } },
+  { name:'brand/500', tier:'primitive', type:'COLOR', scopes:[], values:{ '*': hex('#2D5BFF') } },
+  { name:'brand/900', tier:'primitive', type:'COLOR', scopes:[], values:{ '*': hex('#0B1F6B') } },
+  { name:'neutral/500', tier:'primitive', type:'COLOR', scopes:[], values:{ '*': hex('#6B7280') } },
+  { name:'space/100', tier:'primitive', scopes:['GAP'], values:{ '*': 8 } },
+  { name:'space/300', tier:'primitive', scopes:['GAP'], values:{ '*': 24 } },
+  { name:'radius/md', tier:'primitive', scopes:['CORNER_RADIUS'], values:{ '*': 8 } },
+  { name:'text/size/body', tier:'responsive', scopes:['FONT_SIZE'], values:{ Desktop:18, Tablet:17, Mobile:16 } },
+  { name:'text/size/h1', tier:'responsive', scopes:['FONT_SIZE'], values:{ Desktop:56, Tablet:44, Mobile:34 } },
+  { name:'text/leading/body', tier:'primitive', scopes:['LINE_HEIGHT'], values:{ '*': 150 } },
+  { name:'grid/margin', tier:'responsive', scopes:[], values:{ Desktop:120, Tablet:24, Mobile:16 } },
+  { name:'container/max', tier:'responsive', scopes:['WIDTH_HEIGHT'], values:{ Desktop:1200, Tablet:720, Mobile:343 } }
+];
+const BASE_STATE = {
+  type:'uikit-state',
+  presets:{ standard: BPS, tailwind: BPS, wordpress: BPS },
+  presetNames:['standard','tailwind','wordpress'],
+  spacingPresets:{ grid4:{label:'4pt grid',base:4}, grid8:{label:'8pt grid',base:8} },
+  radiusPresets:{ sharp:{label:'Sharp',base:0}, rounded:{label:'Rounded',base:4} },
+  typeRatios:[{value:1.2,label:'1.200 — Minor Third'},{value:1.25,label:'1.250 — Major Third'}],
+  elements:[{key:'button',label:'Button'},{key:'input',label:'Input'},{key:'card',label:'Card'}],
+  exportFormats:[{key:'css',label:'CSS'},{key:'json',label:'JSON'}],
+  valueKey:'*', selectionCount:1, selectionName:'Homepage',
+  fileHas:{ paintStyles:14, textStyles:9 }
+};
+function state(over) { return Object.assign({}, BASE_STATE, over); }
+const NO_SYSTEM = { config:null, collections:{primitives:false,theme:false,responsive:false,responsiveModes:[]},
+                    table:null, tableFromFile:false };
+const BUILT = { config:{ preset:'standard', breakpoints: BPS },
+                collections:{ primitives:true, theme:true, responsive:true, responsiveModes:['Desktop','Tablet','Mobile'] },
+                table: ROWS, tableFromFile:true };
+
+let W, D, sent = [], errs = [];
+const results = [];
+function rec(action, where, outcome, detail) { results.push({ action, where, outcome, detail: detail || '' }); }
+function panel() { return D.getElementById('tab-uikit'); }
+function text() { return panel().innerText; }
+function act(a) { return panel().querySelector('[data-act="' + a + '"]'); }
+function actAll(a) { return [...panel().querySelectorAll('[data-act="' + a + '"]')]; }
+function send(msg) { W.onmessage({ data: { pluginMessage: msg } }); }
+function reply(extra) {
+  const rid = sent.length ? sent[sent.length-1].requestId : undefined;
+  send(Object.assign({ type:'uikit-done', requestId: rid, tone:'success', message:'Done.',
+                       result:{ created:1, rows: ROWS }, state: state(BUILT) }, extra || {}));
+}
+// Put the tab back in a known place before each action. A plain state
+// message does not clear KS.busy, so an un-answered click would leave every
+// later step staring at "Working…" — answer first, then set the screen.
+function clearBusy(which) {
+  send({ type:'uikit-done', requestId:'z', tone:'success', message:'',
+         result:{}, state: state(which === 'entry' ? NO_SYSTEM : BUILT) });
+}
+// Each wizard step asks for a preview of the table it would build. Leaving
+// those unanswered parks a progress bar over the step, so answer them.
+function answerPreviews() {
+  const previews = sent.filter(m => String(m.requestId || '').charAt(0) === 'p');
+  for (const m of previews) {
+    send({ type:'uikit-done', requestId: m.requestId, tone:'success', message:'',
+           result:{ rows: ROWS }, state:{ table: ROWS, tableFromFile:false } });
+  }
+}
+function heading() {
+  const lines = text().split('\n').map(x => x.trim()).filter(Boolean);
+  const i = lines.findIndex(x => /^STEP \d+ OF \d+$/.test(x));
+  return i === -1 ? (lines[0] || '') : (lines[i] + ' — ' + (lines[i+1] || ''));
+}
+function must(a, where) {
+  const el = act(a);
+  if (!el) { rec(a, where, 'MISSING', 'no button on screen'); return null; }
+  return el;
+}
+function fresh(which) {
+  // builtSystem is what takes the UI out of the wizard; without it a state
+  // message is ignored, because the UI never jumps a designer out of a
+  // wizard they are partway through.
+  send({ type:'uikit-done', requestId:'z', tone:'success', message:'', builtSystem:true,
+         result:{ tokens:{ created:1, reused:0 } }, state: state(BUILT) });
+  send(state(which === 'entry' ? NO_SYSTEM : BUILT));
+  if (which === 'entry' && act('uik-reset')) act('uik-reset').click();
+}
+function click(a, opts) {
+  opts = opts || {};
+  const el = opts.el || act(a);
+  if (!el) return { missing: true };
+  sent = [];
+  const before = text();
+  el.click();
+  return { missing: false, posted: sent.map(m => m.type), changed: text() !== before,
+           disabled: el.disabled === true };
+}
+
+const LOGO_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAF0lEQVR4nGPQjf4PRwwonOyiBjhC4QAAY2oXIRNLT+0AAAAASUVORK5CYII=';
+function logoFile(W) {
+  const bin = atob(LOGO_PNG);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return new W.File([buf], 'logo.png', { type: 'image/png' });
+}
+function until(fn, ms) {
+  return new Promise(res => {
+    const t0 = Date.now();
+    (function poll() {
+      if (fn()) return res(true);
+      if (Date.now() - t0 > (ms || 3000)) return res(false);
+      setTimeout(poll, 25);
+    })();
+  });
+}
+
+async function run() {
+  D = W.document;
+  W.onerror = m => errs.push(String(m));
+  // capture what the tab would send to the sandbox
+  W.parent.postMessage = m => { if (m && m.pluginMessage) sent.push(m.pluginMessage); };
+  W.postMessage = m => { if (m && m.pluginMessage) sent.push(m.pluginMessage); };
+
+  D.querySelector('[data-tab="uikit"]').click();
+
+  // ─── 1. entry screen ────────────────────────────────────────────────
+  send(state(NO_SYSTEM));
+  rec('uik-wizard', 'entry', act('uik-wizard') ? 'present' : 'MISSING',
+      act('uik-wizard') ? act('uik-wizard').textContent.trim() : '');
+  rec('uik-from-file', 'entry (no system yet)', act('uik-from-file') ? 'present' : 'MISSING',
+      act('uik-from-file') ? act('uik-from-file').textContent.trim() : '');
+  let r = click('uik-from-file');
+  rec('uik-from-file', 'entry', r.posted.join(',') === 'uikit-from-file' ? 'posts uikit-from-file' : 'UNEXPECTED',
+      JSON.stringify(r.posted));
+  reply();
+
+  // the same slot becomes "Open it" once a system exists
+  clearBusy('built');
+  send(state(BUILT));
+  // force the entry screen while a system exists
+  if (act('uik-reset')) act('uik-reset').click();
+  const openIt = act('uik-use-existing');
+  rec('uik-use-existing', 'entry (system exists)', openIt ? 'present' : 'MISSING',
+      openIt ? openIt.textContent.trim() : '');
+  if (openIt) {
+    sent = []; openIt.click();
+    rec('uik-use-existing', 'entry', act('uik-generate') ? 'opens the system' : 'did not open',
+        'posted ' + JSON.stringify(sent.map(m=>m.type)));
+  }
+
+  // ─── 2. the wizard, step by step ────────────────────────────────────
+  fresh('entry');
+  sent = [];
+  act('uik-wizard').click();
+  answerPreviews();
+  rec('uik-wizard', 'entry', act('uik-wiz-next') ? 'opens the wizard' : 'FAILED', heading());
+
+  const steps = [];
+  for (let i = 0; i < 10; i++) {
+    sent = [];                 // the step just rendered asked for a preview
+    answerPreviews();
+    const head = heading();
+    steps.push(head);
+    // exercise the per-step row tables where this step has one
+    const wrowEdit = act('uik-wrow-edit'), wrowAdd = act('uik-wrow-add');
+    if (wrowAdd && !results.some(x => x.action === 'uik-wrow-add' && x.outcome !== 'MISSING')) {
+      const n0 = actAll('uik-wrow-del').length;
+      wrowAdd.click();
+      const n1 = actAll('uik-wrow-del').length;
+      rec('uik-wrow-add', head, n1 === n0 + 1 ? 'adds a row' : 'NO ROW ADDED', n0 + ' → ' + n1);
+      const del = act('uik-wrow-del');
+      if (del) { del.click();
+        rec('uik-wrow-del', head, actAll('uik-wrow-del').length === n0 ? 'removes a row' : 'NO ROW REMOVED',
+            n1 + ' → ' + actAll('uik-wrow-del').length); }
+      else rec('uik-wrow-del', head, 'MISSING', '');
+    }
+    // Re-query: the add/delete above re-rendered, so a node captured before
+    // it is detached and clicking it would do nothing.
+    const editNow = act('uik-wrow-edit');
+    if (editNow && !results.some(x => x.action === 'uik-wrow-edit' && x.outcome !== 'MISSING')) {
+      const name = editNow.dataset.name;
+      editNow.click();
+      const field = panel().querySelector('[data-uik-wname]');
+      rec('uik-wrow-edit', head, field ? 'opens the name for renaming' : 'NO NAME FIELD APPEARED',
+          field ? ('"' + field.value + '"') : ('clicked the pencil on ' + name));
+    }
+    if (act('uik-logo') && !results.some(x => x.action === 'uik-logo')) {
+      sent = [];
+      let picked = false;
+      const inp = D.getElementById('uikLogoInput');
+      if (inp) inp.click = () => { picked = true; };
+      act('uik-logo').click();
+      rec('uik-logo', head, picked ? 'opens the file picker' : 'did not reach the file input', '');
+      const clear = act('uik-logo-clear');
+      rec('uik-logo-clear', head, clear ? 'present' : 'absent until a logo is loaded', '');
+      if (clear) { clear.click(); rec('uik-logo-clear', head, 'clears the logo', ''); }
+    }
+    if (act('uik-wiz-build')) {
+      const b = click('uik-wiz-build');
+      rec('uik-wiz-build', head, b.posted.join(',') === 'uikit-build' ? 'posts uikit-build' : 'UNEXPECTED',
+          JSON.stringify(b.posted));
+      break;
+    }
+    const n = act('uik-wiz-next');
+    if (!n) { rec('uik-wiz-next', head, 'MISSING', ''); break; }
+    n.click();
+  }
+  rec('uik-wiz-next', 'wizard', steps.length === 8 ? 'walks all 8 steps' : 'walked ' + steps.length,
+      steps.join(' | '));
+
+  // back, from the middle and from step 1
+  fresh('entry');
+  sent = [];
+  const openAgain = must('uik-wizard', 'wizard');
+  if (openAgain) {
+    openAgain.click(); answerPreviews();
+    const next2 = must('uik-wiz-next', 'wizard step 1');
+    if (next2) { next2.click(); sent = []; answerPreviews(); }
+    const midHead = heading();
+    const back1 = must('uik-wiz-back', 'wizard step 2');
+    if (back1) {
+      back1.click(); sent = []; answerPreviews();
+      rec('uik-wiz-back', 'wizard step 2', /STEP 1 OF/.test(heading()) ? 'goes back a step' : 'DID NOT GO BACK',
+          midHead + ' → ' + heading());
+    }
+    const back2 = act('uik-wiz-back');
+    if (back2) {
+      back2.click();
+      rec('uik-wiz-back', 'wizard step 1', act('uik-wizard') ? 'cancels back to the entry screen' : 'DID NOT CANCEL',
+          'button reads "' + (back2.textContent || '').trim() + '"');
+    }
+  }
+
+  // ─── 3. the main screen ─────────────────────────────────────────────
+  fresh('built');
+  const main = ['uik-generate','uik-rescan','uik-parse','uik-bind','uik-starter','uik-canvas','uik-from-file'];
+  const expect = { 'uik-generate':'uikit-generate', 'uik-rescan':'uikit-scan', 'uik-parse':'uikit-parse',
+                   'uik-bind':'uikit-bind', 'uik-starter':'uikit-starter', 'uik-canvas':'uikit-canvas',
+                   'uik-from-file':'uikit-from-file' };
+  for (const a of main) {
+    const rr = click(a);
+    rec(a, 'main toolbar', rr.missing ? 'MISSING'
+        : (rr.posted.join(',') === expect[a] ? 'posts ' + expect[a] : 'UNEXPECTED: ' + rr.posted.join(',')),
+        JSON.stringify(rr.posted));
+    reply();
+  }
+  const rr = click('uik-reseed');
+  rec('uik-reseed', 'main · Primitives', rr.missing ? 'MISSING'
+      : (rr.posted.join(',') === 'uikit-reseed' ? 'posts uikit-reseed' : 'UNEXPECTED: ' + rr.posted.join(',')),
+      JSON.stringify(rr.posted));
+  reply({ result:{ rows: ROWS }, state: state(BUILT) });
+
+  const rs = click('uik-reset');
+  rec('uik-reset', 'main toolbar', act('uik-wizard') ? 'returns to the entry screen' : 'DID NOT RETURN',
+      'posted ' + JSON.stringify(rs.posted));
+
+  // the main screen's own token table
+  fresh('built');
+  const rowEdit = act('uik-row-edit'), rowDel = act('uik-row-del'), rowAdd = act('uik-row-add');
+  rec('uik-row-edit', 'main token table', rowEdit ? 'present' : 'MISSING', '');
+  if (rowEdit) {
+    const before = panel().querySelectorAll('input').length;
+    rowEdit.click();
+    rec('uik-row-edit', 'main token table',
+        panel().querySelectorAll('input').length !== before ? 'opens the row for editing' : 'no field appeared',
+        before + ' → ' + panel().querySelectorAll('input').length);
+  }
+  if (rowAdd) {
+    rowAdd.click();
+    // The new row is added already in rename mode with its name selected,
+    // so the proof is the focused name field, not a new delete button.
+    const named = panel().querySelector('[data-uik-name]');
+    rec('uik-row-add', 'main token table', named ? 'adds a token, ready to be named' : 'NO TOKEN ADDED',
+        named ? ('"' + named.value + '"') : '');
+  } else rec('uik-row-add', 'main token table', 'MISSING', '');
+  const rd = act('uik-row-del');
+  if (rd) { const n0 = actAll('uik-row-del').length; rd.click();
+    rec('uik-row-del', 'main token table', actAll('uik-row-del').length === n0 - 1 ? 'removes a token' : 'NO TOKEN REMOVED',
+        n0 + ' → ' + actAll('uik-row-del').length); }
+  else rec('uik-row-del', 'main token table', 'MISSING', '');
+
+  // ─── 4. elements, export, preview ───────────────────────────────────
+  fresh('built');
+  const allLabel = act('uik-el-all') ? act('uik-el-all').textContent.trim() : '';
+  const ea = click('uik-el-all');            // everything starts ticked, so this clears
+  const genOff = act('uik-elements');
+  rec('uik-el-all', 'elements', ea.missing ? 'MISSING' : 'toggles every element at once',
+      allLabel + ' → ' + (act('uik-el-all') ? act('uik-el-all').textContent.trim() : ''));
+  rec('uik-elements', 'elements (nothing ticked)',
+      genOff && genOff.disabled ? 'correctly disabled with nothing ticked' : 'NOT DISABLED',
+      genOff ? genOff.textContent.trim() : 'missing');
+  click('uik-el-all');                        // tick them all back on
+  const el = click('uik-elements');
+  rec('uik-elements', 'elements', el.missing ? 'MISSING'
+      : (el.posted.join(',') === 'uikit-elements' ? 'posts uikit-elements' : 'UNEXPECTED: ' + el.posted.join(',')),
+      JSON.stringify(el.posted));
+  reply();
+
+  // The export box was taken off the tab. uikExportHtml() still exists but
+  // nothing calls it, so neither of these buttons can be reached any more.
+  const ex = click('uik-export');
+  rec('uik-export', 'export block', ex.missing ? 'UNREACHABLE — nothing renders the export block'
+      : (ex.posted.join(',') === 'uikit-export' ? 'posts uikit-export' : 'UNEXPECTED: ' + ex.posted.join(',')),
+      ex.missing ? 'uikExportHtml() is defined but never called' : JSON.stringify(ex.posted));
+  if (!ex.missing) reply({ result:{ format:'css', label:'CSS', text:':root{--space-300:24px}', counts:{primitives:1,responsive:0,theme:0} } });
+  const cp = click('uik-copy');
+  rec('uik-copy', 'export block', cp.missing ? 'UNREACHABLE — only renders beside an export result' : 'copies the export',
+      cp.missing ? 'reachable only from the export block above' : '');
+
+  fresh('built');
+  const pv = click('uik-preview');
+  rec('uik-preview', 'canvas sizes', pv.missing ? 'MISSING'
+      : (pv.posted.join(',') === 'uikit-preview' ? 'posts uikit-preview' : 'UNEXPECTED: ' + pv.posted.join(',')),
+      JSON.stringify(pv.posted));
+  reply();
+
+  // ─── 5. adopt an existing design ────────────────────────────────────
+  fresh('built');
+  const fd = click('uik-from-design');
+  rec('uik-from-design', 'adopt', fd.missing ? 'MISSING'
+      : (fd.posted.join(',') === 'uikit-from-design' ? 'posts uikit-from-design' : 'UNEXPECTED: ' + fd.posted.join(',')),
+      JSON.stringify(fd.posted));
+  reply();
+  const sv = click('uik-survey');
+  rec('uik-survey', 'adopt', sv.missing ? 'MISSING'
+      : (sv.posted.join(',') === 'uikit-survey' ? 'posts uikit-survey' : 'UNEXPECTED: ' + sv.posted.join(',')),
+      JSON.stringify(sv.posted));
+  // answer with proposals so the review controls appear
+  const proposals = [
+    { key:'p1', nodeId:'N1', nodeName:'Card',  field:'paddingLeft', kind:'length',
+      tokenName:'space/300', tokenId:'V1', exact:true,  current:'24', index:0 },
+    { key:'p2', nodeId:'N2', nodeName:'Hero',  field:'itemSpacing', kind:'length',
+      tokenName:'space/100', tokenId:'V2', exact:false, current:'9',  index:0 },
+    { key:'p3', nodeId:'N3', nodeName:'Title', field:'fontSize',    kind:'type',
+      tokenName:'text/size/h1', tokenId:'V3', exact:false, current:'55', index:0 }
+  ];
+  reply({ result:{ proposals, exact:1, near:2, alreadyBound:0, styled:0, reasons:[] } });
+  const svAll = click('uik-sv-all');
+  rec('uik-sv-all', 'adopt review', svAll.missing ? 'MISSING' : 'ticks every proposal', JSON.stringify(svAll.posted));
+  const svEx = click('uik-sv-exact');
+  rec('uik-sv-exact', 'adopt review', svEx.missing ? 'MISSING' : 'ticks only the exact matches', JSON.stringify(svEx.posted));
+  const applyBtn = act('uik-adopt');
+  rec('uik-adopt', 'adopt review', applyBtn ? applyBtn.textContent.trim() : 'MISSING', '');
+  if (applyBtn) {
+    sent = []; applyBtn.click();
+    const msg = sent[0];
+    rec('uik-adopt', 'adopt review',
+        msg && msg.type === 'uikit-adopt' ? 'posts uikit-adopt' : 'UNEXPECTED',
+        msg ? ('accepted is a ' + (Array.isArray(msg.accepted) ? 'LIST — wrong shape' : typeof msg.accepted) +
+               ', proposals: ' + (msg.proposals||[]).length) : '');
+    reply();
+  }
+
+  // ─── 6. fluid, infer, responsive ────────────────────────────────────
+  fresh('built');
+  const fl = click('uik-fluid');
+  rec('uik-fluid', 'responsive', fl.missing ? 'MISSING'
+      : (fl.posted.join(',') === 'uikit-fluid' ? 'posts uikit-fluid' : 'UNEXPECTED: ' + fl.posted.join(',')),
+      JSON.stringify(fl.posted));
+  reply();
+  const inf = click('uik-infer');
+  rec('uik-infer', 'responsive', inf.missing ? 'MISSING'
+      : (inf.posted.join(',') === 'uikit-infer' ? 'posts uikit-infer' : 'UNEXPECTED: ' + inf.posted.join(',')),
+      JSON.stringify(inf.posted));
+  reply({ result:{ proposals:[
+    { key:'r1', nodeId:'N1', nodeName:'Cards', rule:'stack', at:'Mobile', why:'four cards will not fit 375' },
+    { key:'r2', nodeId:'N1', nodeName:'Cards', rule:'cols: 2', at:'Tablet', why:'four columns are too narrow at 768' }
+  ], byNode:{} } });
+  const rsp = click('uik-responsive');
+  rec('uik-responsive', 'responsive', rsp.missing ? 'MISSING'
+      : (rsp.posted.join(',') === 'uikit-responsive' ? 'posts uikit-responsive' : 'UNEXPECTED: ' + rsp.posted.join(',')),
+      JSON.stringify(rsp.posted));
+  reply();
+
+  // ─── 7. nothing threw, and nothing is left stuck ────────────────────
+  // ─── 8. a logo, loaded for real, then cleared ───────────────────────
+  fresh('entry');
+  act('uik-wizard').click(); answerPreviews();
+  for (let i = 0; i < 4; i++) { const n = act('uik-wiz-next'); if (n) { n.click(); sent = []; answerPreviews(); } }
+  const colourHead = heading();
+  const input = D.getElementById('uikLogoInput');
+  if (!input) {
+    rec('uik-logo-clear', colourHead, 'NO FILE INPUT', '');
+  } else {
+    const dt = new W.DataTransfer();
+    dt.items.add(logoFile(W));
+    input.files = dt.files;
+    input.dispatchEvent(new W.Event('change', { bubbles: true }));
+    const loaded = await until(() => !!act('uik-logo-clear'), 4000);
+    const swatch = panel().querySelector('input[type="color"]');
+    rec('uik-logo', colourHead, loaded ? 'reads a logo and offers to clear it' : 'LOGO NEVER LOADED',
+        loaded && swatch ? ('brand picked: ' + swatch.value) : '');
+    if (loaded) {
+      const clearBtn = act('uik-logo-clear');
+      clearBtn.click();
+      const gone = await until(() => !act('uik-logo-clear'), 2000);
+      rec('uik-logo-clear', colourHead, gone ? 'clears the logo' : 'LOGO NOT CLEARED', '');
+    }
+  }
+
+  rec('(whole tab)', 'console', errs.length ? 'ERRORS: ' + errs.join(' | ') : 'no script errors', '');
+
+  // Outcomes that are expected rather than broken. Everything else that
+  // reads like a problem fails the run.
+  const EXPECTED = [
+    'UNREACHABLE — nothing renders the export block',
+    'UNREACHABLE — only renders beside an export result',
+    'absent until a logo is loaded',
+    'correctly disabled with nothing ticked'
+  ];
+  const bad = results.filter(r => !EXPECTED.includes(r.outcome) &&
+    /MISSING|UNEXPECTED|FAILED|DID NOT|NOT |NEVER|ERRORS:|^NO /.test(r.outcome));
+  document.getElementById('results').textContent =
+    JSON.stringify(results, null, 1) +
+    '\nVERDICT: ' + (bad.length ? ('FAIL — ' + bad.length + ' of ' + results.length)
+                                 : ('PASS — ' + results.length + ' checks'));
+}
+
+document.getElementById('app').addEventListener('load', () => {
+  W = document.getElementById('app').contentWindow;
+  run().catch(e => { document.getElementById('results').textContent =
+    'THREW: ' + (e && e.stack || e) + '\n\nso far:\n' + JSON.stringify(results, null, 1); });
+});
+</script>
