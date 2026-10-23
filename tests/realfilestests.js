@@ -427,6 +427,54 @@ async function run() {
   eq(radiusAgain.length, 0, 'corner radius: and is not proposed a second time');
   ok(svR.alreadyBound > 0, 'corner radius: it is counted as already bound  (' + svR.alreadyBound + ')');
 
+  // ══ 11 ══ going fluid must not collapse a hand-placed frame ═══════════
+  // Measured in Figma: a 1440x700 hero given auto layout hugged down to
+  // 1440x68 and threw its children 645px outside it.
+  freshR();
+  var absPage = mkFrame({ name: 'Hand placed', width: 1440, height: 700 });
+  figma.currentPage.appendChild(absPage);
+  var heroBlock = mkFrame({ name: 'Hero block', width: 1100, height: 420 });
+  heroBlock.x = 170; heroBlock.y = 120;
+  absPage.appendChild(heroBlock);
+  var hTitle = mkText('Lighting the Future of Business', 'H');
+  hTitle.fontSize = 56; hTitle.width = 900; hTitle.height = 70; hTitle.x = 0; hTitle.y = 0;
+  heroBlock.appendChild(hTitle);
+  var hSub = mkText('A subheading that sits below it.', 'Sub');
+  hSub.fontSize = 20; hSub.width = 760; hSub.height = 60; hSub.x = 0; hSub.y = 110;
+  heroBlock.appendChild(hSub);
+
+  var fr = await makeFrameFluid(absPage, { narrowestWidth: 375, minCardWidth: 260 });
+  eq(absPage.width, 1440, 'fluid: a hand-placed frame keeps its width');
+  eq(absPage.height, 700, 'fluid: and its height, instead of hugging down to nothing');
+  ok(fr.heldSize > 0, 'fluid: the frames it held are counted  (' + fr.heldSize + ')');
+  ok(fr.reasons.join(' ').indexOf('will not reflow') !== -1,
+     'fluid: and it says they will not reflow on their own');
+
+  // ══ 12 ══ a column floor must fit the narrowest canvas ════════════════
+  // Measured: a 260px floor inside a 1440 frame with 120px side padding
+  // left the cards 125px wider than their column on a 375 phone.
+  freshR();
+  var wide = mkFrame({ name: 'Section', width: 1440, height: 600 });
+  wide.layoutMode = 'VERTICAL';
+  wide.paddingLeft = 120; wide.paddingRight = 120;
+  figma.currentPage.appendChild(wide);
+  var cardRow = mkFrame({ name: 'Cards', width: 1200, height: 300 });
+  cardRow.layoutMode = 'HORIZONTAL'; cardRow.itemSpacing = 24;
+  wide.appendChild(cardRow);
+  for (var fc = 0; fc < 4; fc++) {
+    var fcard = mkFrame({ name: 'Card ' + fc, width: 282, height: 300 });
+    fcard.y = 0;
+    cardRow.appendChild(fcard);
+  }
+  var fr2 = await makeFrameFluid(wide, { narrowestWidth: 375, minCardWidth: 260 });
+  var floors = cardRow.children.map(function (c) { return c.minWidth; });
+  var slack = 1440 - 1200;                       // 240px of padding above the row
+  var affordable = 375 - slack;                  // 135px on the narrowest canvas
+  ok(floors.every(function (f) { return f !== null && f <= affordable; }),
+     'floor: no column floor exceeds what a 375 canvas affords  (' + floors.join(', ') + ' vs ' + affordable + ')');
+  ok(fr2.reasons.join(' ').indexOf('only has') !== -1,
+     'floor: and it explains why the floor is small, and how to win the room back');
+
   print('');
   if (fail === 0) print('ALL PASS (' + pass + ' assertions)');
   else print(fail + ' FAILED, ' + pass + ' passed');

@@ -287,7 +287,15 @@ function inferItemSpacing(node, axis) {
   return Math.max(0, Math.round(median(gaps)));
 }
 
+// Converting a hand-placed frame to auto layout makes it hug its content,
+// and for a frame that had a deliberate envelope that is destruction, not
+// conversion: run against a real 1440x700 hero in Figma, this turned it
+// into 1440x68 and threw its children 645px outside it. A card settling to
+// its content is fine; a section losing two thirds of its height is not, so
+// a large change is treated as a collapse and the frame keeps its size.
+var AUTO_LAYOUT_COLLAPSE = 0.25;
 function applySmartAutoLayout(frame) {
+  const beforeW = frame.width, beforeH = frame.height;
   const axis = inferAutoLayoutAxis(frame);
   frame.layoutMode = axis;
   frame.primaryAxisSizingMode = 'AUTO';
@@ -296,7 +304,19 @@ function applySmartAutoLayout(frame) {
   frame.counterAxisAlignItems = 'MIN';
   frame.itemSpacing = inferItemSpacing(frame, axis);
   if ('strokesIncludedInLayout' in frame) frame.strokesIncludedInLayout = true;
-  return axis;
+
+  var shrankW = beforeW > 0 && (beforeW - frame.width) / beforeW > AUTO_LAYOUT_COLLAPSE;
+  var shrankH = beforeH > 0 && (beforeH - frame.height) / beforeH > AUTO_LAYOUT_COLLAPSE;
+  if (shrankW || shrankH) {
+    // resize() resets both sizing modes, so it goes first.
+    try { frame.resize(beforeW, beforeH); } catch (e) { /* locked or odd type */ }
+    try {
+      frame.primaryAxisSizingMode = 'FIXED';
+      frame.counterAxisSizingMode = 'FIXED';
+    } catch (e) { /* older API */ }
+    return { axis: axis, keptSize: true };
+  }
+  return { axis: axis, keptSize: false };
 }
 
 function isVectorLikeNode(node) {
@@ -7303,10 +7323,19 @@ function similarWidths(kids, tolerance) {
 async function makeFrameFluid(root, opts) {
   opts = opts || {};
   var report = { autoLayout: 0, wrapped: 0, filled: 0, text: 0, minWidths: 0, maxWidths: 0,
-                 fixedKept: 0, refused: 0, reasons: [], unit: 'layer' };
+                 fixedKept: 0, heldSize: 0, refused: 0, reasons: [], unit: 'layer' };
   if (!root) { report.reasons.push('Select a frame first.'); return report; }
 
   var minCard = typeof opts.minCardWidth === 'number' ? opts.minCardWidth : 260;
+  var narrowest = (typeof opts.narrowestWidth === 'number' && opts.narrowestWidth > 0)
+    ? opts.narrowestWidth : 0;
+  var rootWidth = root.width || 0;
+
+  // What a card can actually have on the narrowest canvas, once everything
+  // between it and the page edge has taken its padding. A flat 260px floor
+  // ignored that and left cards 125px wider than the column holding them on
+  // a 375 phone — measured, in Figma. A floor is a minimum, not a width, so
+  // erring small costs nothing: FILL still lets them grow.
 
   function visit(node, depth) {
     if (!node || node.visible === false) return;
@@ -7314,8 +7343,11 @@ async function makeFrameFluid(root, opts) {
     // 1 ── a container without auto layout has no flow to reflow
     if (hasChildren(node) && node.children.length && node.type !== 'INSTANCE') {
       if (!isAutoLayoutFrame(node) && (node.type === 'FRAME' || node.type === 'COMPONENT')) {
-        try { applySmartAutoLayout(node); report.autoLayout++; }
-        catch (e) { report.refused++; }
+        try {
+          var held = applySmartAutoLayout(node);
+          report.autoLayout++;
+          if (held && held.keptSize) report.heldSize = (report.heldSize || 0) + 1;
+        } catch (e) { report.refused++; }
       }
     }
 
@@ -7327,10 +7359,18 @@ async function makeFrameFluid(root, opts) {
       if (setBound(node, 'layoutWrap', 'WRAP', report)) {
         report.wrapped++;
         setBound(node, 'counterAxisSpacing', node.itemSpacing || 0, null);
+        // Everything this row gives up to padding between it and the page.
+        var slack = Math.max(0, rootWidth - (node.width || rootWidth));
+        var affordable = narrowest ? Math.max(120, narrowest - slack) : Infinity;
+        if (narrowest && affordable < minCard) {
+          report.reasons.push('On a ' + narrowest + 'px canvas "' + node.name + '" only has ' +
+            affordable + 'px for its columns, so their minimum width was set to that rather than ' +
+            minCard + 'px. Bind the side margins to a responsive token to win the room back.');
+        }
         for (var w = 0; w < kids.length; w++) {
           if (shouldStayFixed(kids[w])) { report.fixedKept++; continue; }
           if (setLayoutSizing(kids[w], 'layoutSizingHorizontal', 'FILL', report)) report.filled++;
-          var floor = Math.min(minCard, Math.round(kids[w].width || minCard));
+          var floor = Math.min(minCard, Math.round(kids[w].width || minCard), affordable);
           if (floor > 0 && setBound(kids[w], 'minWidth', floor, report)) report.minWidths++;
         }
       }
@@ -7376,6 +7416,9 @@ async function makeFrameFluid(root, opts) {
     report.reasons.push('"' + root.name + '" has no auto layout of its own, so it cannot flow. Its children were still set up.');
   }
 
+  if (report.heldSize) {
+    report.reasons.push(report.heldSize + ' frame(s) were hand-placed and would have collapsed when given auto layout, so they kept their size. They hold their shape but will not reflow on their own \u2014 the responsive versions are where those get adapted.');
+  }
   if (report.refused) {
     report.reasons.push(report.refused + ' setting(s) were refused by Figma and skipped \u2014 usually a layer type that cannot take them.');
   }
@@ -7392,6 +7435,8 @@ async function makeSelectionFluid(opts) {
     var widths = cfg.breakpoints.map(function (b) { return b.width || 0; }).filter(Boolean);
     if (widths.length && o.rootMinWidth === undefined) o.rootMinWidth = Math.min.apply(null, widths);
     if (widths.length && o.rootMaxWidth === undefined) o.rootMaxWidth = Math.max.apply(null, widths);
+    // So a card's minimum width can never exceed the narrowest canvas.
+    if (widths.length && o.narrowestWidth === undefined) o.narrowestWidth = Math.min.apply(null, widths);
   }
 
   var total = { autoLayout: 0, wrapped: 0, filled: 0, text: 0, minWidths: 0, maxWidths: 0,

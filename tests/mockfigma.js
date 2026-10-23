@@ -294,6 +294,28 @@ var NODE_EXTRAS = ['x','y','fills','strokes','width','height','minWidth','maxWid
 // Object.preventExtensions only THROWS in strict mode; in sloppy mode the
 // assignment silently no-ops, which is exactly the failure that let
 // "node.rowHost = x" through. A Proxy throws either way.
+// What Figma does when an axis is set to AUTO: the frame shrinks to fit
+// what is inside it, padding included.
+function hugToContent(f){
+  if (!f || !f.layoutMode || f.layoutMode === 'NONE') return;
+  var kids = (f.children || []).filter(function(k){ return k.visible !== false; });
+  if (!kids.length) return;
+  var padX = (f.paddingLeft||0) + (f.paddingRight||0);
+  var padY = (f.paddingTop||0) + (f.paddingBottom||0);
+  var gap = (f.itemSpacing||0) * Math.max(0, kids.length - 1);
+  var widths = kids.map(function(k){ return k.width||0; });
+  var heights = kids.map(function(k){ return k.height||0; });
+  var sum = function(a){ return a.reduce(function(x,y){ return x+y; }, 0); };
+  var maxOf = function(a){ return a.length ? Math.max.apply(null, a) : 0; };
+  if (f.layoutMode === 'VERTICAL') {
+    if (f.primaryAxisSizingMode === 'AUTO') f.height = sum(heights) + gap + padY;
+    if (f.counterAxisSizingMode === 'AUTO') f.width = maxOf(widths) + padX;
+  } else {
+    if (f.primaryAxisSizingMode === 'AUTO') f.width = sum(widths) + gap + padX;
+    if (f.counterAxisSizingMode === 'AUTO') f.height = maxOf(heights) + padY;
+  }
+}
+
 function sealNode(n){
   for (var i=0;i<NODE_EXTRAS.length;i++) {
     if (!(NODE_EXTRAS[i] in n)) n[NODE_EXTRAS[i]] = undefined;
@@ -304,6 +326,13 @@ function sealNode(n){
         throw new TypeError('object is not extensible (tried to set "' + String(key) + '")');
       }
       target[key] = value;
+      // An auto-layout frame set to AUTO on an axis HUGS its content on that
+      // axis. Without this a 1440x700 frame given auto layout kept its size
+      // in the mock while Figma shrank it to 1440x68 — the collapse that
+      // threw a real hero's children hundreds of pixels outside it.
+      if ((key === 'primaryAxisSizingMode' || key === 'counterAxisSizingMode') && value === 'AUTO') {
+        hugToContent(target);
+      }
       return true;
     }
   });
