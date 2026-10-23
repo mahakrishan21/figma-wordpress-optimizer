@@ -254,6 +254,145 @@ async function run() {
   });
   eq(fabricated.length, 0, 'bigdot: nothing under 4px is called a spacing step');
 
+  // ══ 5 ══ LEFT-ALIGNED containers — stop assuming everything is centred ══
+  freshR();
+  var leftPage = mkFrame({ name: 'Left aligned', width: 1440, height: 2000 });
+  figma.currentPage.appendChild(leftPage);
+  for (var la = 0; la < 6; la++) {
+    var band = mkFrame({ name: 'Band ' + la, width: 1440, height: 300 });
+    band.y = la * 320;
+    leftPage.appendChild(band);
+    var col = mkFrame({ name: 'Column', width: 1000, height: 260 });
+    col.x = 80;                    // 80 left, 360 right — clearly not centred
+    band.appendChild(col);
+  }
+  var lb = measureContainers(leftPage);
+  eq(lb.alignment, 'left', 'left-aligned: the alignment is read from the coordinates');
+  eq(lb.margin, 80, 'left-aligned: and the margin is the real left inset, not half the slack');
+  ok(lb.confidence >= 6, 'left-aligned: with the count behind it  (' + lb.confidence + ')');
+
+  // a page whose coordinates say nothing falls back, and says that it did
+  freshR();
+  var noXPage = mkFrame({ name: 'No coordinates', width: 1440, height: 1200 });
+  figma.currentPage.appendChild(noXPage);
+  for (var nx = 0; nx < 4; nx++) {
+    var b2 = mkFrame({ name: 'Band', width: 1440, height: 280 });
+    noXPage.appendChild(b2);
+    b2.appendChild(mkFrame({ name: 'Column', width: 1200, height: 240 }));   // x left at 0
+  }
+  var nb = measureContainers(noXPage);
+  eq(nb.alignment, 'assumed-centred', 'no coordinates: it says the centring was assumed');
+  eq(nb.margin, 120, 'no coordinates: and still produces a usable margin');
+
+  // ══ 6 ══ a ONE-OFF section container keeps its own width ═══════════════
+  freshR();
+  var mixPage = mkFrame({ name: 'Mixed', width: 1440, height: 3000 });
+  figma.currentPage.appendChild(mixPage);
+  for (var mp = 0; mp < 8; mp++) {
+    var wideBand = mkFrame({ name: 'Wide band ' + mp, width: 1440, height: 300 });
+    mixPage.appendChild(wideBand);
+    wideBand.appendChild(mkFrame({ name: 'Container', width: 1248, height: 260 }));
+  }
+  var oneOff = mkFrame({ name: 'Quote band', width: 1440, height: 300 });
+  mixPage.appendChild(oneOff);
+  oneOff.appendChild(mkFrame({ name: 'Narrow quote', width: 880, height: 260 }));
+  var mb = measureContainers(mixPage);
+  var found = mb.containers.map(function (c) { return c.width + ':' + c.scope; });
+  ok(found.indexOf('1248:page') !== -1, 'one-off: the page column is scoped to the page  (' + found.join(' ') + ')');
+  ok(found.indexOf('880:section') !== -1, 'one-off: and the single band keeps its own, marked as a section');
+
+  // ══ 7 ══ LETTER SPACING — px and percent are not the same thing ════════
+  freshR();
+  var lsPage = mkFrame({ name: 'Tracking', width: 1440, height: 800 });
+  figma.currentPage.appendChild(lsPage);
+  // an eyebrow: 20% at 12px renders as 2.4px. Both must read as 20%.
+  var eyebrowPct = mkText('OUR 4 STEP', 'Eyebrow');
+  eyebrowPct.fontSize = 12;
+  eyebrowPct.letterSpacing = { unit: 'PERCENT', value: 20 };
+  lsPage.appendChild(eyebrowPct);
+  var eyebrowPx = mkText('OUR PROCESS', 'Eyebrow px');
+  eyebrowPx.fontSize = 12;
+  eyebrowPx.letterSpacing = { unit: 'PIXELS', value: 2.4 };
+  lsPage.appendChild(eyebrowPx);
+  // a headline at -3% — the same -2.64px would be a different percentage
+  var tight = mkText('Lighting the Future', 'Hero');
+  tight.fontSize = 88;
+  tight.letterSpacing = { unit: 'PIXELS', value: -2.64 };
+  lsPage.appendChild(tight);
+
+  var ls = await measureLetterSpacing(styleScanNodes([lsPage]));
+  var lsVals = ls.map(function (c) { return c.value; });
+  ok(lsVals.some(function (v) { return Math.abs(v - 20) < 1.5; }),
+     'tracking: 20% and 2.4px-at-12px read as the same value  (' + lsVals.join(', ') + ')');
+  var twenty = ls.filter(function (c) { return Math.abs(c.value - 20) < 1.5; })[0];
+  eq(twenty && twenty.count, 2, 'tracking: both spellings land in one cluster');
+  ok(lsVals.some(function (v) { return v < -2 && v > -4; }),
+     'tracking: -2.64px at 88px is about -3%, not -2.64  (' + lsVals.join(', ') + ')');
+  eq(ls.pixelBased, 2, 'tracking: the pixel-based ones are counted');
+  eq(ls.percentBased, 1, 'tracking: and so are the percent-based ones');
+
+  // ══ 8 ══ NEAR matches are reported, never silently applied ═════════════
+  freshR();
+  var nearOwn = figma.variables.createVariableCollection('House tokens');
+  nearOwn.addMode('Value');
+  function houseVar(name, value, scopes) {
+    var v = figma.variables.createVariable(name, nearOwn, 'FLOAT');
+    try { v.scopes = scopes; } catch (e) {}
+    v.setValueForMode(nearOwn.modes[0].modeId, value);
+    return v;
+  }
+  houseVar('Spacing/Large', 96, ['GAP']);     // the design uses 94 — close, not equal
+  var nearPage = mkFrame({ name: 'Near', width: 1440, height: 1600 });
+  nearPage.layoutMode = 'VERTICAL';
+  nearPage.paddingTop = 94; nearPage.paddingBottom = 94;
+  nearPage.itemSpacing = 94;
+  figma.currentPage.appendChild(nearPage);
+  for (var nq = 0; nq < 4; nq++) {
+    var nc = mkFrame({ name: 'Card', width: 1200, height: 200 });
+    nc.layoutMode = 'VERTICAL'; nc.paddingLeft = 94; nc.paddingRight = 94;
+    nearPage.appendChild(nc);
+    var nt = mkText('Body copy for the near-match case, long enough to count.', 'Body');
+    nt.fontSize = 16; nc.appendChild(nt);
+  }
+  figma.currentPage.selection = [nearPage];
+  var rNear = await buildFromExistingFile({ styleChoice: 'keep', bindSelection: false });
+  var nearNames = (rNear.nearMatches || []).map(function (x) { return x.existing + '@' + x.existingValue + ' vs ' + x.value; });
+  ok((rNear.nearMatches || []).length > 0,
+     'near: 94 against a 96 variable is reported as a near match  (' + nearNames.join(', ') + ')');
+  eq((rNear.reused || []).filter(function (x) { return x.kind === 'exact'; }).length, 0,
+     'near: and is NOT counted as an exact reuse');
+  // the design keeps its own 94, rather than being moved to 96
+  var ninetyFour = (await localVariablesAllModes('FLOAT')).filter(function (e) {
+    var v = e.resolved[Object.keys(e.resolved)[0]];
+    return v === 94;
+  });
+  ok(ninetyFour.length > 0, 'near: the design\u2019s own 94 is written, not snapped to 96');
+
+  // ══ 9 ══ a COLOUR reused from the file is reported like the rest ═══════
+  freshR();
+  var colOwn = figma.variables.createVariableCollection('House colour');
+  colOwn.addMode('Value');
+  var brandVar = figma.variables.createVariable('Brand/Primary red', colOwn, 'COLOR');
+  brandVar.setValueForMode(colOwn.modes[0].modeId, { r: 0.824, g: 0.145, b: 0.149, a: 1 });
+  var colPage = mkFrame({ name: 'Colour', width: 1440, height: 1200 });
+  colPage.layoutMode = 'VERTICAL';
+  colPage.paddingTop = 48; colPage.paddingBottom = 48; colPage.itemSpacing = 24;
+  figma.currentPage.appendChild(colPage);
+  for (var cq = 0; cq < 4; cq++) {
+    var btn2 = mkFrame({ name: 'Button', width: 200, height: 48 });
+    btn2.layoutMode = 'HORIZONTAL'; btn2.paddingLeft = 24; btn2.paddingRight = 24;
+    btn2.fills = [{ type: 'SOLID', color: { r: 0.824, g: 0.145, b: 0.149 }, opacity: 1 }];
+    colPage.appendChild(btn2);
+    var bt = mkText('Contact us today for a quote', 'Label');
+    bt.fontSize = 16; btn2.appendChild(bt);
+  }
+  figma.currentPage.selection = [colPage];
+  var rCol = await buildFromExistingFile({ styleChoice: 'keep' });
+  var colourReuse = (rCol.reused || []).filter(function (x) { return x.kind === 'colour'; });
+  ok(colourReuse.length > 0,
+     'colour: a colour bound to the file\u2019s own variable is reported under reused  (' +
+     (rCol.reused || []).map(function (x) { return x.existing; }).join(', ') + ')');
+
   print('');
   if (fail === 0) print('ALL PASS (' + pass + ' assertions)');
   else print(fail + ' FAILED, ' + pass + ' passed');

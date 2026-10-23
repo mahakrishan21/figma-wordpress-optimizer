@@ -6130,6 +6130,31 @@ function clusterNumbers(values, tol) {
 
 function byCountDesc(a, b) { return b.count - a.count || a.value - b.value; }
 
+// Like clusterNumbers, but "close" grows with the value. Running this over
+// eight real designs produced ladders like 70 / 69 / 65 / 63 / 61 / 57 and
+// called them six heading levels — they are one heading resized by hand a
+// few times. A fixed tolerance cannot tell those from a real scale, because
+// 2px apart means something different at 16px and at 70px.
+function clusterProportional(values, minTol, pct) {
+  var clusters = [];
+  var sorted = values.slice().sort(function (a, b) { return a - b; });
+  for (var i = 0; i < sorted.length; i++) {
+    var v = sorted[i];
+    var at = null;
+    for (var c = 0; c < clusters.length; c++) {
+      var tol = Math.max(minTol, clusters[c].value * pct);
+      if (Math.abs(clusters[c].value - v) <= tol) { at = clusters[c]; break; }
+    }
+    if (at) {
+      at.count++; at.total += v;
+      at.value = Math.round(at.total / at.count);
+    } else {
+      clusters.push({ value: Math.round(v), total: v, count: 1 });
+    }
+  }
+  return clusters;
+}
+
 // Where the content sits inside the frame. An auto-layout page states it as
 // padding; a hand-placed one only implies it, as the inset repeated by every
 // band of content that is narrower than the page.
@@ -6141,6 +6166,14 @@ function byCountDesc(a, b) { return b.count - a.count || a.value - b.value; }
 // Returns every container width the design actually uses, strongest first,
 // because one page legitimately has more than one — a 1248 column for most
 // sections and a 928 one for narrow prose.
+// The top-level band a node sits under, so a container used by one section
+// is not mistaken for the page's column.
+function sectionOf(node, root) {
+  var at = node, guard = 0;
+  while (at && at.parent && at.parent !== root && guard++ < 20) at = at.parent;
+  return (at && at.parent === root) ? (at.id || at.name) : null;
+}
+
 function measureContainers(root) {
   var w = root.width || 0;
   var out = { containers: [], margin: 0, confidence: 0, outOfBounds: 0, fromPadding: false };
@@ -6171,14 +6204,17 @@ function measureContainers(root) {
       // A content column: clearly narrower than the page, but not a button.
       if (kw > w * 0.5 && kw < w * 0.97) {
         var key = Math.round(kw);
-        if (!seen[key]) seen[key] = { width: key, count: 0, insets: [] };
+        if (!seen[key]) seen[key] = { width: key, count: 0, insets: [], lefts: [], sections: {} };
         seen[key].count++;
-        // The inset is read from the width, not from x: auto layout computes
-        // a child's position, so x is 0 on exactly the centred containers
-        // this is looking for. Every container across fifteen real designs
-        // was centred, which is what makes this safe; x is used only to
-        // throw out the layers that sit outside the frame entirely.
+        // Prefer the real coordinate. Figma maintains x even inside auto
+        // layout, so a left-aligned column is readable as one — but a file
+        // where every x is 0 is telling us nothing, and for those the
+        // centred reading is the only one available.
+        if (typeof kx === 'number') seen[key].lefts.push(kx);
         seen[key].insets.push((w - kw) / 2);
+        // Which band this column sits in, so one-off sections keep their own.
+        var sec = sectionOf(node, root);
+        if (sec) seen[key].sections[sec] = true;
       }
       walk(k, depth + 1);
     }
@@ -6188,7 +6224,35 @@ function measureContainers(root) {
   for (var key in seen) {
     var rec = seen[key];
     var clustered = clusterNumbers(rec.insets, 2).sort(byCountDesc);
-    list.push({ width: rec.width, margin: Math.max(0, clustered[0].value), count: rec.count });
+    var centred = Math.max(0, clustered[0].value);
+    // Alignment, when the coordinates are actually saying something.
+    // x is only sometimes the whole truth. A container sitting inside an
+    // auto-layout band reports x = 0 relative to that band even though the
+    // band itself is inset, and real files mix both — one page had the same
+    // 1200px column at x = 200 in some sections and x = 0 in others.
+    // Reading the zeros as "flush left" put the margin at 0 on three real
+    // designs that are plainly centred. So x decides only when MOST of the
+    // samples carry one, and the zeros are treated as the absence of an
+    // answer rather than as an answer.
+    var meaningful = rec.lefts.filter(function (x) { return Math.abs(x) > 0.5; });
+    var alignment = 'assumed-centred', margin = centred;
+    if (meaningful.length * 2 >= rec.lefts.length && meaningful.length) {
+      var byLeft = clusterNumbers(meaningful, 2).sort(byCountDesc);
+      var left = Math.max(0, byLeft[0].value);
+      var right = Math.round(w - left - rec.width);
+      // Only trust it if the three numbers actually add up to the page.
+      if (right >= -2) {
+        right = Math.max(0, right);
+        margin = left;
+        if (Math.abs(left - right) <= 2) alignment = 'centred';
+        else if (left < right) alignment = 'left';
+        else alignment = 'right';
+      }
+    }
+    var sectionCount = 0;
+    for (var sk in rec.sections) sectionCount++;
+    list.push({ width: rec.width, margin: margin, count: rec.count,
+                alignment: alignment, sections: sectionCount });
   }
   list.sort(function (a2, b2) { return b2.count - a2.count || b2.width - a2.width; });
   // Merge widths within 2px of a stronger one — 1440 and 1441 are one column.
@@ -6198,10 +6262,16 @@ function measureContainers(root) {
     for (var m = 0; m < merged.length; m++) {
       if (Math.abs(merged[m].width - list[li].width) <= 2) { at = merged[m]; break; }
     }
-    if (at) at.count += list[li].count;
+    if (at) { at.count += list[li].count; at.sections += list[li].sections; }
     else merged.push(list[li]);
   }
+  // A column used across several sections is the page's; one that appears in
+  // a single band is that section's own and is kept, not averaged away.
+  for (var mi = 0; mi < merged.length; mi++) {
+    merged[mi].scope = merged[mi].sections > 1 ? 'page' : 'section';
+  }
   out.containers = merged;
+  out.alignment = merged.length ? merged[0].alignment : 'unknown';
   if (merged.length) {
     out.margin = merged[0].margin;
     out.confidence = merged[0].count;
@@ -6310,7 +6380,10 @@ async function measureTypeSizes(nodes) {
   }
   if (!vals.length) return { body: null, steps: [], mixedRuns: mixedRuns, unreadable: unreadable };
 
-  var clusters = clusterNumbers(vals, 0.6);
+  // 5% was chosen against eight real designs: it collapses 70/69 and 65/63
+  // into single levels while keeping 19 and 18 apart, which in one file are
+  // genuinely two different styles.
+  var clusters = clusterProportional(vals, 0.6, 0.05);
   var ranked = clusters.slice().sort(byCountDesc);
   var body = ranked[0].value;
 
@@ -6372,6 +6445,34 @@ function measureLeading(nodes) {
     if (pct > 80 && pct < 260) vals.push(pct);
   }
   return clusterNumbers(vals, 4).sort(byCountDesc);
+}
+
+// Letter spacing comes in two units and they are not interchangeable: a
+// style recording 20 PERCENT renders as 2.4px at 12px and 11px at 55px.
+// Normalising to percent-of-size is the only form that survives the type
+// scale moving underneath it.
+async function measureLetterSpacing(nodes) {
+  var vals = [], pixelBased = 0, percentBased = 0;
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (n.type !== 'TEXT') continue;
+    var runs = [];
+    try { runs = await textTypeRuns(n); } catch (e) { runs = []; }
+    for (var r = 0; r < runs.length; r++) {
+      var spec = runs[r].spec || {};
+      var ls = spec.letterSpacing, size = spec.fontSize;
+      if (!ls || typeof ls.value !== 'number' || typeof size !== 'number' || !size) continue;
+      if (ls.value === 0) continue;          // no tracking is not a token
+      var pct;
+      if (ls.unit === 'PERCENT') { pct = ls.value; percentBased++; }
+      else { pct = (ls.value / size) * 100; pixelBased++; }
+      if (pct > -20 && pct < 60) vals.push(Math.round(pct * 10) / 10);
+    }
+  }
+  var out = clusterNumbers(vals, 1).sort(byCountDesc);
+  out.pixelBased = pixelBased;
+  out.percentBased = percentBased;
+  return out;
 }
 
 function measureStrokeWeights(nodes) {
@@ -6572,6 +6673,7 @@ async function measureDesign(root, cfg) {
   var type = await measureTypeSizes(nodes);
   var colours = measureColours(nodes);
   var leading = measureLeading(nodes);
+  var tracking = await measureLetterSpacing(nodes);
   var strokes = measureStrokeWeights(nodes);
   var icons = measureIconSizes(nodes);
   var opacities = measureOpacities(nodes);
@@ -6600,6 +6702,8 @@ async function measureDesign(root, cfg) {
     type: type.steps.slice(),
     colours: colours.slice(0, 12).map(function (c) { return { hex: c.hex, opacity: c.opacity, count: c.count }; }),
     leading: pairs(leading, 4),
+    tracking: pairs(tracking, 4),
+    trackingUnits: { px: tracking.pixelBased, percent: tracking.percentBased },
     strokes: pairs(strokes, 4),
     icons: pairs(icons, 4),
     opacities: pairs(opacities, 4),
@@ -6684,6 +6788,18 @@ async function measureDesign(root, cfg) {
     lv[UIKIT_VALUE_KEY] = lsorted[li].value;
     out.rows.push({ name: 'text/leading/' + LNAMES[li], tier: 'primitive', scopes: ['LINE_HEIGHT'], values: lv });
   }
+  // Tracking is stored as percent of size, which is what makes it survive a
+  // responsive type scale. The scope is LETTER_SPACING so it can never be
+  // mistaken for a length.
+  var tsorted = tracking.slice(0, 3).map(function (c) { return c.value; })
+                        .sort(function (a2, b2) { return a2 - b2; });
+  for (var ti = 0; ti < tsorted.length; ti++) {
+    var tv = {};
+    tv[UIKIT_VALUE_KEY] = tsorted[ti];
+    out.rows.push({ name: 'text/tracking/' + (tsorted[ti] < 0 ? 'tight' : (ti === 0 ? 'normal' : 'wide' + ti)),
+                    tier: 'primitive', scopes: ['LETTER_SPACING'], values: tv });
+  }
+
   var bsorted = strokes.slice(0, 3).map(function (c) { return c.value; }).sort(function (a2, b2) { return a2 - b2; });
   var BNAMES = ['hairline', 'default', 'thick'];
   for (var bi = 0; bi < bsorted.length; bi++) {
@@ -6814,6 +6930,7 @@ async function measureDesign(root, cfg) {
     typeSizes: type.steps.length,
     colours: colours.length,
     leading: leading.length,
+    tracking: tracking.length,
     strokes: strokes.length,
     icons: icons.length,
     opacities: opacities.length,
@@ -6960,22 +7077,37 @@ async function buildFromExistingFile(opts) {
         nm.indexOf('grid/gutter') === 0) return pools.spaces;
     return null;
   }
+  // Three outcomes, kept apart rather than blurred: a value the file already
+  // has exactly, a value close enough that a designer might want to adopt it
+  // but which would MOVE the design if applied, and a value with nothing
+  // near it. Only the first is acted on; the second is reported so the
+  // choice stays with the designer.
   result.reused = [];
+  result.nearMatches = [];
   rows = rows.filter(function (r) {
     if (r.type === 'COLOR') return true;            // colour reuse is the survey's job
     var pool = poolFor(r.name);
     if (!pool || !pool.length) return true;
     var val = r.tier === 'primitive' ? r.values[UIKIT_VALUE_KEY] : r.values[names[0]];
     if (typeof val !== 'number') return true;
-    var hit = null;
+    var exact = null, near = null, nearD = Infinity;
     for (var i = 0; i < pool.length; i++) {
-      // Only an exact match stands in for a measured value. A near one would
-      // be the plugin deciding the design meant something it did not say.
-      if (!pool[i].kit && Math.abs(pool[i].value - val) < 0.5) { hit = pool[i]; break; }
+      if (pool[i].kit) continue;
+      var d = Math.abs(pool[i].value - val);
+      if (d < 0.5) { exact = pool[i]; break; }
+      // "Near" is proportional: 1px off 8 is a different decision, 1px off
+      // 96 is the same one typed twice.
+      if (d < Math.max(1, val * 0.04) && d < nearD) { nearD = d; near = pool[i]; }
     }
-    if (!hit) return true;
-    result.reused.push({ measured: r.name, value: val, existing: hit.name });
-    return false;
+    if (exact) {
+      result.reused.push({ measured: r.name, value: val, existing: exact.name, kind: 'exact' });
+      return false;
+    }
+    if (near) {
+      result.nearMatches.push({ measured: r.name, value: val, existing: near.name,
+                                existingValue: near.value, delta: Math.round(nearD * 100) / 100 });
+    }
+    return true;   // a near match is reported, never applied
   });
 
   // ── 3 ── write what was measured, and only what was measured ───────────
@@ -7017,6 +7149,26 @@ async function buildFromExistingFile(opts) {
     }
     result.applied = await applyAdoption(result.survey.proposals, accepted);
     result.nudged = opts.exactOnly ? 0 : result.survey.near;
+
+    // Colour never goes through the create-time filter — the survey binds it
+    // instead — so without this a colour reused from the file's own
+    // variables was invisible in the report while spacing was listed.
+    var seenColour = {};
+    for (var cp = 0; cp < result.survey.proposals.length; cp++) {
+      var prop = result.survey.proposals[cp];
+      if (prop.kind !== 'color' || !prop.exact) continue;
+      if (accepted[prop.key] === false) continue;
+      if (seenColour[prop.tokenName]) continue;
+      seenColour[prop.tokenName] = true;
+      var ownColour = true;
+      for (var pc = 0; pc < pools.colours.length; pc++) {
+        if (pools.colours[pc].name === prop.tokenName) { ownColour = !pools.colours[pc].kit; break; }
+      }
+      if (ownColour) {
+        result.reused.push({ measured: prop.current, value: prop.current,
+                             existing: prop.tokenName, kind: 'colour' });
+      }
+    }
     Array.prototype.push.apply(result.reasons, result.applied.reasons);
   }
   return result;
@@ -9088,6 +9240,13 @@ async function handleUiKitMessage(msg) {
           ff.push(many(r.reused.length, 'value') + ' already covered by this file\u2019s own ' +
                   'variables (' + r.reused.slice(0, 3).map(function (x) { return x.existing; }).join(', ') +
                   (r.reused.length > 3 ? ', \u2026' : '') + ')');
+        }
+        if (r.nearMatches && r.nearMatches.length) {
+          ff.push(many(r.nearMatches.length, 'value') + ' close to an existing variable but not equal ' +
+                  'to it, left alone rather than moved (' +
+                  r.nearMatches.slice(0, 2).map(function (x) {
+                    return x.value + ' vs ' + x.existing + ' ' + x.existingValue;
+                  }).join(', ') + ')');
         }
         // And what could not be tokenised, so coverage is never implied.
         var cov = md.coverage || {};
