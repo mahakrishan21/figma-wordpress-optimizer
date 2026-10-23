@@ -5635,53 +5635,109 @@ function nearestNumberToken(pool, value, maxDelta) {
   var best = null, bestD = Infinity;
   for (var i = 0; i < pool.length; i++) {
     var d = Math.abs(pool[i].value - value);
-    if (d < bestD) { bestD = d; best = pool[i]; }
+    // Strictly closer wins; on a tie the earlier entry keeps it, and the
+    // pools are sorted so the file's own variables come first.
+    if (d < bestD - 0.0001) { bestD = d; best = pool[i]; }
   }
   if (!best || bestD > maxDelta) return null;
   return { token: best, delta: Math.round(bestD * 100) / 100, exact: bestD < 0.001 };
 }
 
-// Build the three pools the survey matches against.
+// What a numeric variable is FOR. Matching on value alone put a corner
+// radius on a padding because both happened to be 8 — the kind of binding
+// that is technically correct and obviously wrong. Figma already records
+// the answer in variable.scopes; the name is the fallback for the many
+// files whose variables were created before anyone set scopes.
+function tokenRoles(variable) {
+  var roles = {};
+  var scopes = [];
+  try { scopes = variable.scopes || []; } catch (e) { scopes = []; }
+  var all = scopes.length === 0 || scopes.indexOf('ALL_SCOPES') !== -1;
+  for (var i = 0; i < scopes.length; i++) {
+    var sc = scopes[i];
+    if (sc === 'GAP') roles.gap = true;
+    else if (sc === 'CORNER_RADIUS') roles.radius = true;
+    else if (sc === 'WIDTH_HEIGHT') roles.size = true;
+    else if (sc === 'FONT_SIZE') roles.fontSize = true;
+    else if (sc === 'LINE_HEIGHT') roles.lineHeight = true;
+    else if (sc === 'STROKE_FLOAT') roles.stroke = true;
+    else if (sc === 'OPACITY') roles.opacity = true;
+    else if (sc === 'LETTER_SPACING') roles.letterSpacing = true;
+  }
+
+  // The name decides when scopes do not, and overrules a bare ALL_SCOPES —
+  // a variable called "Border Radius/Button-radius" is a radius whatever
+  // its scopes say.
+  var nm = String(variable.name || '').toLowerCase();
+  if (/radius|rounded|corner/.test(nm)) { roles.radius = true; all = false; }
+  if (/line.?height|leading/.test(nm)) { roles.lineHeight = true; all = false; }
+  if (/letter.?spacing|tracking/.test(nm)) { roles.letterSpacing = true; all = false; }
+  if (/opacity|alpha/.test(nm)) { roles.opacity = true; all = false; }
+  if (/font.?size|text\/size|size\/(body|heading|display)|\btype\b/.test(nm)) { roles.fontSize = true; all = false; }
+  if (/border|stroke|hairline/.test(nm) && !/radius/.test(nm)) { roles.stroke = true; all = false; }
+  if (/spac|gap|gutter|padding|margin|inset/.test(nm)) { roles.gap = true; all = false; }
+  if (/width|height|container|size\/control|icon/.test(nm)) { roles.size = true; all = false; }
+  if (/columns?$/.test(nm)) { roles.count = true; all = false; }
+
+  if (all) { roles.gap = true; roles.size = true; roles.radius = true; }
+  return roles;
+}
+
+// Build the pools the survey matches against.
+//
+// These used to hold only the plugin's own collections, so a file with a
+// design system of its own — "Container Margin: 80", "Space Between/LG: 32" —
+// matched nothing and got a second, competing set of tokens written beside
+// the first. Every local variable is a candidate now, and the file's own
+// come first so a tie resolves to the vocabulary the designer already uses.
 async function adoptionPools(cols, modeId) {
-  var colours = [], spaces = [], fonts = [], leadings = [];
+  var colours = [], spaces = [], radii = [], sizes = [], fonts = [], leadings = [];
+
+  function isKit(id) {
+    return (cols.primitives && id === cols.primitives.id) ||
+           (cols.theme && id === cols.theme.id) ||
+           (cols.responsive && id === cols.responsive.id);
+  }
 
   var colourVars = await localVariablesAllModes('COLOR');
   for (var i = 0; i < colourVars.length; i++) {
     var e = colourVars[i];
-    var inKit = (cols.primitives && e.variable.variableCollectionId === cols.primitives.id) ||
-                (cols.theme && e.variable.variableCollectionId === cols.theme.id);
-    if (!inKit) continue;
     var v = e.resolved[modeOf(e.collection)];
     if (!v || typeof v.r !== 'number') continue;
     var hex = rgbToHexStr(v);
     colours.push({ variable: e.variable, name: e.variable.name, hex: hex,
-                   opacity: typeof v.a === 'number' ? v.a : 1, lab: hexToLab(hex) });
+                   opacity: typeof v.a === 'number' ? v.a : 1, lab: hexToLab(hex),
+                   kit: isKit(e.variable.variableCollectionId) });
   }
 
   var numVars = await localVariablesAllModes('FLOAT');
   for (var n = 0; n < numVars.length; n++) {
     var ne = numVars[n];
-    var isPrim = cols.primitives && ne.variable.variableCollectionId === cols.primitives.id;
-    var isResp = cols.responsive && ne.variable.variableCollectionId === cols.responsive.id;
-    if (!isPrim && !isResp) continue;
+    var id = ne.variable.variableCollectionId;
+    var kit = isKit(id);
+    var isResp = cols.responsive && id === cols.responsive.id;
     // A responsive token is read in the mode the LAYER renders in, so a
-    // desktop frame is matched against desktop values.
+    // desktop frame is matched against desktop values. A variable from the
+    // file's own collection is read in that collection's own mode.
     var val = isResp ? (ne.resolved[modeId] !== undefined ? ne.resolved[modeId] : null)
                      : ne.resolved[modeOf(ne.collection)];
     if (typeof val !== 'number') continue;
-    var rec = { variable: ne.variable, name: ne.variable.name, value: val };
-    var nm = ne.variable.name;
-    if (nm.indexOf('text/size/') === 0) { fonts.push(rec); continue; }
-    if (nm.indexOf('text/leading/') === 0) { leadings.push(rec); continue; }
-    // Everything else numeric is a LENGTH and can match a padding, gap or
-    // radius. Whitelisting prefixes broke the moment a token came off a
-    // canvas with that file's own naming — "spacing/300" rather than
-    // "space/300" — and silently matched nothing.
-    if (nm.indexOf('opacity/') === 0) continue;     // 0–1, not a length
-    if (nm === 'grid/columns') continue;            // a count, not a length
-    spaces.push(rec);
+    var roles = tokenRoles(ne.variable);
+    if (roles.count || roles.opacity || roles.letterSpacing) continue;  // not a length
+    var rec = { variable: ne.variable, name: ne.variable.name, value: val, kit: kit, roles: roles };
+    if (roles.fontSize) fonts.push(rec);
+    if (roles.lineHeight) leadings.push(rec);
+    if (roles.gap) spaces.push(rec);
+    if (roles.radius) radii.push(rec);
+    if (roles.size) sizes.push(rec);
   }
-  return { colours: colours, spaces: spaces, fonts: fonts, leadings: leadings };
+
+  // The file's own vocabulary wins a tie against one the plugin wrote.
+  function ownFirst(a, b) { return (a.kit ? 1 : 0) - (b.kit ? 1 : 0); }
+  [colours, spaces, radii, sizes, fonts, leadings].forEach(function (pool) { pool.sort(ownFirst); });
+
+  return { colours: colours, spaces: spaces, radii: radii, sizes: sizes,
+           fonts: fonts, leadings: leadings };
 }
 
 var ADOPT_SPACE_FIELDS = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom',
@@ -5726,7 +5782,7 @@ async function surveyAdoption(roots, opts) {
     spaceDelta: typeof opts.spaceDelta === 'number' ? opts.spaceDelta : ADOPT_DEFAULTS.spaceDelta
   };
   var out = { proposals: [], alreadyBound: 0, styled: 0, unmatched: [], scanned: 0,
-              exact: 0, near: 0, reasons: [], unit: 'binding' };
+              exact: 0, near: 0, preservedAsymmetric: 0, reasons: [], unit: 'binding' };
   if (!roots || !roots.length) { out.reasons.push('Select a frame first.'); return out; }
 
   var cols = await getUiKitCollections(false);
@@ -5816,13 +5872,45 @@ async function surveyAdoption(roots, opts) {
 
     // ── spacing ──────────────────────────────────────────────────────────
     if (isAutoLayoutFrame(node) || typeof node.cornerRadius === 'number') {
-      for (var fI = 0; fI < ADOPT_SPACE_FIELDS.length; fI++) {
-        var field = ADOPT_SPACE_FIELDS[fI];
+      // The four paddings are one decision. A box padded 24/23/21/24 — an
+      // optical adjustment around a number — had the 23 snapped to 24 and
+      // the 21 left alone, because only one of them fell inside tolerance.
+      // The result moves on screen. Either the whole box goes to the scale
+      // or none of it does.
+      var padFields = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom'];
+      var padVals = [], padMatches = [], padSkip = false, padBound = 0;
+      for (var pI = 0; pI < padFields.length; pI++) {
+        var pf = padFields[pI], pv = node[pf];
+        if (typeof pv !== 'number' || !isFinite(pv)) continue;
+        if (node.boundVariables && node.boundVariables[pf]) { padBound++; continue; }
+        if (pv === 0) continue;
+        var pm = nearestNumberToken(pools.spaces, pv, tol.spaceDelta);
+        if (!pm) { padSkip = true; noteUnmatched(pv + 'px ' + pf); continue; }
+        padVals.push(pv);
+        padMatches.push({ field: pf, match: pm, value: pv });
+      }
+      out.alreadyBound += padBound;
+      // If one side cannot reach the scale, snapping the others would skew
+      // the box. Asymmetry that is already exact is fine — nothing moves.
+      var allExact = padMatches.every(function (x) { return x.match.exact; });
+      if (padSkip && !allExact) {
+        out.preservedAsymmetric = (out.preservedAsymmetric || 0) + padMatches.length;
+      } else {
+        for (var pm2 = 0; pm2 < padMatches.length; pm2++) {
+          add(node, 'space', padMatches[pm2].field, padMatches[pm2].match,
+              padMatches[pm2].value + 'px');
+        }
+      }
+
+      var rest = ['itemSpacing', 'counterAxisSpacing', 'cornerRadius'];
+      for (var fI = 0; fI < rest.length; fI++) {
+        var field = rest[fI];
         var cur = node[field];
         if (typeof cur !== 'number' || !isFinite(cur)) continue;
         if (node.boundVariables && node.boundVariables[field]) { out.alreadyBound++; continue; }
         if (cur === 0) continue;   // zero is a choice, not a token to snap
-        var sm = nearestNumberToken(pools.spaces, cur, tol.spaceDelta);
+        var rolePool = field === 'cornerRadius' ? pools.radii : pools.spaces;
+        var sm = nearestNumberToken(rolePool, cur, tol.spaceDelta);
         if (!sm) { noteUnmatched(cur + 'px ' + field); continue; }
         add(node, 'space', field, sm, cur + 'px');
       }
@@ -6045,46 +6133,137 @@ function byCountDesc(a, b) { return b.count - a.count || a.value - b.value; }
 // Where the content sits inside the frame. An auto-layout page states it as
 // padding; a hand-placed one only implies it, as the inset repeated by every
 // band of content that is narrower than the page.
-function measureMargin(root) {
+// A design puts its content in a column, and the page tells you where by
+// repeating that column's inset. Two things wrecked this on real files: a
+// layer parked outside the frame (x = -638) produced an inset that is not a
+// margin at all, and a single occurrence was trusted as readily as fourteen.
+//
+// Returns every container width the design actually uses, strongest first,
+// because one page legitimately has more than one — a 1248 column for most
+// sections and a 928 one for narrow prose.
+function measureContainers(root) {
+  var w = root.width || 0;
+  var out = { containers: [], margin: 0, confidence: 0, outOfBounds: 0, fromPadding: false };
+  if (!w) return out;
+
   if (root.layoutMode && root.layoutMode !== 'NONE') {
     var pad = Math.round(root.paddingLeft || 0);
-    if (pad > 0) return pad;
+    if (pad > 0) {
+      out.margin = pad;
+      out.fromPadding = true;
+      out.confidence = 1;
+      out.containers.push({ width: Math.max(0, Math.round(w - 2 * pad)), margin: pad, count: 1 });
+      return out;
+    }
   }
-  var w = root.width || 0;
-  if (!w) return 0;
-  var insets = [];
+
+  var seen = {};
   (function walk(node, depth) {
     if (!node || depth > 3) return;
     var kids = node.children || [];
     for (var i = 0; i < kids.length; i++) {
       var k = kids[i];
       if (k.visible === false) continue;
-      var kw = k.width || 0;
-      // Only bands that look like a content column: clearly narrower than
-      // the page, but not a button or an icon.
-      if (kw > w * 0.5 && kw < w * 0.97) insets.push((w - kw) / 2);
+      var kw = k.width || 0, kx = k.x;
+      // Anything hanging outside the frame is scenery — a rotated
+      // background, a masked ellipse — and its inset is meaningless.
+      if (typeof kx === 'number' && (kx < -1 || kx + kw > w + 1)) { out.outOfBounds++; continue; }
+      // A content column: clearly narrower than the page, but not a button.
+      if (kw > w * 0.5 && kw < w * 0.97) {
+        var key = Math.round(kw);
+        if (!seen[key]) seen[key] = { width: key, count: 0, insets: [] };
+        seen[key].count++;
+        // The inset is read from the width, not from x: auto layout computes
+        // a child's position, so x is 0 on exactly the centred containers
+        // this is looking for. Every container across fifteen real designs
+        // was centred, which is what makes this safe; x is used only to
+        // throw out the layers that sit outside the frame entirely.
+        seen[key].insets.push((w - kw) / 2);
+      }
       walk(k, depth + 1);
     }
   })(root, 0);
-  if (!insets.length) return 0;
-  var clustered = clusterNumbers(insets, 2).sort(byCountDesc);
-  return Math.max(0, clustered[0].value);
+
+  var list = [];
+  for (var key in seen) {
+    var rec = seen[key];
+    var clustered = clusterNumbers(rec.insets, 2).sort(byCountDesc);
+    list.push({ width: rec.width, margin: Math.max(0, clustered[0].value), count: rec.count });
+  }
+  list.sort(function (a2, b2) { return b2.count - a2.count || b2.width - a2.width; });
+  // Merge widths within 2px of a stronger one — 1440 and 1441 are one column.
+  var merged = [];
+  for (var li = 0; li < list.length; li++) {
+    var at = null;
+    for (var m = 0; m < merged.length; m++) {
+      if (Math.abs(merged[m].width - list[li].width) <= 2) { at = merged[m]; break; }
+    }
+    if (at) at.count += list[li].count;
+    else merged.push(list[li]);
+  }
+  out.containers = merged;
+  if (merged.length) {
+    out.margin = merged[0].margin;
+    out.confidence = merged[0].count;
+  }
+  return out;
+}
+
+// Kept as the one-number answer the rest of the code asks for.
+function measureMargin(root) {
+  return measureContainers(root).margin;
 }
 
 // Every gap and pad the design repeats, strongest first.
+// Anything under this is a hairline, an optical nudge or a rounding
+// artifact — a 1px padding holding a border, a 0.5px rule — not a step on
+// anybody's spacing scale.
+var MIN_SPACING_STEP = 4;
+
 function measureSpacing(nodes) {
-  var vals = [];
+  var vals = [], autoLayout = 0, tiny = 0;
   for (var i = 0; i < nodes.length; i++) {
     var n = nodes[i];
+    if (isAutoLayoutFrame(n)) autoLayout++;
     var fields = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom',
                   'itemSpacing', 'counterAxisSpacing'];
     for (var f = 0; f < fields.length; f++) {
       var v = n[fields[f]];
       // Zero is the absence of a decision, not a step on the scale.
-      if (typeof v === 'number' && isFinite(v) && v > 0 && v <= 400) vals.push(v);
+      if (typeof v !== 'number' || !isFinite(v) || v <= 0 || v > 400) continue;
+      if (v < MIN_SPACING_STEP) { tiny++; continue; }
+      vals.push(v);
     }
   }
-  return clusterNumbers(vals, 1).sort(byCountDesc);
+  var out = clusterNumbers(vals, 1).sort(byCountDesc);
+  out.autoLayoutNodes = autoLayout;
+  out.tinyIgnored = tiny;
+  return out;
+}
+
+// A design that was laid out by hand has no padding or itemSpacing to read:
+// every gap is implied by where things sit. Measure the vertical gaps
+// between siblings instead, so an absolutely positioned page still yields a
+// spacing ladder rather than an empty one.
+function measureSpacingFromGaps(root) {
+  var gaps = [];
+  (function walk(node, depth) {
+    if (!node || depth > 6) return;
+    var kids = (node.children || []).filter(function (k) {
+      return k.visible !== false && typeof k.y === 'number' && typeof k.height === 'number';
+    });
+    if (kids.length >= 2 && !isAutoLayoutFrame(node)) {
+      var sorted = kids.slice().sort(function (a2, b2) { return a2.y - b2.y; });
+      for (var i = 1; i < sorted.length; i++) {
+        var prev = sorted[i - 1];
+        var gap = sorted[i].y - (prev.y + prev.height);
+        // Overlapping or stacked-on-top siblings say nothing about spacing.
+        if (gap >= MIN_SPACING_STEP && gap <= 400) gaps.push(gap);
+      }
+    }
+    for (var c = 0; c < kids.length; c++) walk(kids[c], depth + 1);
+  })(root, 0);
+  return clusterNumbers(gaps, 2).sort(byCountDesc);
 }
 
 function measureRadii(nodes) {
@@ -6101,19 +6280,35 @@ function measureRadii(nodes) {
 // ordering is the whole point — a design's heading levels are a ranking, and
 // measuring recovers the ranking even when the file never named it.
 var MEASURED_TYPE_BELOW = ['body-sm', 'caption'];
-function measureTypeSizes(nodes) {
-  var vals = [];
+// Read sizes from the styled RUNS, not from node.fontSize. A headline built
+// as one text node with per-character overrides reports 0 or figma.mixed at
+// node level — in a real file that was the 88px hero, the largest type on
+// the page, contributing nothing and shifting every heading down a rank.
+// textTypeRuns() already reads getStyledTextSegments for the survey.
+async function measureTypeSizes(nodes) {
+  var vals = [], mixedRuns = 0, unreadable = 0;
   for (var i = 0; i < nodes.length; i++) {
     var n = nodes[i];
     if (n.type !== 'TEXT') continue;
-    var s = n.fontSize;
-    if (typeof s !== 'number' || !isFinite(s) || s <= 0) continue;
-    // Weight by how much text is actually set at that size, so one giant
-    // word does not outrank a page of body copy.
-    var weight = Math.max(1, Math.min(40, String(n.characters || '').length));
-    for (var w = 0; w < weight; w++) vals.push(s);
+    var runs = [];
+    try { runs = await textTypeRuns(n); } catch (e) { runs = []; }
+    if (!runs.length) { unreadable++; continue; }
+    if (runs.length > 1) mixedRuns++;
+    for (var r = 0; r < runs.length; r++) {
+      var spec = runs[r].spec || {};
+      var s = spec.fontSize;
+      if (typeof s !== 'number' || !isFinite(s) || s <= 0) continue;
+      // Weight by how much text is actually set at that size, so one giant
+      // word does not outrank a page of body copy. A run knows its own
+      // extent, so the weight is the run's length rather than the layer's.
+      var chars = runs[r].range
+        ? Math.max(1, runs[r].range.end - runs[r].range.start)
+        : String(n.characters || '').length;
+      var weight = Math.max(1, Math.min(40, chars));
+      for (var w = 0; w < weight; w++) vals.push(s);
+    }
   }
-  if (!vals.length) return { body: null, steps: [] };
+  if (!vals.length) return { body: null, steps: [], mixedRuns: mixedRuns, unreadable: unreadable };
 
   var clusters = clusterNumbers(vals, 0.6);
   var ranked = clusters.slice().sort(byCountDesc);
@@ -6132,7 +6327,7 @@ function measureTypeSizes(nodes) {
   for (var b = 0; b < below.length && b < MEASURED_TYPE_BELOW.length; b++) {
     steps.push({ name: MEASURED_TYPE_BELOW[b], size: below[b].value, count: below[b].count });
   }
-  return { body: body, steps: steps };
+  return { body: body, steps: steps, mixedRuns: mixedRuns, unreadable: unreadable };
 }
 
 // Solid fills and strokes, grouped by how different they look rather than by
@@ -6243,25 +6438,45 @@ function measureControls(nodes) {
 // How many equal columns the page puts side by side, and the gap between
 // them. This is the one measurement that decides what a narrower canvas has
 // to do, because columns are what stop fitting first.
+// Which columns the page puts side by side, and the gap between them.
+//
+// The first version asked only "are these children the same width", which on
+// a real page matched a heading stacked above a paragraph — two equal boxes,
+// one above the other — and returned 2 columns for every design in a
+// fifteen-design file. Three tests fix it: the children must share a
+// horizontal band, each must be a FRACTION of its parent rather than the
+// whole of it, and together they must plausibly fill it.
 function measureGrid(root) {
+  var pageW = root.width || 0;
   var rows = [];
   (function walk(node, depth) {
-    if (!node || depth > 6) return;
-    var kids = (node.children || []).filter(function (k) { return k.visible !== false && k.width; });
-    if (kids.length >= 2) {
+    if (!node || depth > 8) return;
+    var pw = node.width || 0;
+    var kids = (node.children || []).filter(function (k) {
+      return k.visible !== false && k.width && k.height;
+    });
+    if (kids.length >= 2 && pw > pageW * 0.25) {
       var w = kids[0].width, equal = true;
       for (var i = 1; i < kids.length; i++) {
         if (Math.abs(kids[i].width - w) > w * 0.12) { equal = false; break; }
       }
-      // A row of equal things only counts as a grid if it actually spans
-      // something — two icons side by side are not a column layout.
-      if (equal && kids.length * w > (root.width || 0) * 0.4) {
+      var minH = kids[0].height, maxY = kids[0].y || 0, minY = kids[0].y || 0;
+      for (var j = 0; j < kids.length; j++) {
+        var ky = typeof kids[j].y === 'number' ? kids[j].y : 0;
+        if (ky > maxY) maxY = ky;
+        if (ky < minY) minY = ky;
+        if (kids[j].height < minH) minH = kids[j].height;
+      }
+      var sideBySide = (maxY - minY) < Math.max(2, minH * 0.5);
+      var aFraction = w < pw * 0.9;
+      var fillsParent = kids.length * w > pw * 0.75;
+      if (equal && sideBySide && aFraction && fillsParent) {
         rows.push({ cols: kids.length, gutter: Math.round(node.itemSpacing || 0) });
       }
     }
     for (var c = 0; c < kids.length; c++) walk(kids[c], depth + 1);
   })(root, 0);
-  if (!rows.length) return { columns: null, gutter: null, rows: 0 };
+  if (!rows.length) return { columns: null, gutter: null, rows: 0, patterns: [] };
 
   var byCols = {};
   for (var r = 0; r < rows.length; r++) {
@@ -6270,10 +6485,24 @@ function measureGrid(root) {
     byCols[k].count++;
     if (rows[r].gutter > 0) byCols[k].gutters.push(rows[r].gutter);
   }
+  var patterns = [];
+  for (var key in byCols) patterns.push(byCols[key]);
+  patterns.sort(function (a2, b2) { return b2.cols - a2.cols; });
+
+  // The densest layout that happens more than once is the one responsive
+  // behaviour turns on: a four-card row is what has to become two then one.
+  // A single occurrence is an anecdote, so it only wins if nothing repeats.
   var best = null;
-  for (var key in byCols) if (!best || byCols[key].count > best.count) best = byCols[key];
+  for (var p = 0; p < patterns.length; p++) {
+    if (patterns[p].count >= 2) { best = patterns[p]; break; }
+  }
+  if (!best) best = patterns[0];
   var gut = best.gutters.length ? clusterNumbers(best.gutters, 2).sort(byCountDesc)[0].value : null;
-  return { columns: best.cols, gutter: gut, rows: rows.length };
+  return {
+    columns: best.cols, gutter: gut, rows: rows.length,
+    repeated: best.count >= 2,
+    patterns: patterns.map(function (x) { return { cols: x.cols, count: x.count }; })
+  };
 }
 
 // The vertical rhythm between bands of the page — the spacing that has to
@@ -6321,7 +6550,7 @@ function narrowerFactor(cfg, bpIndex) {
   return Math.max(0, Math.min(1, (widest - w) / (widest - narrowest)));
 }
 
-function measureDesign(root, cfg) {
+async function measureDesign(root, cfg) {
   var out = { rows: [], measured: null, reasons: [] };
   if (!root) { out.reasons.push('Select the frame to build from.'); return out; }
 
@@ -6329,10 +6558,18 @@ function measureDesign(root, cfg) {
   var bps = cfg.breakpoints;
   var names = breakpointNames(cfg);
 
-  var margin = measureMargin(root);
+  var box = measureContainers(root);
+  var margin = box.margin;
   var spacing = measureSpacing(nodes);
+  // A hand-placed page has no padding to read. Fall back to the gaps between
+  // siblings rather than reporting a design with no spacing in it.
+  var spacingFromGaps = false;
+  if (spacing.length < 2) {
+    var implied = measureSpacingFromGaps(root);
+    if (implied.length > spacing.length) { spacing = implied; spacingFromGaps = true; }
+  }
   var radii = measureRadii(nodes);
-  var type = measureTypeSizes(nodes);
+  var type = await measureTypeSizes(nodes);
   var colours = measureColours(nodes);
   var leading = measureLeading(nodes);
   var strokes = measureStrokeWeights(nodes);
@@ -6355,6 +6592,9 @@ function measureDesign(root, cfg) {
     canvasWidth: Math.round(root.width || 0),
     frameName: String(root.name || ''),
     margin: margin,
+    marginConfidence: box.confidence,
+    containers: box.containers.slice(0, 4),
+    spacingFromGaps: spacingFromGaps,
     spacing: pairs(spacing, 10),
     radii: pairs(radii, 6),
     type: type.steps.slice(),
@@ -6415,15 +6655,25 @@ function measureDesign(root, cfg) {
     out.rows.push({ name: 'grid/margin', tier: 'responsive', scopes: SPACING_SCOPES, values: mv });
   }
   var canvasW = Math.round(root.width || 0);
-  if (canvasW > 0) {
-    var cv = {};
-    for (var c2 = 0; c2 < bps.length; c2++) {
-      var bw = bps[c2].width || canvasW;
-      var sideMargin = (c2 === 0) ? margin : Math.max(16, Math.round(margin * (1 - 0.8 * narrowerFactor(cfg, c2))));
-      cv[names[c2]] = Math.max(0, bw - 2 * sideMargin);
+  // One page legitimately has more than one column width — a wide one for
+  // most sections and a narrow one for prose. Emitting a single
+  // container/max threw the others away.
+  var CONTAINER_NAMES = ['container/max', 'container/narrow', 'container/wide', 'container/alt'];
+  if (canvasW > 0 && box.containers.length) {
+    for (var ci = 0; ci < box.containers.length && ci < CONTAINER_NAMES.length; ci++) {
+      var cont = box.containers[ci];
+      // Only a container the design repeats earns a token of its own.
+      if (ci > 0 && cont.count < 2) continue;
+      var cv = {};
+      for (var c2 = 0; c2 < bps.length; c2++) {
+        var bw = bps[c2].width || canvasW;
+        var side = (c2 === 0) ? cont.margin
+          : Math.max(16, Math.round(cont.margin * (1 - 0.8 * narrowerFactor(cfg, c2))));
+        cv[names[c2]] = Math.max(0, Math.min(cont.width, bw - 2 * side));
+      }
+      out.rows.push({ name: CONTAINER_NAMES[ci], tier: 'responsive',
+                      scopes: ['WIDTH_HEIGHT'], values: cv });
     }
-    out.rows.push({ name: 'container/max', tier: 'responsive',
-                    scopes: ['WIDTH_HEIGHT'], values: cv });
   }
 
   // ── leading, borders, icons, opacity: the small scales ─────────────────
@@ -6475,7 +6725,7 @@ function measureDesign(root, cfg) {
   }
 
   // ── the grid: what actually stops fitting ──────────────────────────────
-  if (grid.columns && grid.columns > 1) {
+  if (grid.columns && grid.columns > 1 && grid.repeated) {
     var gv = {};
     for (var gc = 0; gc < bps.length; gc++) {
       var gf = narrowerFactor(cfg, gc);
@@ -6527,6 +6777,35 @@ function measureDesign(root, cfg) {
     var fam = String(out.rows[fr].name).split('/')[0];
     byFamily[fam] = (byFamily[fam] || 0) + 1;
   }
+  // Everything the measurement could not turn into a token, counted rather
+  // than silently dropped: a claim about coverage has to show its gaps.
+  var gradients = 0, absolute = 0, images = 0;
+  for (var cn = 0; cn < nodes.length; cn++) {
+    var node = nodes[cn];
+    var f = node.fills;
+    if (Array.isArray(f)) {
+      for (var fi = 0; fi < f.length; fi++) {
+        if (!f[fi] || f[fi].visible === false) continue;
+        if (String(f[fi].type || '').indexOf('GRADIENT') === 0) gradients++;
+        else if (f[fi].type === 'IMAGE') images++;
+      }
+    }
+    if (node.children && node.children.length && !isAutoLayoutFrame(node)) absolute++;
+  }
+  out.measured.coverage = {
+    gradientFills: gradients,
+    imageFills: images,
+    absoluteContainers: absolute,
+    autoLayoutContainers: spacing.autoLayoutNodes || 0,
+    mixedRunText: type.mixedRuns || 0,
+    unreadableText: type.unreadable || 0,
+    tinyValuesIgnored: spacing.tinyIgnored || 0,
+    outOfBoundsChildren: box.outOfBounds,
+    spacingFromGaps: spacingFromGaps,
+    gridRepeated: !!grid.repeated,
+    marginConfidence: box.confidence
+  };
+
   out.measured.counts = {
     layers: nodes.length,
     textLayers: texts,
@@ -6615,6 +6894,7 @@ async function buildFromExistingFile(opts) {
   result.styleChoice = hasStyles ? choice : 'none';
 
   var cols = await getUiKitCollections(true);
+  var names = breakpointNames(cfg);
 
   async function tokenNames() {
     var seen = {};
@@ -6653,12 +6933,50 @@ async function buildFromExistingFile(opts) {
   for (var fn in afterAdopt) if (!beforeAdopt[fn]) fromStyles[fn] = true;
 
   // ── 2 ── what the design itself measures to ────────────────────────────
-  var m = measureDesign(root, cfg);
+  var m = await measureDesign(root, cfg);
   Array.prototype.push.apply(result.reasons, m.reasons);
   result.measured = m.measured;
 
   // A name adopted from a style wins: it was chosen, not inferred.
   var rows = m.rows.filter(function (r) { return !fromStyles[r.name]; });
+
+  // ── reuse before create ────────────────────────────────────────────────
+  // The file may already have a variable for a value this design uses. On a
+  // file with "Container Margin: 80" and "Space Between/LG: 32", measuring
+  // and creating would mint space/100…space/400 beside them — two systems
+  // saying the same thing. Anything already covered by a variable of a
+  // compatible role is left to that variable.
+  var kitModes = await ensureModes(cols.responsive, breakpointNames(cfg));
+  var widestMode = kitModes.nameToModeId[names[0]];
+  var pools = await adoptionPools(cols, widestMode);
+  function poolFor(rowName) {
+    var nm = String(rowName);
+    if (nm.indexOf('text/size/') === 0) return pools.fonts;
+    if (nm.indexOf('text/leading/') === 0) return pools.leadings;
+    if (nm.indexOf('radius/') === 0) return pools.radii;
+    if (nm.indexOf('container/') === 0 || nm.indexOf('icon/') === 0 ||
+        nm.indexOf('size/') === 0) return pools.sizes;
+    if (nm.indexOf('space/') === 0 || nm.indexOf('grid/margin') === 0 ||
+        nm.indexOf('grid/gutter') === 0) return pools.spaces;
+    return null;
+  }
+  result.reused = [];
+  rows = rows.filter(function (r) {
+    if (r.type === 'COLOR') return true;            // colour reuse is the survey's job
+    var pool = poolFor(r.name);
+    if (!pool || !pool.length) return true;
+    var val = r.tier === 'primitive' ? r.values[UIKIT_VALUE_KEY] : r.values[names[0]];
+    if (typeof val !== 'number') return true;
+    var hit = null;
+    for (var i = 0; i < pool.length; i++) {
+      // Only an exact match stands in for a measured value. A near one would
+      // be the plugin deciding the design meant something it did not say.
+      if (!pool[i].kit && Math.abs(pool[i].value - val) < 0.5) { hit = pool[i]; break; }
+    }
+    if (!hit) return true;
+    result.reused.push({ measured: r.name, value: val, existing: hit.name });
+    return false;
+  });
 
   // ── 3 ── write what was measured, and only what was measured ───────────
   // The preset scale used to fill in every family the design was silent
@@ -8764,6 +9082,25 @@ async function handleUiKitMessage(msg) {
         // Say what the design never used, rather than inventing it.
         if (r.notMeasured && r.notMeasured.length) {
           ff.push('nothing found for ' + r.notMeasured.join(', ') + ', so none was invented');
+        }
+        // What the file already said, kept rather than said again.
+        if (r.reused && r.reused.length) {
+          ff.push(many(r.reused.length, 'value') + ' already covered by this file\u2019s own ' +
+                  'variables (' + r.reused.slice(0, 3).map(function (x) { return x.existing; }).join(', ') +
+                  (r.reused.length > 3 ? ', \u2026' : '') + ')');
+        }
+        // And what could not be tokenised, so coverage is never implied.
+        var cov = md.coverage || {};
+        var gaps = [];
+        if (cov.gradientFills) gaps.push(many(cov.gradientFills, 'gradient'));
+        if (cov.mixedRunText) gaps.push(many(cov.mixedRunText, 'mixed-style text layer'));
+        if (cov.absoluteContainers) gaps.push(many(cov.absoluteContainers, 'hand-placed container'));
+        if (cov.outOfBoundsChildren) gaps.push(many(cov.outOfBoundsChildren, 'layer') + ' outside the frame');
+        if (cov.tinyValuesIgnored) gaps.push(many(cov.tinyValuesIgnored, 'sub-4px value'));
+        if (gaps.length) ff.push('not tokenised: ' + gaps.join(', '));
+        if (cov.spacingFromGaps) ff.push('spacing read from the gaps between layers, since this frame has no auto layout');
+        if (r.survey && r.survey.preservedAsymmetric) {
+          ff.push(many(r.survey.preservedAsymmetric, 'padding') + ' left as it was, to keep a box from shifting');
         }
         if (r.applied && r.applied.bound) {
           ff.push(r.applied.bound + ' bound back into the design' +

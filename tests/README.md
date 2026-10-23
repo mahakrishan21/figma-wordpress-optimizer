@@ -13,6 +13,7 @@ no npm install, no network, nothing to keep up to date.
 | `uikittests.js` | Mode plumbing, UI Kit collections, breakpoint config, the scale generator and its aliasing, binding, breakpoint preview, the canvas parser, and the message handler. |
 | `dupgonetests.js` | Near-duplicate detection and merging across styles and variables. |
 | `fromfiletests.js` | Building a system out of a design that already exists: measuring one selected frame — its canvas width, margins, spacing ladder, heading ranking and colours — keeping any styles the file already names, binding it all back, and then generating the Desktop/Tablet/Mobile versions. |
+| `realfilestests.js` | The four sampled real designs as regression cases — reusing a file's own variables instead of duplicating them, two container widths in one page, H5/H6 below body with mixed line-height units, and typography recovered from styled runs where the node reports size 0. |
 | `workflowtests.js` | The two workflows walked end to end in the order the spec numbers them — Build from Scratch and Build from an Existing File — so a missing step fails by name rather than by symptom. |
 | `qatests.js` | Every design-system message driven through `figma.ui.onmessage`, the way the UI sends them — so routing, the `requestId` the UI correlates on, the undo boundary and the summary line are covered too. |
 | `inbuilttests.js` | The features that shipped before the design-system tab: the audit's rules, ignoring and clearing issues, each automated fix, the copy collector, focus and the window clamp. |
