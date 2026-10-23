@@ -6564,7 +6564,7 @@ function measureLeading(nodes) {
 // The percentage is kept alongside for the report, because that is what the
 // designer typed and what they will recognise.
 async function measureLetterSpacing(nodes) {
-  var vals = [], pixelBased = 0, percentBased = 0, byPx = {};
+  var vals = [], pixelBased = 0, percentBased = 0, byPx = {}, bySize = {};
   for (var i = 0; i < nodes.length; i++) {
     var n = nodes[i];
     if (n.type !== 'TEXT') continue;
@@ -6585,6 +6585,12 @@ async function measureLetterSpacing(nodes) {
       if (!byPx[key]) byPx[key] = { pcts: [], sizes: {} };
       byPx[key].pcts.push(Math.round(pct * 10) / 10);
       byPx[key].sizes[Math.round(size)] = true;
+      // Tracking belongs to the size it was set at — that is what makes it
+      // expressible as a responsive token rather than a single pixel value.
+      var sKey = String(Math.round(size));
+      if (!bySize[sKey]) bySize[sKey] = { size: Math.round(size), pcts: [], count: 0 };
+      bySize[sKey].pcts.push(Math.round(pct * 10) / 10);
+      bySize[sKey].count++;
     }
   }
   var out = clusterNumbers(vals, 0.25, 2).sort(byCountDesc);
@@ -6597,9 +6603,40 @@ async function measureLetterSpacing(nodes) {
     out[c].percent = rec.pcts.length ? rec.pcts[0] : null;
     out[c].sizes = Object.keys(rec.sizes).map(Number).sort(function (a, b) { return a - b; });
   }
+  // The dominant tracking at each font size, as a percentage.
+  var dominant = {};
+  for (var sk in bySize) {
+    var rec = bySize[sk];
+    var tally = {};
+    for (var pi = 0; pi < rec.pcts.length; pi++) {
+      var pk = String(rec.pcts[pi]);
+      tally[pk] = (tally[pk] || 0) + 1;
+    }
+    var bestPct = null, bestN = 0;
+    for (var tk in tally) if (tally[tk] > bestN) { bestN = tally[tk]; bestPct = Number(tk); }
+    dominant[rec.size] = { percent: bestPct, count: bestN };
+  }
+  out.bySize = dominant;
   out.pixelBased = pixelBased;
   out.percentBased = percentBased;
   return out;
+}
+
+// The tracking a design uses at a given font size, if it is consistent
+// enough to be worth carrying. Sizes come from clustering, so an exact
+// match is too strict — 12 and 12.0001 are the same step.
+function trackingForSize(tracking, size) {
+  if (!tracking || !tracking.bySize) return null;
+  var best = null, bestGap = Infinity;
+  for (var k in tracking.bySize) {
+    var n = Number(k);
+    var gap = Math.abs(n - size);
+    if (gap <= Math.max(0.6, size * 0.05) && gap < bestGap) {
+      bestGap = gap;
+      best = tracking.bySize[k];
+    }
+  }
+  return (best && best.percent) ? best : null;
 }
 
 function measureStrokeWeights(nodes) {
@@ -6867,15 +6904,37 @@ async function measureDesign(root, cfg) {
   // ── type, h1…h6 as the design ranks them ───────────────────────────────
   for (var t = 0; t < type.steps.length; t++) {
     var step = type.steps[t];
-    var tv = {};
+    var tv = {}, sizeAt = {};
     for (var b = 0; b < bps.length; b++) {
       var f = narrowerFactor(cfg, b);
       var shrink = 1 - (0.28 * f);
       var floor = step.size > 20 ? 18 : 14;
-      tv[names[b]] = b === 0 ? step.size : Math.max(floor, Math.round(step.size * shrink));
+      var sz = b === 0 ? step.size : Math.max(floor, Math.round(step.size * shrink));
+      tv[names[b]] = sz;
+      sizeAt[names[b]] = sz;
     }
     out.rows.push({ name: 'text/size/' + step.name, tier: 'responsive',
                     scopes: ['FONT_SIZE'], values: tv });
+
+    // Tracking that belongs to this step, carried the only way Figma allows.
+    // A letter-spacing variable is read in pixels, and the design states its
+    // tracking as a percentage of the size — so the pixel value has to be
+    // worked out per breakpoint from THAT breakpoint's size. 20% stays 20%
+    // at every width while the number in the variable changes with it, which
+    // is what a single pixel token could never do.
+    var tr = trackingForSize(tracking, step.size);
+    if (tr) {
+      var trv = {}, anyNonZero = false;
+      for (var tb = 0; tb < bps.length; tb++) {
+        var px = Math.round((tr.percent / 100) * sizeAt[names[tb]] * 100) / 100;
+        trv[names[tb]] = px;
+        if (px !== 0) anyNonZero = true;
+      }
+      if (anyNonZero) {
+        out.rows.push({ name: 'text/tracking/' + step.name, tier: 'responsive',
+                        scopes: ['LETTER_SPACING'], values: trv, percent: tr.percent });
+      }
+    }
   }
 
   // ── the page's own measurements: margin and the content column ─────────
@@ -6917,26 +6976,9 @@ async function measureDesign(root, cfg) {
     lv[UIKIT_VALUE_KEY] = lsorted[li].value;
     out.rows.push({ name: 'text/leading/' + LNAMES[li], tier: 'primitive', scopes: ['LINE_HEIGHT'], values: lv });
   }
-  // Tracking is stored in PIXELS, because that is the only unit Figma reads
-  // a bound letterSpacing variable in. The scope is LETTER_SPACING so it can
-  // never be mistaken for a length.
-  var tsorted = tracking.slice(0, 3).sort(function (a2, b2) { return a2.value - b2.value; });
-  for (var ti = 0; ti < tsorted.length; ti++) {
-    var cluster = tsorted[ti];
-    // A pixel tracking is only right at the size it was measured at. Where
-    // one tracking is shared across several sizes there is no single pixel
-    // value that suits them all, so it is reported rather than tokenised.
-    if (cluster.sizes && cluster.sizes.length > 1) {
-      out.reasons.push(cluster.percent + '% tracking appears at ' + cluster.sizes.join('px, ') +
-        'px. Figma reads a letter-spacing variable in pixels, so one token cannot serve them all \u2014 ' +
-        'left as it is.');
-      continue;
-    }
-    var tv = {};
-    tv[UIKIT_VALUE_KEY] = cluster.value;
-    out.rows.push({ name: 'text/tracking/' + (cluster.value < 0 ? 'tight' : (ti === 0 ? 'normal' : 'wide' + ti)),
-                    tier: 'primitive', scopes: ['LETTER_SPACING'], values: tv });
-  }
+  // Tracking is emitted alongside the type step it belongs to, above —
+  // there is no free-standing tracking token, because a pixel value only
+  // means anything next to the size it was measured against.
 
   var bsorted = strokes.slice(0, 3).map(function (c) { return c.value; }).sort(function (a2, b2) { return a2 - b2; });
   var BNAMES = ['hairline', 'default', 'thick'];

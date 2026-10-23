@@ -337,31 +337,63 @@ async function run() {
   eq(ls.pixelBased, 2, 'tracking: the pixel-based ones are counted');
   eq(ls.percentBased, 1, 'tracking: and so are the percent-based ones');
 
-  // and a token is only emitted when one pixel value suits every size using it
+  // ── tracking rides with its type step, and is responsive ─────────────
+  // A letter-spacing variable is pixels, and the design states tracking as a
+  // percentage of the size. So the pixel value is worked out per breakpoint
+  // from that breakpoint's own font size: the percentage holds at every
+  // width while the number in the variable moves with it.
   var lsCfg = { preset: 'custom', breakpoints: [
     { name: 'Desktop', width: 1440 }, { name: 'Tablet', width: 768 }, { name: 'Mobile', width: 375 }] };
   var lsMeasured = await measureDesign(lsPage, lsCfg);
   var trackRows = lsMeasured.rows.filter(function (r) { return r.name.indexOf('text/tracking/') === 0; });
+  ok(trackRows.length > 0, 'tracking: tokens are emitted  (' + trackRows.map(function (r) { return r.name; }).join(', ') + ')');
   trackRows.forEach(function (r) {
-    var val = r.values[UIKIT_VALUE_KEY];
-    ok(Math.abs(val) < 12, 'tracking: every token is a plausible pixel tracking  (' + r.name + '=' + val + ')');
+    eq(r.tier, 'responsive', 'tracking: ' + r.name + ' is responsive, not a single pixel value');
+    eq(r.scopes[0], 'LETTER_SPACING', 'tracking: ' + r.name + ' is scoped to letter spacing');
+    var sizeRow = lsMeasured.rows.filter(function (x) {
+      return x.name === r.name.replace('text/tracking/', 'text/size/');
+    })[0];
+    ok(!!sizeRow, 'tracking: ' + r.name + ' has the type step it belongs to');
+    if (sizeRow) {
+      // the pixel value at each width is the percentage of THAT width's size
+      ['Desktop', 'Tablet', 'Mobile'].forEach(function (bp) {
+        var want = Math.round((r.percent / 100) * sizeRow.values[bp] * 100) / 100;
+        eq(r.values[bp], want,
+           'tracking: ' + r.name + ' at ' + bp + ' is ' + r.percent + '% of ' + sizeRow.values[bp] + 'px');
+      });
+      // Tracking follows its size in whichever direction the size went. A
+      // small step is floored UP on mobile for readability, and its tracking
+      // grows with it — which is right, not a bug.
+      var sizeGrew = sizeRow.values.Mobile > sizeRow.values.Desktop;
+      var trackGrew = Math.abs(r.values.Mobile) > Math.abs(r.values.Desktop);
+      eq(trackGrew, sizeGrew,
+         'tracking: ' + r.name + ' moves with its type  (size ' + sizeRow.values.Desktop + '->' +
+         sizeRow.values.Mobile + ', tracking ' + r.values.Desktop + '->' + r.values.Mobile + ')');
+    }
   });
 
-  // the same 20% used at two different sizes cannot share one pixel token
+  // the same 20% at two sizes now gets a token each, both correct
   freshR();
-  var sharedPage = mkFrame({ name: 'Shared tracking', width: 1440, height: 600 });
+  var sharedPage = mkFrame({ name: 'Shared tracking', width: 1440, height: 900 });
   figma.currentPage.appendChild(sharedPage);
-  var small = mkText('SMALL EYEBROW', 'S');
-  small.fontSize = 12; small.letterSpacing = { unit: 'PERCENT', value: 20 };
-  sharedPage.appendChild(small);
+  for (var sm = 0; sm < 3; sm++) {
+    var small = mkText('SMALL EYEBROW TEXT', 'S' + sm);
+    small.fontSize = 12; small.letterSpacing = { unit: 'PERCENT', value: 20 };
+    sharedPage.appendChild(small);
+  }
   var big = mkText('BIG EYEBROW', 'B');
   big.fontSize = 48; big.letterSpacing = { unit: 'PERCENT', value: 20 };
   sharedPage.appendChild(big);
   var sharedMeasured = await measureDesign(sharedPage, lsCfg);
   var sharedRows = sharedMeasured.rows.filter(function (r) { return r.name.indexOf('text/tracking/') === 0; });
-  var pxValues = sharedRows.map(function (r) { return r.values[UIKIT_VALUE_KEY]; });
-  ok(pxValues.indexOf(2.4) === -1 || pxValues.indexOf(9.6) === -1 || sharedRows.length <= 2,
-     'tracking: 20% at 12px and at 48px are different pixel values  (' + pxValues.join(', ') + ')');
+  ok(sharedRows.length >= 2,
+     'tracking: 20% at 12px and at 48px each get their own token  (' +
+     sharedRows.map(function (r) { return r.name + '=' + r.values.Desktop; }).join(', ') + ')');
+  var desktopPx = sharedRows.map(function (r) { return r.values.Desktop; });
+  ok(desktopPx.some(function (v) { return Math.abs(v - 2.4) < 0.2; }),
+     'tracking: 2.4px for the 12px step  (' + desktopPx.join(', ') + ')');
+  ok(desktopPx.some(function (v) { return Math.abs(v - 9.6) < 0.4; }),
+     'tracking: and 9.6px for the 48px one, instead of refusing both');
 
   // ══ 8 ══ NEAR matches are reported, never silently applied ═════════════
   freshR();
