@@ -669,7 +669,7 @@
     }
 
     /* CTA row */
-    .es-actions { display: flex; gap: 8px; justify-content: center; }
+    .es-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
 
     /* Helper text under the disabled button */
     .es-helper {
@@ -5060,23 +5060,30 @@
   // frame it would measure — or asks for one when there is nothing to read.
   function fileSummary() {
     const st = KS.state || {};
+    const cols = st.collections || {};
+    const has = cols.responsive || cols.primitives || !!st.config;
     const f = st.fileHas || {};
     const n = st.selectionCount || 0;
     const bits = [];
     if (f.paintStyles) bits.push(plural(f.paintStyles, 'colour style'));
     if (f.textStyles) bits.push(plural(f.textStyles, 'text style'));
+    // Styles are no longer adopted silently — the build stops and asks — so
+    // the helper should promise the question, not an outcome.
     const keeps = bits.length
-      ? ' The ' + bits.join(' and ') + ' this file already has are kept as they are.'
+      ? ' It will ask what to do with the ' + bits.join(' and ') + ' this file already has.'
       : '';
+    // Building from a file is offered whether or not a system exists, so the
+    // helper always explains what it needs: one frame to measure.
+    const lead = has ? 'Open it to edit the scale and generate responsive versions. '
+                     : 'A new system asks one question at a time. ';
 
-    if (n === 0) return 'A new system asks one question at a time. To build from this file, ' +
-      'select the frame to measure — its width, margins, spacing, heading sizes and colours ' +
-      'become the system.' + keeps;
-    if (n > 1) return plural(n, 'layer') + ' selected. Building from this file measures a ' +
-      'single frame, so pick just the one.' + keeps;
-    return 'A new system asks one question at a time. Building from this file measures \u201c' +
-      escHtml(st.selectionName || 'the selected frame') + '\u201d — its width, margins, spacing, ' +
-      'heading sizes and colours become the system, then it is applied back.' + keeps;
+    if (n === 0) return lead + 'To build from this file, select the frame to measure \u2014 ' +
+      'its width, margins, spacing, heading sizes and colours become the system.' + keeps;
+    if (n > 1) return lead + plural(n, 'layer') + ' selected. Building from this file measures ' +
+      'a single frame, so pick just the one.' + keeps;
+    return lead + 'Building from this file measures \u201c' +
+      escHtml(st.selectionName || 'the selected frame') + '\u201d \u2014 its width, margins, ' +
+      'spacing, heading sizes and colours become the system, then it is applied back.' + keeps;
   }
 
   // Ask once, in the designer's words, and send the answer straight back.
@@ -5112,21 +5119,22 @@
       <div class="es-title">${has ? 'Design system ready' : 'Build a design system'}</div>
       <div class="es-desc">
         ${has
-          ? 'This file already has one. Open it to edit the scale, build the elements, apply it to existing designs and generate their responsive versions.'
+          ? 'Open it to edit the scale, build the elements and generate responsive versions \u2014 or measure another frame in this file and build from that.'
           : 'Canvas sizes, grid, spacing, type and colour as variables \u2014 then the components to match.'}
       </div>
       <div class="es-actions">
+        ${has ? `<button class="btn btn-primary" data-act="uik-use-existing"${KS.busy ? ' disabled' : ''}>
+          ${SI.icFlow} Open it
+        </button>` : ''}
         <button class="btn ${has ? '' : 'btn-primary'}" data-act="uik-wizard"${KS.busy ? ' disabled' : ''}>
           ${SI.wand} Build a New Design System
         </button>
-        <button class="btn ${has ? 'btn-primary' : ''}" data-act="${has ? 'uik-use-existing' : 'uik-from-file'}"${
-          KS.busy || (!has && (st.selectionCount || 0) !== 1) ? ' disabled' : ''}>
-          ${SI.icSurvey} ${has ? 'Open it' : 'Build from an Existing File'}
+        <button class="btn" data-act="uik-from-file"${
+          KS.busy || (st.selectionCount || 0) !== 1 ? ' disabled' : ''}>
+          ${SI.icSurvey} Build from an Existing File
         </button>
       </div>
-      <div class="es-helper">${has
-        ? 'Generating again replaces the scale, reusing every token by name.'
-        : fileSummary()}</div>
+      <div class="es-helper">${fileSummary()}</div>
     </div>`;
   }
 

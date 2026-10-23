@@ -163,6 +163,9 @@ async function run() {
   rec('(entry helper)', 'nothing selected',
       /select the frame to measure/i.test(text()) ? 'asks for a frame' : 'DOES NOT ASK FOR A FRAME',
       text().split('\n').filter(Boolean).slice(-1)[0].slice(0, 60));
+  rec('(entry helper)', 'a file with styles',
+      /ask what to do with the/i.test(text()) ? 'promises the question, not an outcome'
+                                              : 'STILL PROMISES AN OUTCOME', '');
   send(state(Object.assign({}, NO_SYSTEM, { selectionCount: 3, selectionName: null })));
   const offMany = act('uik-from-file');
   rec('uik-from-file', 'entry (3 selected)',
@@ -177,6 +180,15 @@ async function run() {
   const openIt = act('uik-use-existing');
   rec('uik-use-existing', 'entry (system exists)', openIt ? 'present' : 'MISSING',
       openIt ? openIt.textContent.trim() : '');
+  // All three ways in stay on screen once a system exists — losing "Build
+  // from an Existing File" there meant a file that already had a system
+  // could never measure another frame.
+  const three = [...panel().querySelectorAll('.es-actions .btn')].map(b => b.textContent.trim());
+  rec('(entry, system exists)', 'what is offered',
+      three.length === 3 ? three.join(' · ') : 'EXPECTED 3 WAYS IN, GOT ' + three.length,
+      three.join(' · '));
+  rec('uik-from-file', 'entry (system exists)',
+      act('uik-from-file') ? 'still offered' : 'MISSING — cannot measure another frame', '');
   if (openIt) {
     sent = []; openIt.click();
     rec('uik-use-existing', 'entry', act('uik-generate') ? 'opens the system' : 'did not open',
