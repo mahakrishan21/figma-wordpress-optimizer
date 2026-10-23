@@ -8869,7 +8869,14 @@ async function handleUiKitMessage(msg) {
       type: 'uikit-done', requestId: msg.requestId, tone: tone,
       message: summary, result: r, state: state,
       // Tells the UI the wizard is finished and it can show the system.
-      builtSystem: msg.type === 'uikit-build' && !!(r && r.tokens && (r.tokens.created || r.tokens.reused))
+      // Tells the UI a system now exists and it can show it. Building from a
+      // file writes one just as the wizard does, so landing back on the entry
+      // screen afterwards — with an "Open it" button to press — was a step
+      // the designer had just earned the right to skip.
+      builtSystem:
+        (msg.type === 'uikit-build' && !!(r && r.tokens && (r.tokens.created || r.tokens.reused))) ||
+        ((msg.type === 'uikit-from-file' || msg.type === 'uikit-from-design') &&
+         !!(r && r.generated && (r.generated.created || r.generated.reused)))
     });
     if (summary) figma.notify(summary, { timeout: 3000 });
   } catch (e) {

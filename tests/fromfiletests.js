@@ -291,6 +291,7 @@ async function run() {
        'and counts one of something as one: "' + d.message + '"');
     ok(d.message.indexOf('bound back into the design') !== -1, 'and that it was applied back');
     ok(!!d.result.measured, 'the reply carries the measurements for the UI to show');
+    eq(d.builtSystem, true, 'and tells the UI to show the system, not the entry screen again');
     ok(!!d.state.fileHas, 'and the state reports what the file holds');
   }
 

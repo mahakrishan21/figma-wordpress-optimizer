@@ -452,6 +452,21 @@ async function run() {
     }
   }
 
+  // ─── 8a. building from a file lands on the system, not back on entry ──
+  fresh('entry');
+  sent = [];
+  const fromFileBtn = act('uik-from-file');
+  if (fromFileBtn) fromFileBtn.click();
+  send({ type:'uikit-done', requestId: sent.length ? sent[0].requestId : 'k9', tone:'success',
+         message:'Built.', builtSystem:true,
+         result:{ measured:{ frameName:'Homepage', canvasWidth:1440, counts:{ tokens:21 } },
+                  generated:{ created:21, reused:0 } },
+         state: state(BUILT) });
+  rec('(after building from a file)', 'where it lands',
+      act('uik-generate') ? 'shows the system straight away'
+                          : 'STAYED ON THE ENTRY SCREEN — an extra click to open it',
+      act('uik-wizard') ? 'entry screen' : 'main screen');
+
   // ─── 8b. a file with styles is asked about before anything is written ─
   fresh('entry');
   sent = [];
