@@ -6660,19 +6660,26 @@ async function buildFromExistingFile(opts) {
   // A name adopted from a style wins: it was chosen, not inferred.
   var rows = m.rows.filter(function (r) { return !fromStyles[r.name]; });
 
-  // ── 3 ── fill only what neither styles nor the design supplied ─────────
+  // ── 3 ── write what was measured, and only what was measured ───────────
+  // The preset scale used to fill in every family the design was silent
+  // about. On a page with no icons, no strokes and nothing translucent that
+  // meant six icon sizes, four border widths and four opacities invented out
+  // of nothing — nineteen measured tokens turning into thirty-seven, most of
+  // them values this design had never used. A system built from a design
+  // should contain that design, so the silences are left as silences and
+  // reported instead.
   var families = {};
   m.rows.forEach(function (r) { families[String(r.name).split('/')[0]] = true; });
   for (var an in afterAdopt) families[String(an).split('/')[0]] = true;
-  var want = defaultScaleTable(cfg, {
-    colors: !families['color'] && !families['brand'],
-    typography: !families['text']
-  });
-  var gaps = want.filter(function (r) {
-    return !afterAdopt[r.name] && !families[String(r.name).split('/')[0]];
-  });
+  var absent = [];
+  var want = defaultScaleTable(cfg, { colors: true, typography: true });
+  for (var wi = 0; wi < want.length; wi++) {
+    var wf = String(want[wi].name).split('/')[0];
+    if (!families[wf] && absent.indexOf(wf) === -1) absent.push(wf);
+  }
+  result.notMeasured = absent;
 
-  result.generated = await generateScaleVariables(cfg, rows.concat(gaps));
+  result.generated = await generateScaleVariables(cfg, rows);
   Array.prototype.push.apply(result.reasons, result.generated.reasons);
   if (result.generated.modes && result.generated.modes.capHit) return result;
 
@@ -8754,6 +8761,10 @@ async function handleUiKitMessage(msg) {
         if (found.length) ff.push('measured ' + found.join(', '));
         ff.push(many(c.tokens, 'token') + ' from the design, ' +
                 many(r.generated.created, 'variable') + ' written');
+        // Say what the design never used, rather than inventing it.
+        if (r.notMeasured && r.notMeasured.length) {
+          ff.push('nothing found for ' + r.notMeasured.join(', ') + ', so none was invented');
+        }
         if (r.applied && r.applied.bound) {
           ff.push(r.applied.bound + ' bound back into the design' +
             (r.nudged ? (', ' + r.nudged + ' nudged onto the scale') : ''));
