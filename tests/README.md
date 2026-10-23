@@ -12,6 +12,7 @@ no npm install, no network, nothing to keep up to date.
 | `mockfigma.js` | A minimal Figma sandbox: styles, variables, collections and modes, auto-layout nodes, plugin data. `figma._modeCap` sets the mode ceiling so both outcomes can be exercised. |
 | `uikittests.js` | Mode plumbing, UI Kit collections, breakpoint config, the scale generator and its aliasing, binding, breakpoint preview, the canvas parser, and the message handler. |
 | `dupgonetests.js` | Near-duplicate detection and merging across styles and variables. |
+| `fromfiletests.js` | Building a system out of a design that already exists: measuring one selected frame — its canvas width, margins, spacing ladder, heading ranking and colours — keeping any styles the file already names, binding it all back, and then generating the Desktop/Tablet/Mobile versions. |
 | `qatests.js` | Every design-system message driven through `figma.ui.onmessage`, the way the UI sends them — so routing, the `requestId` the UI correlates on, the undo boundary and the summary line are covered too. |
 | `inbuilttests.js` | The features that shipped before the design-system tab: the audit's rules, ignoring and clearing issues, each automated fix, the copy collector, focus and the window clamp. |
 

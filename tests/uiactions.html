@@ -155,6 +155,20 @@ async function run() {
       JSON.stringify(r.posted));
   reply();
 
+  // it measures one frame, so it is offered only when one is selected
+  send(state(Object.assign({}, NO_SYSTEM, { selectionCount: 0, selectionName: null })));
+  const offNone = act('uik-from-file');
+  rec('uik-from-file', 'entry (nothing selected)',
+      offNone && offNone.disabled ? 'correctly disabled until a frame is picked' : 'NOT DISABLED', '');
+  rec('(entry helper)', 'nothing selected',
+      /select the frame to measure/i.test(text()) ? 'asks for a frame' : 'DOES NOT ASK FOR A FRAME',
+      text().split('\n').filter(Boolean).slice(-1)[0].slice(0, 60));
+  send(state(Object.assign({}, NO_SYSTEM, { selectionCount: 3, selectionName: null })));
+  const offMany = act('uik-from-file');
+  rec('uik-from-file', 'entry (3 selected)',
+      offMany && offMany.disabled ? 'correctly disabled for more than one' : 'NOT DISABLED', '');
+  send(state(NO_SYSTEM));
+
   // the same slot becomes "Open it" once a system exists
   clearBusy('built');
   send(state(BUILT));

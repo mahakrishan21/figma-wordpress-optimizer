@@ -384,9 +384,21 @@ async function run() {
     eq(sfr.result.textStyles, 1, 'and the text styles');
     ok(/2 paint styles, 1 text styles/.test(sfr.message), 'and says so plainly  ("' + sfr.message + '")');
   }
+  // Building from a file measures the frame the designer picked, so it needs
+  // one — with nothing selected it asks for a frame instead of guessing.
+  figma.currentPage.selection = [];
+  var ffNone = await send({ type: 'uikit-from-file' });
+  if (ffNone.reply && ffNone.reply.type === 'uikit-done') {
+    eq(ffNone.reply.tone, 'warning', 'with nothing selected, building from the file warns');
+    ok(/Select the frame/.test(ffNone.reply.message), 'and asks for a frame  ("' + ffNone.reply.message + '")');
+  }
+  figma.currentPage.selection = [makeDesign()];
   var ff = await send({ type: 'uikit-from-file' });
   var ffr = okReply(ff, 'a system is built from the file');
   if (ffr) {
+    ok(!!ffr.result.measured, 'it measured the frame');
+    ok(ffr.result.measured.canvasWidth > 0, 'recording its canvas width  (' + ffr.result.measured.canvasWidth + ')');
+    ok(ffr.result.generated.created > 0, 'and wrote variables  (' + ffr.result.generated.created + ')');
     ok(ffr.result.paints.adopted > 0, 'colours adopted  (' + ffr.result.paints.adopted + ')');
     ok(ffr.result.paints.bound > 0, 'and the styles now follow their token  (' + ffr.result.paints.bound + ')');
     ok(ffr.result.texts.adopted > 0, 'text sizes adopted  (' + ffr.result.texts.adopted + ')');
@@ -396,6 +408,7 @@ async function run() {
   var ff2 = await send({ type: 'uikit-from-file' });
   if (ff2.reply && ff2.reply.result && ff2.reply.result.paints) {
     eq(ff2.reply.result.paints.adopted, 0, 'adopting twice adopts nothing new');
+    eq(ff2.reply.result.generated.created, 0, 'and writes no new variables');
   }
 
   // ══ 18 ══ reading a documented scale off the canvas ═══════════════════

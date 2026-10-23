@@ -6001,19 +6001,311 @@ async function surveyExistingFile() {
   };
 }
 
+// ── Measure a design, instead of reading labels off it ─────────────────────
+// scanUiKit answers "what does this page SAY the scale is" by parsing text
+// like "space/300 — 24px" off a documentation frame. Building from an
+// existing file asks the opposite question: what is this page actually built
+// from? Nothing here reads a label. Every number comes from the frame the
+// designer selected — its width, where its content sits, the gaps it
+// repeats, the sizes its headings use, the colours it paints with.
+
+// Group numbers that are near enough to be the same decision. 23 and 24 in a
+// hand-built design are one spacing step the designer eyeballed twice, not
+// two steps, and emitting both would put the noise into the system.
+function clusterNumbers(values, tol) {
+  var clusters = [];
+  var sorted = values.slice().sort(function (a, b) { return a - b; });
+  for (var i = 0; i < sorted.length; i++) {
+    var v = sorted[i];
+    var at = null;
+    for (var c = 0; c < clusters.length; c++) {
+      if (Math.abs(clusters[c].value - v) <= tol) { at = clusters[c]; break; }
+    }
+    if (at) {
+      at.count++;
+      at.total += v;
+      // The cluster sits where its members sit, rounded to a whole pixel.
+      at.value = Math.round(at.total / at.count);
+    } else {
+      clusters.push({ value: Math.round(v), total: v, count: 1 });
+    }
+  }
+  return clusters;
+}
+
+function byCountDesc(a, b) { return b.count - a.count || a.value - b.value; }
+
+// Where the content sits inside the frame. An auto-layout page states it as
+// padding; a hand-placed one only implies it, as the inset repeated by every
+// band of content that is narrower than the page.
+function measureMargin(root) {
+  if (root.layoutMode && root.layoutMode !== 'NONE') {
+    var pad = Math.round(root.paddingLeft || 0);
+    if (pad > 0) return pad;
+  }
+  var w = root.width || 0;
+  if (!w) return 0;
+  var insets = [];
+  (function walk(node, depth) {
+    if (!node || depth > 3) return;
+    var kids = node.children || [];
+    for (var i = 0; i < kids.length; i++) {
+      var k = kids[i];
+      if (k.visible === false) continue;
+      var kw = k.width || 0;
+      // Only bands that look like a content column: clearly narrower than
+      // the page, but not a button or an icon.
+      if (kw > w * 0.5 && kw < w * 0.97) insets.push((w - kw) / 2);
+      walk(k, depth + 1);
+    }
+  })(root, 0);
+  if (!insets.length) return 0;
+  var clustered = clusterNumbers(insets, 2).sort(byCountDesc);
+  return Math.max(0, clustered[0].value);
+}
+
+// Every gap and pad the design repeats, strongest first.
+function measureSpacing(nodes) {
+  var vals = [];
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    var fields = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom',
+                  'itemSpacing', 'counterAxisSpacing'];
+    for (var f = 0; f < fields.length; f++) {
+      var v = n[fields[f]];
+      // Zero is the absence of a decision, not a step on the scale.
+      if (typeof v === 'number' && isFinite(v) && v > 0 && v <= 400) vals.push(v);
+    }
+  }
+  return clusterNumbers(vals, 1).sort(byCountDesc);
+}
+
+function measureRadii(nodes) {
+  var vals = [];
+  for (var i = 0; i < nodes.length; i++) {
+    var r = nodes[i].cornerRadius;
+    if (typeof r === 'number' && isFinite(r) && r > 0 && r <= 200) vals.push(r);
+  }
+  return clusterNumbers(vals, 1).sort(byCountDesc);
+}
+
+// Text sizes, with the most-used one taken as body. Everything larger is a
+// heading, ranked down from h1; everything smaller is secondary copy. That
+// ordering is the whole point — a design's heading levels are a ranking, and
+// measuring recovers the ranking even when the file never named it.
+var MEASURED_TYPE_BELOW = ['body-sm', 'caption'];
+function measureTypeSizes(nodes) {
+  var vals = [];
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (n.type !== 'TEXT') continue;
+    var s = n.fontSize;
+    if (typeof s !== 'number' || !isFinite(s) || s <= 0) continue;
+    // Weight by how much text is actually set at that size, so one giant
+    // word does not outrank a page of body copy.
+    var weight = Math.max(1, Math.min(40, String(n.characters || '').length));
+    for (var w = 0; w < weight; w++) vals.push(s);
+  }
+  if (!vals.length) return { body: null, steps: [] };
+
+  var clusters = clusterNumbers(vals, 0.6);
+  var ranked = clusters.slice().sort(byCountDesc);
+  var body = ranked[0].value;
+
+  var above = clusters.filter(function (c) { return c.value > body + 0.5; })
+                      .sort(function (a, b) { return b.value - a.value; });
+  var below = clusters.filter(function (c) { return c.value < body - 0.5; })
+                      .sort(function (a, b) { return b.value - a.value; });
+
+  var steps = [];
+  for (var h = 0; h < above.length && h < 6; h++) {
+    steps.push({ name: 'h' + (h + 1), size: above[h].value, count: above[h].count });
+  }
+  steps.push({ name: 'body', size: body, count: ranked[0].count });
+  for (var b = 0; b < below.length && b < MEASURED_TYPE_BELOW.length; b++) {
+    steps.push({ name: MEASURED_TYPE_BELOW[b], size: below[b].value, count: below[b].count });
+  }
+  return { body: body, steps: steps };
+}
+
+// Solid fills and strokes, grouped by how different they look rather than by
+// hex, so two near-identical greys become one token.
+function measureColours(nodes) {
+  var seen = [];
+  function take(paints) {
+    if (!Array.isArray(paints)) return;
+    for (var i = 0; i < paints.length; i++) {
+      var p = paints[i];
+      if (!p || p.type !== 'SOLID' || p.visible === false) continue;
+      var hex = rgbToHexStr(p.color);
+      var opacity = typeof p.opacity === 'number' ? p.opacity : 1;
+      var lab = hexToLab(hex);
+      var at = null;
+      for (var s = 0; s < seen.length; s++) {
+        if (Math.abs(seen[s].opacity - opacity) < 0.02 && labDistance(seen[s].lab, lab) <= 3) { at = seen[s]; break; }
+      }
+      if (at) at.count++;
+      else seen.push({ hex: hex, opacity: opacity, lab: lab, count: 1 });
+    }
+  }
+  for (var n = 0; n < nodes.length; n++) {
+    var node = nodes[n];
+    if (node.fills && node.fills !== figma.mixed) take(node.fills);
+    if (node.strokes && node.strokes !== figma.mixed) take(node.strokes);
+  }
+  return seen.sort(byCountDesc);
+}
+
+// How much a measured desktop value should give up at a narrower canvas.
+// The widest canvas keeps exactly what was measured — the design is the
+// specification there, and changing it would be the plugin overruling it.
+function narrowerFactor(cfg, bpIndex) {
+  var bps = cfg.breakpoints;
+  var widest = bps[0].width || 1440;
+  var narrowest = bps[bps.length - 1].width || widest;
+  var w = bps[bpIndex].width || widest;
+  if (widest === narrowest) return 0;
+  return Math.max(0, Math.min(1, (widest - w) / (widest - narrowest)));
+}
+
+function measureDesign(root, cfg) {
+  var out = { rows: [], measured: null, reasons: [] };
+  if (!root) { out.reasons.push('Select the frame to build from.'); return out; }
+
+  var nodes = styleScanNodes([root]);
+  var bps = cfg.breakpoints;
+  var names = breakpointNames(cfg);
+
+  var margin = measureMargin(root);
+  var spacing = measureSpacing(nodes);
+  var radii = measureRadii(nodes);
+  var type = measureTypeSizes(nodes);
+  var colours = measureColours(nodes);
+
+  out.measured = {
+    canvasWidth: Math.round(root.width || 0),
+    frameName: String(root.name || ''),
+    margin: margin,
+    spacing: spacing.slice(0, 10).map(function (c) { return { value: c.value, count: c.count }; }),
+    radii: radii.slice(0, 6).map(function (c) { return { value: c.value, count: c.count }; }),
+    type: type.steps.slice(),
+    colours: colours.slice(0, 12).map(function (c) { return { hex: c.hex, opacity: c.opacity, count: c.count }; }),
+    nodes: nodes.length
+  };
+
+  // ── spacing, as primitives on the ladder the design actually climbs ────
+  var steps = spacing.slice(0, 8).map(function (c) { return c.value; }).sort(function (a, b) { return a - b; });
+  for (var i = 0; i < steps.length; i++) {
+    var vals = {};
+    vals[UIKIT_VALUE_KEY] = steps[i];
+    out.rows.push({ name: 'space/' + ((i + 1) * 100), tier: 'primitive',
+                    scopes: SPACING_SCOPES, values: vals });
+  }
+
+  // ── radius ─────────────────────────────────────────────────────────────
+  var rsteps = radii.slice(0, 4).map(function (c) { return c.value; }).sort(function (a, b) { return a - b; });
+  var RNAMES = ['sm', 'md', 'lg', 'xl'];
+  for (var r = 0; r < rsteps.length; r++) {
+    var rv = {};
+    rv[UIKIT_VALUE_KEY] = rsteps[r];
+    out.rows.push({ name: 'radius/' + RNAMES[r], tier: 'primitive',
+                    scopes: RADIUS_SCOPES, values: rv });
+  }
+
+  // ── type, h1…h6 as the design ranks them ───────────────────────────────
+  for (var t = 0; t < type.steps.length; t++) {
+    var step = type.steps[t];
+    var tv = {};
+    for (var b = 0; b < bps.length; b++) {
+      var f = narrowerFactor(cfg, b);
+      var shrink = 1 - (0.28 * f);
+      var floor = step.size > 20 ? 18 : 14;
+      tv[names[b]] = b === 0 ? step.size : Math.max(floor, Math.round(step.size * shrink));
+    }
+    out.rows.push({ name: 'text/size/' + step.name, tier: 'responsive',
+                    scopes: ['FONT_SIZE'], values: tv });
+  }
+
+  // ── the page's own measurements: margin and the content column ─────────
+  if (margin > 0) {
+    var mv = {};
+    for (var m = 0; m < bps.length; m++) {
+      var mf = narrowerFactor(cfg, m);
+      mv[names[m]] = m === 0 ? margin : Math.max(16, Math.round(margin * (1 - 0.8 * mf)));
+    }
+    out.rows.push({ name: 'grid/margin', tier: 'responsive', scopes: SPACING_SCOPES, values: mv });
+  }
+  var canvasW = Math.round(root.width || 0);
+  if (canvasW > 0) {
+    var cv = {};
+    for (var c2 = 0; c2 < bps.length; c2++) {
+      var bw = bps[c2].width || canvasW;
+      var sideMargin = (c2 === 0) ? margin : Math.max(16, Math.round(margin * (1 - 0.8 * narrowerFactor(cfg, c2))));
+      cv[names[c2]] = Math.max(0, bw - 2 * sideMargin);
+    }
+    out.rows.push({ name: 'container/max', tier: 'responsive',
+                    scopes: ['WIDTH_HEIGHT'], values: cv });
+  }
+
+  // ── colour ─────────────────────────────────────────────────────────────
+  var taken = new Set();   // uniqueName() adds to it itself
+  for (var k = 0; k < colours.length && k < 12; k++) {
+    var col = colours[k];
+    var label = suggestColorName(col.hex, col.opacity, col.count, taken);
+    var rgb = hexToRgb01(col.hex);
+    if (!rgb) continue;
+    var cvals = {};
+    cvals[UIKIT_VALUE_KEY] = { r: rgb.r, g: rgb.g, b: rgb.b, a: col.opacity };
+    out.rows.push({ name: 'color/' + slugToken(label), tier: 'primitive', type: 'COLOR',
+                    scopes: [], values: cvals });
+  }
+
+  if (!out.rows.length) out.reasons.push('Nothing measurable in that frame — no spacing, type or colour to read.');
+  return out;
+}
+
+// Build a design system out of a design that already exists.
+//
+// The order matters. Styles the file already defines are authoritative — a
+// designer who named a colour meant that name, so those are adopted first
+// and the measurement never overrules them. What measurement adds is
+// everything a style cannot hold: the page width, where its content sits,
+// the gaps it repeats, and the ranking of its heading sizes. Then the whole
+// system is bound back into the frame it came from, which is close to
+// lossless precisely because every number in it was read off that frame.
 async function buildFromExistingFile(opts) {
   opts = opts || {};
-  var result = { reasons: [], unit: 'token',
-                 paints: null, texts: null, filled: null, survey: null, applied: null };
+  var result = { reasons: [], unit: 'token', paints: null, texts: null,
+                 measured: null, generated: null, survey: null, applied: null };
 
+  var sel = figma.currentPage.selection;
+  var root = (sel && sel.length === 1) ? sel[0] : null;
+  if (!root) {
+    result.reasons.push(sel && sel.length > 1
+      ? 'Select one frame to build from — the system is measured from a single design.'
+      : 'Select the frame to build from first.');
+    return result;
+  }
+  if (!('width' in root) || !root.width) {
+    result.reasons.push('"' + root.name + '" has no width to measure. Select a frame.');
+    return result;
+  }
+
+  // ── canvas sizes ───────────────────────────────────────────────────────
+  // The frame being measured IS the desktop canvas, so a file with no
+  // config gets one built around it rather than a preset that ignores it.
   var cfg = readBreakpointConfig();
   if (!cfg) {
-    cfg = { preset: 'standard', breakpoints: BREAKPOINT_PRESETS.standard };
+    cfg = { preset: 'custom', breakpoints: [
+      { name: 'Desktop', width: Math.round(root.width) },
+      { name: 'Tablet', width: 768 },
+      { name: 'Mobile', width: 375 }
+    ] };
     var c0 = await getUiKitCollections(true);
     var m0 = await ensureModes(c0.responsive, breakpointNames(cfg));
     if (m0.capHit) {
-      result.reasons.push('This file allows only ' + m0.cap + ' modes per collection, so the standard ' +
-        'canvas sizes will not fit. Build a new system and pick fewer.');
+      result.reasons.push('This file allows only ' + m0.cap + ' modes per collection, so Desktop, ' +
+        'Tablet and Mobile will not fit. Build a new system and pick fewer.');
       return result;
     }
     writeBreakpointConfig(cfg);
@@ -6022,29 +6314,70 @@ async function buildFromExistingFile(opts) {
   result.cfg = cfg;
 
   var cols = await getUiKitCollections(true);
+
+  async function tokenNames() {
+    var seen = {};
+    var a = await variablesByNameIn(cols.responsive);
+    for (var k1 in a) seen[k1] = true;
+    var b = await variablesByNameIn(cols.primitives);
+    for (var k2 in b) seen[k2] = true;
+    return seen;
+  }
+
+  // ── 1 ── what the file already names, it keeps ─────────────────────────
+  var beforeAdopt = await tokenNames();
   result.paints = await adoptPaintStyles(cols, result.reasons);
   result.texts = await adoptTextStyles(cfg, cols, result.reasons);
+  var afterAdopt = await tokenNames();
 
-  // Only fill in the families the file had nothing for — spacing, radius,
-  // the grid. Rebuilding colour or type here would put a second system
-  // beside the one just adopted.
-  var seeded = defaultScaleTable(cfg, { colors: false, typography: false });
-  result.filled = await generateScaleVariables(cfg, seeded);
-  Array.prototype.push.apply(result.reasons, result.filled.reasons);
+  // Only the names this run took from a style are protected. Filtering on
+  // "already exists" instead would mean a second run saw its own previous
+  // output as untouchable, generated nothing, and reported the frame as
+  // having nothing in it.
+  var fromStyles = {};
+  for (var fn in afterAdopt) if (!beforeAdopt[fn]) fromStyles[fn] = true;
 
+  // ── 2 ── what the design itself measures to ────────────────────────────
+  var m = measureDesign(root, cfg);
+  Array.prototype.push.apply(result.reasons, m.reasons);
+  result.measured = m.measured;
+
+  // A name adopted from a style wins: it was chosen, not inferred.
+  var rows = m.rows.filter(function (r) { return !fromStyles[r.name]; });
+
+  // ── 3 ── fill only what neither styles nor the design supplied ─────────
+  var families = {};
+  m.rows.forEach(function (r) { families[String(r.name).split('/')[0]] = true; });
+  for (var an in afterAdopt) families[String(an).split('/')[0]] = true;
+  var want = defaultScaleTable(cfg, {
+    colors: !families['color'] && !families['brand'],
+    typography: !families['text']
+  });
+  var gaps = want.filter(function (r) {
+    return !afterAdopt[r.name] && !families[String(r.name).split('/')[0]];
+  });
+
+  result.generated = await generateScaleVariables(cfg, rows.concat(gaps));
+  Array.prototype.push.apply(result.reasons, result.generated.reasons);
+  if (result.generated.modes && result.generated.modes.capHit) return result;
+
+  // ── 4 ── and put the system back into the design it came from ──────────
+  // Measured tokens mostly match the design exactly, because that is where
+  // they came from. The ones that do not are the values clustering pulled
+  // onto the scale, and they are counted separately so the designer can see
+  // how much the page moved.
   if (opts.bindSelection !== false) {
-    var sel = figma.currentPage.selection;
-    if (sel && sel.length) {
-      result.survey = await surveyAdoption(sel, opts);
-      var accepted = {};
-      if (opts.exactOnly) {
-        for (var i = 0; i < result.survey.proposals.length; i++) {
-          if (!result.survey.proposals[i].exact) accepted[result.survey.proposals[i].key] = false;
-        }
+    result.survey = await surveyAdoption([root], opts);
+    Array.prototype.push.apply(result.reasons, result.survey.reasons);
+    var accepted = {};
+    if (opts.exactOnly) {
+      for (var i = 0; i < result.survey.proposals.length; i++) {
+        if (!result.survey.proposals[i].exact) accepted[result.survey.proposals[i].key] = false;
       }
-      result.applied = await applyAdoption(result.survey.proposals, accepted);
-      Array.prototype.push.apply(result.reasons, result.applied.reasons);
     }
+    result.applied = await applyAdoption(result.survey.proposals, accepted);
+    result.nudged = opts.exactOnly ? 0 : result.survey.near;
+    Array.prototype.push.apply(result.reasons, result.applied.reasons);
   }
   return result;
 }
@@ -8065,19 +8398,27 @@ async function handleUiKitMessage(msg) {
         r.collections.length + ' variable collection' + (r.collections.length === 1 ? '' : 's') + ' in this file.';
     } else if (msg.type === 'uikit-from-file') {
       r = await buildFromExistingFile(msg);
-      var total = (r.paints ? r.paints.adopted : 0) + (r.texts ? r.texts.adopted : 0);
-      if (total || (r.filled && r.filled.created)) {
-        var ff = [];
-        if (r.paints && r.paints.adopted) ff.push(r.paints.adopted + ' colours adopted');
-        if (r.paints && r.paints.bound) ff.push(r.paints.bound + ' styles now follow a token');
-        if (r.paints && r.paints.reused) ff.push(r.paints.reused + ' already existed');
-        if (r.texts && r.texts.adopted) ff.push(r.texts.adopted + ' text sizes adopted');
-        if (r.filled && r.filled.created) ff.push(r.filled.created + ' filled in');
-        if (r.applied && r.applied.bound) ff.push(r.applied.bound + ' bound into the selection');
-        summary = ff.join(', ') + '.' + (r.seededBreakpoints ? ' Standard canvas sizes were set up.' : '');
-      } else {
-        summary = r.reasons.length ? r.reasons[0] : 'This file had nothing to adopt.';
+      var md = r.measured;
+      if (!md || !r.generated || (!r.generated.created && !r.generated.reused)) {
+        summary = r.reasons.length ? r.reasons[0] : 'There was nothing in that frame to build from.';
         tone = 'warning';
+      } else {
+        var ff = [];
+        ff.push('measured "' + md.frameName + '" at ' + md.canvasWidth + 'px');
+        if (md.type && md.type.length) ff.push(md.type.length + ' type sizes');
+        if (md.spacing && md.spacing.length) ff.push(md.spacing.length + ' spacing steps');
+        if (md.colours && md.colours.length) ff.push(md.colours.length + ' colours');
+        if (md.margin) ff.push('a ' + md.margin + 'px margin');
+        if (r.paints && r.paints.adopted) ff.push(r.paints.adopted + ' colour styles kept');
+        if (r.texts && r.texts.adopted) ff.push(r.texts.adopted + ' text styles kept');
+        ff.push(r.generated.created + ' variables written');
+        if (r.applied && r.applied.bound) {
+          ff.push(r.applied.bound + ' bound back into the design' +
+            (r.nudged ? (', ' + r.nudged + ' nudged onto the scale') : ''));
+        }
+        summary = ff.join(', ') + '.' +
+          (r.seededBreakpoints ? ' Desktop, Tablet and Mobile were set up around it.' : '');
+        if (r.applied && !r.applied.bound) tone = 'warning';
       }
     } else if (msg.type === 'uikit-from-design') {
       r = await adoptFromDesign(msg);

@@ -5056,16 +5056,27 @@
   // tab opens looking like the rest of the plugin rather than like itself.
   // What the file already holds, so the second option can say what it will
   // actually adopt rather than promising in the abstract.
+  // Building from a file measures one frame, so the helper line says which
+  // frame it would measure — or asks for one when there is nothing to read.
   function fileSummary() {
-    const f = (KS.state && KS.state.fileHas) || {};
+    const st = KS.state || {};
+    const f = st.fileHas || {};
+    const n = st.selectionCount || 0;
     const bits = [];
     if (f.paintStyles) bits.push(plural(f.paintStyles, 'colour style'));
     if (f.textStyles) bits.push(plural(f.textStyles, 'text style'));
-    if (!bits.length) {
-      return 'A new system asks one question at a time. Building from this file adopts the styles and values it already uses — this one has no styles yet, so it will read the canvas instead.';
-    }
-    return 'A new system asks one question at a time. Building from this file adopts ' +
-      bits.join(' and ') + ' it already has, turning each into a token of the same name.';
+    const keeps = bits.length
+      ? ' The ' + bits.join(' and ') + ' this file already has are kept as they are.'
+      : '';
+
+    if (n === 0) return 'A new system asks one question at a time. To build from this file, ' +
+      'select the frame to measure — its width, margins, spacing, heading sizes and colours ' +
+      'become the system.' + keeps;
+    if (n > 1) return plural(n, 'layer') + ' selected. Building from this file measures a ' +
+      'single frame, so pick just the one.' + keeps;
+    return 'A new system asks one question at a time. Building from this file measures \u201c' +
+      escHtml(st.selectionName || 'the selected frame') + '\u201d — its width, margins, spacing, ' +
+      'heading sizes and colours become the system, then it is applied back.' + keeps;
   }
 
   function uikEntryHtml() {
@@ -5087,7 +5098,8 @@
         <button class="btn ${has ? '' : 'btn-primary'}" data-act="uik-wizard"${KS.busy ? ' disabled' : ''}>
           ${SI.wand} Build a New Design System
         </button>
-        <button class="btn ${has ? 'btn-primary' : ''}" data-act="${has ? 'uik-use-existing' : 'uik-from-file'}"${KS.busy ? ' disabled' : ''}>
+        <button class="btn ${has ? 'btn-primary' : ''}" data-act="${has ? 'uik-use-existing' : 'uik-from-file'}"${
+          KS.busy || (!has && (st.selectionCount || 0) !== 1) ? ' disabled' : ''}>
           ${SI.icSurvey} ${has ? 'Open it' : 'Build from an Existing File'}
         </button>
       </div>
@@ -5664,7 +5676,7 @@
           <button class="btn" data-act="uik-bind"${KS.busy || !sel ? ' disabled' : ''}>${SI.icBind}Bind selection</button>
           <button class="btn" data-act="uik-starter"${KS.busy ? ' disabled' : ''}>${SI.icFlow}New design canvas</button>
           <button class="btn" data-act="uik-canvas"${KS.busy ? ' disabled' : ''}>${SI.icCanvasDoc}Document on canvas</button>
-          <button class="btn" data-act="uik-from-file"${KS.busy ? ' disabled' : ''}>${SI.icRead}Adopt this file&rsquo;s styles</button>
+          <button class="btn" data-act="uik-from-file"${KS.busy || sel !== 1 ? ' disabled' : ''}>${SI.icRead}Measure this frame</button>
           <button class="btn" data-act="uik-reset"${KS.busy ? ' disabled' : ''}>${SI.icSliders}Change breakpoints</button>
         </div>
       </div>
