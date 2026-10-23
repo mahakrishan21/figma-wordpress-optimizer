@@ -33,7 +33,11 @@ async function run() {
   figma.currentPage.selection = [f0];
   var s0 = await surveyAdoption([f0], {});
   eq(s0.proposals.length, 0, 'nothing proposed with no system');
-  ok(s0.reasons.join(' ').indexOf('build one first') !== -1, 'and it says to build one');
+  // The message changed when the survey stopped requiring the plugin's own
+  // collections: a file can have a variable system of its own, so the test
+  // is "is there anything to match against", not "did we build it".
+  ok(s0.reasons.join(' ').indexOf('no variables in this file') !== -1,
+     'and it says there is nothing to match against  ("' + s0.reasons[0] + '")');
 
   // ── 2 ── a hand-built design, slightly off the scale ──────────────────
   await system();

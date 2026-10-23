@@ -393,6 +393,40 @@ async function run() {
      'colour: a colour bound to the file\u2019s own variable is reported under reused  (' +
      (rCol.reused || []).map(function (x) { return x.existing; }).join(', ') + ')');
 
+  // ══ 10 ══ a bound corner radius is not proposed all over again ════════
+  // Found by binding a real button in a real file: Figma expands a
+  // cornerRadius binding into topLeftRadius/topRightRadius/... so asking
+  // boundVariables.cornerRadius answers no, and a second pass rebinds it.
+  freshR();
+  var radiusCol = figma.variables.createVariableCollection('House radius');
+  radiusCol.addMode('Value');
+  var rv = figma.variables.createVariable('Border Radius/Button', radiusCol, 'FLOAT');
+  try { rv.scopes = ['CORNER_RADIUS']; } catch (e) {}
+  rv.setValueForMode(radiusCol.modes[0].modeId, 8);
+
+  var rPage = mkFrame({ name: 'Radius page', width: 1440, height: 900 });
+  rPage.layoutMode = 'VERTICAL'; rPage.itemSpacing = 24;
+  figma.currentPage.appendChild(rPage);
+  var rBtn = mkFrame({ name: 'Button', width: 200, height: 48 });
+  rBtn.layoutMode = 'HORIZONTAL'; rBtn.cornerRadius = 8;
+  rBtn.paddingLeft = 24; rBtn.paddingRight = 24;
+  rPage.appendChild(rBtn);
+  rBtn.appendChild(mkText('Click', 'Label'));
+
+  // Figma's own expansion, reproduced: the four corners, no cornerRadius key
+  rBtn.boundVariables.topLeftRadius = { type: 'VARIABLE_ALIAS', id: rv.id };
+  rBtn.boundVariables.topRightRadius = { type: 'VARIABLE_ALIAS', id: rv.id };
+  rBtn.boundVariables.bottomLeftRadius = { type: 'VARIABLE_ALIAS', id: rv.id };
+  rBtn.boundVariables.bottomRightRadius = { type: 'VARIABLE_ALIAS', id: rv.id };
+
+  eq(spaceFieldBound(rBtn, 'cornerRadius'), true,
+     'corner radius: a four-corner binding counts as bound');
+  figma.currentPage.selection = [rPage];
+  var svR = await surveyAdoption([rPage], {});
+  var radiusAgain = svR.proposals.filter(function (p) { return p.field === 'cornerRadius'; });
+  eq(radiusAgain.length, 0, 'corner radius: and is not proposed a second time');
+  ok(svR.alreadyBound > 0, 'corner radius: it is counted as already bound  (' + svR.alreadyBound + ')');
+
   print('');
   if (fail === 0) print('ALL PASS (' + pass + ' assertions)');
   else print(fail + ' FAILED, ' + pass + ' passed');

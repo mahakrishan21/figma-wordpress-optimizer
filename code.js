@@ -4997,7 +4997,7 @@ async function bindScaleToSelection(opts) {
       var field = BINDABLE_SPACING[f].field, scope = BINDABLE_SPACING[f].scope;
       var cur = node[field];
       if (typeof cur !== 'number' || !isFinite(cur)) continue;   // figma.mixed, or absent
-      if (node.boundVariables && node.boundVariables[field]) { result.alreadyBound++; continue; }
+      if (spaceFieldBound(node, field)) { result.alreadyBound++; continue; }
 
       var match = null;
       for (var c = 0; c < candidates.length; c++) {
@@ -5774,6 +5774,21 @@ function textFieldBound(node, field) {
   return !!(node.boundVariables && node.boundVariables[field]);
 }
 
+// Binding cornerRadius does not produce a boundVariables.cornerRadius.
+// Figma expands it into the four corners, so asking for the field you just
+// bound answers no — found by binding a real button in a real file and
+// reading the result back. Without this a second pass proposes every radius
+// again and rebinds it.
+var CORNER_FIELDS = ['topLeftRadius', 'topRightRadius', 'bottomLeftRadius', 'bottomRightRadius'];
+function spaceFieldBound(node, field) {
+  var bv = node.boundVariables;
+  if (!bv) return false;
+  if (bv[field]) return true;
+  if (field !== 'cornerRadius') return false;
+  for (var i = 0; i < CORNER_FIELDS.length; i++) if (bv[CORNER_FIELDS[i]]) return true;
+  return false;
+}
+
 async function surveyAdoption(roots, opts) {
   opts = opts || {};
   var tol = {
@@ -5785,16 +5800,19 @@ async function surveyAdoption(roots, opts) {
               exact: 0, near: 0, preservedAsymmetric: 0, reasons: [], unit: 'binding' };
   if (!roots || !roots.length) { out.reasons.push('Select a frame first.'); return out; }
 
+  // Not "has the plugin built a system here" but "is there anything to match
+  // against". A file can arrive with a mature variable system of its own and
+  // none of the plugin's collections, and that file was being told it had no
+  // design system at all — the pools below are the real test.
   var cols = await getUiKitCollections(false);
-  if (!cols.primitives && !cols.responsive) {
-    out.reasons.push('There is no design system in this file yet — build one first.');
-    return out;
-  }
 
   var modeId = cols.responsive ? nodeModeFor(roots[0], cols.responsive) : null;
   var pools = await adoptionPools(cols, modeId);
-  if (!pools.colours.length && !pools.spaces.length && !pools.fonts.length) {
-    out.reasons.push('The system has no tokens to match against.');
+  // radii and sizes are pools too — a file whose variables are all corner
+  // radii was being told it had no tokens at all.
+  if (!pools.colours.length && !pools.spaces.length && !pools.fonts.length &&
+      !pools.radii.length && !pools.sizes.length && !pools.leadings.length) {
+    out.reasons.push('There are no variables in this file to match against yet.');
     return out;
   }
 
@@ -5907,7 +5925,7 @@ async function surveyAdoption(roots, opts) {
         var field = rest[fI];
         var cur = node[field];
         if (typeof cur !== 'number' || !isFinite(cur)) continue;
-        if (node.boundVariables && node.boundVariables[field]) { out.alreadyBound++; continue; }
+        if (spaceFieldBound(node, field)) { out.alreadyBound++; continue; }
         if (cur === 0) continue;   // zero is a choice, not a token to snap
         var rolePool = field === 'cornerRadius' ? pools.radii : pools.spaces;
         var sm = nearestNumberToken(rolePool, cur, tol.spaceDelta);
