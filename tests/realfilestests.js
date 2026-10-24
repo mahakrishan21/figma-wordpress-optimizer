@@ -744,6 +744,58 @@ async function run() {
     ok(atMobile < atDesktop, 'styled page: and mobile is smaller  (' + atDesktop + ' -> ' + atMobile + ')');
   }
 
+  // ══ 17 ══ the typeface and the weight become variables too ═══════════
+  // Measured in Figma: STRING variables scoped FONT_FAMILY and FONT_STYLE
+  // bind to fontFamily and fontStyle on plain and styled layers alike. They
+  // are primitives, holding exactly the value already in the design, so
+  // binding one puts the face under a token without moving anything.
+  freshR();
+  var faceCfg = { preset: 'custom', breakpoints: [
+    { name: 'Desktop', width: 1440 }, { name: 'Tablet', width: 768 }, { name: 'Mobile', width: 375 }] };
+  writeBreakpointConfig(faceCfg);
+  var facePage = mkFrame({ name: 'Faces', width: 1440, height: 900 });
+  facePage.layoutMode = 'VERTICAL'; facePage.itemSpacing = 24;
+  figma.currentPage.appendChild(facePage);
+  var fh = mkText('A heading set in the display face', 'H');
+  fh.fontSize = 48; fh.fontName = { family: 'Fira Sans', style: 'SemiBold' };
+  facePage.appendChild(fh);
+  for (var fb = 0; fb < 5; fb++) {
+    var fbody = mkText('Body copy carrying the text face for most of the page.', 'B');
+    fbody.fontSize = 16; fbody.fontName = { family: 'Commissioner', style: 'Regular' };
+    facePage.appendChild(fbody);
+  }
+
+  var faceMeasured = await measureDesign(facePage, faceCfg);
+  var famRows = faceMeasured.rows.filter(function (r) { return r.name.indexOf('text/family/') === 0; });
+  var wgtRows = faceMeasured.rows.filter(function (r) { return r.name.indexOf('text/weight/') === 0; });
+  ok(famRows.length >= 2, 'faces: both families become tokens  (' +
+     famRows.map(function (r) { return r.name + '=' + r.values[UIKIT_VALUE_KEY]; }).join(', ') + ')');
+  ok(wgtRows.length >= 1, 'faces: and the weights  (' +
+     wgtRows.map(function (r) { return r.name + '=' + r.values[UIKIT_VALUE_KEY]; }).join(', ') + ')');
+  famRows.concat(wgtRows).forEach(function (r) {
+    eq(r.type, 'STRING', 'faces: ' + r.name + ' is a STRING variable');
+    eq(r.tier, 'primitive', 'faces: ' + r.name + ' is a primitive, not responsive');
+    ok(typeof r.values[UIKIT_VALUE_KEY] === 'string', 'faces: ' + r.name + ' holds a name, not a number');
+  });
+  ok(famRows.some(function (r) { return r.values[UIKIT_VALUE_KEY] === 'Commissioner'; }),
+     'faces: the family the body is set in is there');
+  ok(wgtRows.some(function (r) { return r.values[UIKIT_VALUE_KEY] === 'SemiBold'; }),
+     'faces: and the weight the heading uses');
+
+  // they are written, and then bound back without changing the design
+  figma.currentPage.selection = [facePage];
+  var faceBuilt = await buildFromExistingFile({ styleChoice: 'keep' });
+  var strVars = await localVariablesAllModes('STRING');
+  var strNames = strVars.map(function (e) { return e.variable.name; });
+  ok(strNames.some(function (n) { return n.indexOf('text/family/') === 0; }),
+     'faces: the family variable is actually created  (' + strNames.join(', ') + ')');
+  ok(!!(fh.boundVariables && fh.boundVariables.fontFamily),
+     'faces: the heading font family now follows a variable');
+  ok(!!(fh.boundVariables && fh.boundVariables.fontStyle),
+     'faces: and so does its weight');
+  eq(fh.fontName.family, 'Fira Sans', 'faces: while the heading is still set in the same face');
+  eq(fh.fontName.style, 'SemiBold', 'faces: at the same weight');
+
   print('');
   if (fail === 0) print('ALL PASS (' + pass + ' assertions)');
   else print(fail + ' FAILED, ' + pass + ' passed');

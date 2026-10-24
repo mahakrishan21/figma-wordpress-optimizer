@@ -4915,8 +4915,12 @@ async function generateScaleVariables(cfg, table) {
     var n = row.values ? row.values[UIKIT_VALUE_KEY] : null;
     // A colour primitive holds an RGBA object, not a number, so validate by
     // the row's type rather than assuming everything on this tier is FLOAT.
-    var isColorRow = (row.type || 'FLOAT') === 'COLOR';
-    var usable = isColorRow ? !!(n && typeof n.r === 'number') : (typeof n === 'number' && isFinite(n));
+    var rowType = row.type || 'FLOAT';
+    var isColorRow = rowType === 'COLOR';
+    var isStringRow = rowType === 'STRING';
+    var usable = isColorRow ? !!(n && typeof n.r === 'number')
+               : isStringRow ? (typeof n === 'string' && n.length > 0)
+               : (typeof n === 'number' && isFinite(n));
     if (!usable) { result.skipped++; result.reasons.push(row.name + ': no value.'); continue; }
     var pv = primMap[row.name];
     if (pv) { result.reused++; } else {
@@ -5741,6 +5745,8 @@ function tokenRoles(variable) {
     else if (sc === 'STROKE_FLOAT') roles.stroke = true;
     else if (sc === 'OPACITY') roles.opacity = true;
     else if (sc === 'LETTER_SPACING') roles.letterSpacing = true;
+    else if (sc === 'FONT_FAMILY') roles.fontFamily = true;
+    else if (sc === 'FONT_STYLE') roles.fontStyle = true;
   }
 
   // The name decides when scopes do not, and overrules a bare ALL_SCOPES —
@@ -5756,6 +5762,8 @@ function tokenRoles(variable) {
   if (/spac|gap|gutter|padding|margin|inset/.test(nm)) { roles.gap = true; all = false; }
   if (/width|height|container|size\/control|icon/.test(nm)) { roles.size = true; all = false; }
   if (/columns?$/.test(nm)) { roles.count = true; all = false; }
+  if (/family|typeface/.test(nm)) { roles.fontFamily = true; all = false; }
+  if (/weight/.test(nm)) { roles.fontStyle = true; all = false; }
 
   if (all) { roles.gap = true; roles.size = true; roles.radius = true; }
   return roles;
@@ -5769,7 +5777,8 @@ function tokenRoles(variable) {
 // the first. Every local variable is a candidate now, and the file's own
 // come first so a tie resolves to the vocabulary the designer already uses.
 async function adoptionPools(cols, modeId) {
-  var colours = [], spaces = [], radii = [], sizes = [], fonts = [], leadings = [], tracking = [];
+  var colours = [], spaces = [], radii = [], sizes = [], fonts = [], leadings = [], tracking = [],
+      families = [], weights = [];
 
   function isKit(id) {
     return (cols.primitives && id === cols.primitives.id) ||
@@ -5786,6 +5795,20 @@ async function adoptionPools(cols, modeId) {
     colours.push({ variable: e.variable, name: e.variable.name, hex: hex,
                    opacity: typeof v.a === 'number' ? v.a : 1, lab: hexToLab(hex),
                    kit: isKit(e.variable.variableCollectionId) });
+  }
+
+  // Strings: the typeface and the weight.
+  var strVars = await localVariablesAllModes('STRING');
+  for (var sv = 0; sv < strVars.length; sv++) {
+    var se = strVars[sv];
+    var sval = se.resolved[modeOf(se.collection)];
+    if (typeof sval !== 'string' || !sval) continue;
+    var srole = tokenRoles(se.variable);
+    var srec = { variable: se.variable, name: se.variable.name, value: sval,
+                 kit: isKit(se.variable.variableCollectionId) };
+    var snm = String(se.variable.name || '').toLowerCase();
+    if (srole.fontFamily || /family|typeface|font\/(base|heading)/.test(snm)) families.push(srec);
+    else if (srole.fontStyle || /weight|style/.test(snm)) weights.push(srec);
   }
 
   var numVars = await localVariablesAllModes('FLOAT');
@@ -5815,10 +5838,12 @@ async function adoptionPools(cols, modeId) {
 
   // The file's own vocabulary wins a tie against one the plugin wrote.
   function ownFirst(a, b) { return (a.kit ? 1 : 0) - (b.kit ? 1 : 0); }
-  [colours, spaces, radii, sizes, fonts, leadings, tracking].forEach(function (pool) { pool.sort(ownFirst); });
+  [colours, spaces, radii, sizes, fonts, leadings, tracking, families, weights]
+    .forEach(function (pool) { pool.sort(ownFirst); });
 
   return { colours: colours, spaces: spaces, radii: radii, sizes: sizes,
-           fonts: fonts, leadings: leadings, tracking: tracking };
+           fonts: fonts, leadings: leadings, tracking: tracking,
+           families: families, weights: weights };
 }
 
 var ADOPT_SPACE_FIELDS = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom',
@@ -5976,6 +6001,27 @@ async function surveyAdoption(roots, opts) {
             var lm = nearestNumberToken(pools.leadings, lh.value, 5);
             if (lm) add(node, 'type', 'lineHeight', lm, Math.round(lh.value) + '%', { range: at });
           }
+        }
+
+        // The face. A family and a weight match exactly or not at all —
+        // there is no "near enough" for the name of a typeface.
+        var fam = run.spec ? run.spec.family : null;
+        if (fam && !textFieldBound(node, 'fontFamily')) {
+          var famHit = null;
+          for (var fq = 0; fq < (pools.families || []).length; fq++) {
+            if (pools.families[fq].value === fam) { famHit = pools.families[fq]; break; }
+          }
+          if (famHit) add(node, 'type', 'fontFamily', { token: famHit, delta: 0, exact: true },
+                          fam, { range: at });
+        }
+        var wgt = run.spec ? run.spec.style : null;
+        if (wgt && !textFieldBound(node, 'fontStyle')) {
+          var wHit = null;
+          for (var wq = 0; wq < (pools.weights || []).length; wq++) {
+            if (pools.weights[wq].value === wgt) { wHit = pools.weights[wq]; break; }
+          }
+          if (wHit) add(node, 'type', 'fontStyle', { token: wHit, delta: 0, exact: true },
+                        wgt, { range: at });
         }
 
         // Tracking, matched in the unit Figma applies it in. A tracking
@@ -7264,6 +7310,35 @@ async function measureDesign(root, cfg) {
     var ov = {};
     ov[UIKIT_VALUE_KEY] = osorted[oi] / 100;
     out.rows.push({ name: 'opacity/' + osorted[oi], tier: 'primitive', scopes: ['OPACITY'], values: ov });
+  }
+
+  // ── the faces the design is set in ─────────────────────────────────────
+  // A family and a weight are strings, and Figma binds those to STRING
+  // variables scoped FONT_FAMILY and FONT_STYLE. They are primitives: a
+  // design's typeface does not change between a laptop and a phone, and a
+  // weight that did would be a decision nobody asked this to make. Holding
+  // exactly the value already in the design means binding one changes
+  // nothing on screen while still putting the face under a token.
+  var famRows = fonts.slice(0, 3);
+  for (var fr = 0; fr < famRows.length; fr++) {
+    var fam = famRows[fr];
+    var fv = {};
+    fv[UIKIT_VALUE_KEY] = fam.family;
+    out.rows.push({ name: 'text/family/' + slugToken(fam.family), tier: 'primitive',
+                    type: 'STRING', scopes: ['FONT_FAMILY'], values: fv });
+  }
+  var seenWeight = {};
+  for (var wf = 0; wf < famRows.length; wf++) {
+    var styles = famRows[wf].styles || [];
+    for (var sw = 0; sw < styles.length && Object.keys(seenWeight).length < 5; sw++) {
+      var weight = styles[sw];
+      if (!weight || seenWeight[weight]) continue;
+      seenWeight[weight] = true;
+      var wv = {};
+      wv[UIKIT_VALUE_KEY] = weight;
+      out.rows.push({ name: 'text/weight/' + slugToken(weight), tier: 'primitive',
+                      type: 'STRING', scopes: ['FONT_STYLE'], values: wv });
+    }
   }
 
   // ── controls, which have to stay tappable however narrow it gets ───────
