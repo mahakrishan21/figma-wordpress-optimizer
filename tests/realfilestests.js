@@ -699,6 +699,51 @@ async function run() {
   var allowed = await generateResponsiveFrames(rigidCfg, {});
   ok(allowed.created >= 2, 'rigid: and then the frames generate  (' + allowed.created + ')');
 
+  // ══ 16 ══ a page whose text is ALL styled still becomes responsive ════
+  // The real failure: 388 text layers, every one carrying a library style,
+  // none bound to anything — so the Mobile frame rendered desktop sizes.
+  freshR();
+  var styledCfg = { preset: 'custom', breakpoints: [
+    { name: 'Desktop', width: 1440 }, { name: 'Tablet', width: 768 }, { name: 'Mobile', width: 375 }] };
+  writeBreakpointConfig(styledCfg);
+
+  var sp = mkFrame({ name: 'Styled page', width: 1440, height: 1200 });
+  sp.layoutMode = 'VERTICAL'; sp.itemSpacing = 32;
+  sp.paddingLeft = 120; sp.paddingRight = 120;
+  figma.currentPage.appendChild(sp);
+  // every text layer wears a style, as a library-driven file does
+  var h1 = mkText('Lighting the Future of Business', 'H1');
+  h1.fontSize = 52; h1.textStyleId = 'S:libraryH1';
+  sp.appendChild(h1);
+  for (var sb = 0; sb < 6; sb++) {
+    var bodyT = mkText('Body copy long enough to be the dominant size on this page.', 'Body');
+    bodyT.fontSize = 16; bodyT.textStyleId = 'S:libraryBody';
+    sp.appendChild(bodyT);
+  }
+
+  figma.currentPage.selection = [sp];
+  var built = await buildFromExistingFile({ styleChoice: 'keep' });
+  ok(!!built.measured, 'styled page: it measures the frame');
+  ok(built.applied && built.applied.bound > 0,
+     'styled page: text bindings are applied despite every layer being styled  (' +
+     (built.applied ? built.applied.bound : 0) + ')');
+  eq(h1.textStyleId, 'S:libraryH1', 'styled page: and the style is still attached');
+  ok(!!(h1.boundVariables && h1.boundVariables.fontSize),
+     'styled page: the H1 font size now follows a variable');
+
+  // and that variable really does hold a smaller mobile value
+  var cols16 = await getUiKitCollections(false);
+  var modes16 = await ensureModes(cols16.responsive, breakpointNames(styledCfg));
+  var bound = h1.boundVariables.fontSize;
+  var theVar = await figma.variables.getVariableByIdAsync(bound.id);
+  ok(!!theVar, 'styled page: the binding points at a real variable');
+  if (theVar) {
+    var atDesktop = await variableValue(theVar, modes16.nameToModeId['Desktop']);
+    var atMobile = await variableValue(theVar, modes16.nameToModeId['Mobile']);
+    eq(atDesktop, 52, 'styled page: desktop keeps the size the design had');
+    ok(atMobile < atDesktop, 'styled page: and mobile is smaller  (' + atDesktop + ' -> ' + atMobile + ')');
+  }
+
   print('');
   if (fail === 0) print('ALL PASS (' + pass + ' assertions)');
   else print(fail + ' FAILED, ' + pass + ' passed');

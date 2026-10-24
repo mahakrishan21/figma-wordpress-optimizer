@@ -5769,7 +5769,7 @@ function tokenRoles(variable) {
 // the first. Every local variable is a candidate now, and the file's own
 // come first so a tie resolves to the vocabulary the designer already uses.
 async function adoptionPools(cols, modeId) {
-  var colours = [], spaces = [], radii = [], sizes = [], fonts = [], leadings = [];
+  var colours = [], spaces = [], radii = [], sizes = [], fonts = [], leadings = [], tracking = [];
 
   function isKit(id) {
     return (cols.primitives && id === cols.primitives.id) ||
@@ -5801,8 +5801,11 @@ async function adoptionPools(cols, modeId) {
                      : ne.resolved[modeOf(ne.collection)];
     if (typeof val !== 'number') continue;
     var roles = tokenRoles(ne.variable);
-    if (roles.count || roles.opacity || roles.letterSpacing) continue;  // not a length
     var rec = { variable: ne.variable, name: ne.variable.name, value: val, kit: kit, roles: roles };
+    // Tracking is a pool of its own: it is a length in pixels, but one that
+    // must never be offered for a padding or a radius.
+    if (roles.letterSpacing) { tracking.push(rec); continue; }
+    if (roles.count || roles.opacity) continue;  // not a length at all
     if (roles.fontSize) fonts.push(rec);
     if (roles.lineHeight) leadings.push(rec);
     if (roles.gap) spaces.push(rec);
@@ -5812,10 +5815,10 @@ async function adoptionPools(cols, modeId) {
 
   // The file's own vocabulary wins a tie against one the plugin wrote.
   function ownFirst(a, b) { return (a.kit ? 1 : 0) - (b.kit ? 1 : 0); }
-  [colours, spaces, radii, sizes, fonts, leadings].forEach(function (pool) { pool.sort(ownFirst); });
+  [colours, spaces, radii, sizes, fonts, leadings, tracking].forEach(function (pool) { pool.sort(ownFirst); });
 
   return { colours: colours, spaces: spaces, radii: radii, sizes: sizes,
-           fonts: fonts, leadings: leadings };
+           fonts: fonts, leadings: leadings, tracking: tracking };
 }
 
 var ADOPT_SPACE_FIELDS = ['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom',
@@ -5934,9 +5937,20 @@ async function surveyAdoption(roots, opts) {
     }
 
     // ── typography ───────────────────────────────────────────────────────
-    if (node.type === 'TEXT' && textIsStyled(node)) {
-      out.styled++;
-    } else if (node.type === 'TEXT') {
+    // Text that carries a style used to be skipped outright, borrowing the
+    // caution that paints genuinely need: writing node.fills on a styled
+    // layer silently detaches the style. Typography is not like that.
+    // Measured in Figma — bind fontSize on a layer wearing a text style and
+    // the style stays attached, the binding becomes an override, and the
+    // value follows the mode. Skipping them meant a file whose text is all
+    // styled got no typography bindings at all, so switching to Mobile
+    // changed nothing: 388 styled layers, none of them bound.
+    //
+    // Library styles are the case that makes this matter. A style owned by
+    // another file cannot be edited from here, so binding the style is not
+    // an option — binding the layer is the only one.
+    if (node.type === 'TEXT') {
+      if (textIsStyled(node)) out.styled++;      // counted, no longer skipped
       var runs = await textTypeRuns(node);
       for (var rI = 0; rI < runs.length; rI++) {
         var run = runs[rI];
@@ -5961,6 +5975,19 @@ async function surveyAdoption(roots, opts) {
           else {
             var lm = nearestNumberToken(pools.leadings, lh.value, 5);
             if (lm) add(node, 'type', 'lineHeight', lm, Math.round(lh.value) + '%', { range: at });
+          }
+        }
+
+        // Tracking, matched in the unit Figma applies it in. A tracking
+        // token is pixels, so a run stating 20% is compared at its own size.
+        var ls = run.spec ? run.spec.letterSpacing : null;
+        if (ls && typeof ls.value === 'number' && ls.value !== 0 && typeof size === 'number' && size) {
+          if (textFieldBound(node, 'letterSpacing')) out.alreadyBound++;
+          else {
+            var lsPx = ls.unit === 'PERCENT' ? (ls.value / 100) * size : ls.value;
+            var tm = nearestNumberToken(pools.tracking || [], lsPx, 0.5);
+            if (tm) add(node, 'type', 'letterSpacing', tm,
+                        (Math.round(lsPx * 100) / 100) + 'px', { range: at });
           }
         }
       }
@@ -6389,6 +6416,31 @@ function selfTestDiff(before, after) {
     }
   }
   return diffs;
+}
+
+// The styles a design actually WEARS, which is not the same as the styles
+// the file owns. A page can carry 388 layers styled from a shared library
+// and report zero local styles — and those are exactly the ones worth
+// naming, because they cannot be edited from here.
+async function stylesInUse(nodes) {
+  var seen = {}, out = { text: [], paint: [], remote: 0, local: 0 };
+  async function note(kind, id) {
+    if (!id || typeof id !== 'string') return;
+    if (seen[id]) return;
+    seen[id] = true;
+    var st = null;
+    try { st = await figma.getStyleByIdAsync(id); } catch (e) { st = null; }
+    var rec = { name: st ? String(st.name) : '(a style this file cannot read)',
+                remote: !!(st && st.remote) };
+    if (rec.remote) out.remote++; else out.local++;
+    if (kind === 'text') out.text.push(rec); else out.paint.push(rec);
+  }
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (n.type === 'TEXT' && n.textStyleId) await note('text', n.textStyleId);
+    if (n.fillStyleId && typeof n.fillStyleId === 'string') await note('paint', n.fillStyleId);
+  }
+  return out;
 }
 
 async function surveyExistingFile() {
@@ -7443,6 +7495,7 @@ async function buildFromExistingFile(opts) {
   for (var fn in afterAdopt) if (!beforeAdopt[fn]) fromStyles[fn] = true;
 
   // ── 2 ── what the design itself measures to ────────────────────────────
+  result.stylesInUse = await stylesInUse(styleScanNodes([root]));
   var m = await measureDesign(root, cfg);
   Array.prototype.push.apply(result.reasons, m.reasons);
   result.measured = m.measured;
@@ -9758,6 +9811,27 @@ async function handleUiKitMessage(msg) {
         // Say what the design never used, rather than inventing it.
         if (r.notMeasured && r.notMeasured.length) {
           ff.push('nothing found for ' + r.notMeasured.join(', ') + ', so none was invented');
+        }
+        // Issue 4: name the styles rather than make new ones. The plugin
+        // creates no styles at all — but a design wearing library styles
+        // needs them named, because they are where its typography lives and
+        // they cannot be changed from this file.
+        var siu = r.stylesInUse;
+        if (siu && (siu.text.length || siu.paint.length)) {
+          var styleBits = [];
+          if (siu.text.length) {
+            styleBits.push(many(siu.text.length, 'text style') + ' (' +
+              siu.text.slice(0, 4).map(function (x) { return x.name; }).join(', ') +
+              (siu.text.length > 4 ? ', \u2026' : '') + ')');
+          }
+          if (siu.paint.length) {
+            styleBits.push(many(siu.paint.length, 'colour style') + ' (' +
+              siu.paint.slice(0, 3).map(function (x) { return x.name; }).join(', ') +
+              (siu.paint.length > 3 ? ', \u2026' : '') + ')');
+          }
+          ff.push('wearing ' + styleBits.join(' and ') +
+            (siu.remote ? (', ' + siu.remote + ' of them from a library and so left as they are')
+                        : '') + ' \u2014 no new styles were made');
         }
         // What the file already said, kept rather than said again.
         if (r.reused && r.reused.length) {

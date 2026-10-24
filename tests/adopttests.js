@@ -196,7 +196,14 @@ async function run() {
   ok(ss.proposals.filter(function (p) { return p.kind === 'space'; }).length > 0,
      'while its spacing is still offered — only the paint is off limits');
 
-  // 9b ── a text layer using a text style keeps it
+  // 9b ── a text layer using a text style is bound, and keeps the style
+  // This used to assert the opposite. Measured in Figma: binding fontSize on
+  // a layer wearing a text style leaves the style attached and the binding
+  // becomes an override that follows the mode. Skipping those layers meant a
+  // file whose text is all styled — 388 layers of it, in a real one — got no
+  // typography bindings, so a Mobile frame kept its desktop sizes. Library
+  // styles make it unavoidable: a style owned by another file cannot be
+  // edited from here, so the layer is the only thing left to bind.
   await system();
   var st = mkText('Hello');
   st.fontSize = 24;
@@ -204,8 +211,20 @@ async function run() {
   var holder2 = mkFrame({ name: 'Holder', layoutMode: 'VERTICAL', children: [st] });
   figma.currentPage.appendChild(holder2);
   var ts2 = await surveyAdoption([holder2], { fontDelta: 6 });
-  eq(propsFor(ts2, 'type', 'fontSize').length, 0, 'no font size binding onto a styled text layer');
-  ok(ts2.styled > 0, 'counted as styled');
+  eq(propsFor(ts2, 'type', 'fontSize').length, 1, 'a styled text layer IS offered a font size binding');
+  ok(ts2.styled > 0, 'and is still counted as styled, for the report');
+  eq(st.textStyleId, 'T:sometextstyle', 'the style is untouched by proposing it');
+
+  // the colour of styled text is still left alone, because writing fills
+  // really does detach a paint style
+  var styledFill = mkText('Coloured');
+  styledFill.fontSize = 24;
+  styledFill.fillStyleId = 'S:somepaintstyle';
+  styledFill.fills = [{ type: 'SOLID', color: { r: 0.1, g: 0.1, b: 0.1 }, opacity: 1 }];
+  var holder3 = mkFrame({ name: 'Holder3', layoutMode: 'VERTICAL', children: [styledFill] });
+  figma.currentPage.appendChild(holder3);
+  var ts3 = await surveyAdoption([holder3], { fontDelta: 6, colorDelta: 40 });
+  eq(propsFor(ts3, 'color', 'fills').length, 0, 'a style-painted layer is still never repainted');
 
   // ── 10 ── generate FROM a design and bind back INTO it, in one action ──
   fresh8();
