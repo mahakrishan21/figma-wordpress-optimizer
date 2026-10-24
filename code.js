@@ -6178,6 +6178,219 @@ async function adoptTextStyles(cfg, cols, report) {
 }
 
 // What the file already contains, before anything is written.
+// ── The checks that can only be made inside Figma ──────────────────────────
+//
+// Four things about this workflow cannot be proved outside the real plugin,
+// because they all rest on plugin data, which the sandboxes used for testing
+// do not provide: that generated frames persist, that a second run
+// recognises them instead of duplicating them, that a frame you have edited
+// is protected, and that the configuration survives closing the plugin.
+//
+// So the test comes to Figma rather than the other way round. It builds its
+// own frame, runs the whole chain over it, checks each claim, and removes
+// everything it made. It deletes BY ID, only ever the nodes it created
+// itself, because a diagnostic that tidies up by name or by guesswork is a
+// diagnostic that one day deletes somebody's work.
+var SELFTEST_FRAME = '⟦ plugin self-test ⟧';
+var SELFTEST_COLLECTION = '⟦ self-test tokens ⟧';
+
+async function runSelfTest(opts) {
+  opts = opts || {};
+  var out = { checks: [], created: [], cleaned: 0, leftBehind: [], reasons: [], unit: 'check' };
+  var made = [];          // node ids this test created, and nothing else
+  var madeCollections = [];
+
+  function check(name, passed, detail) {
+    out.checks.push({ name: name, pass: !!passed, detail: detail == null ? '' : String(detail) });
+  }
+
+  var savedConfig = readBreakpointConfig();   // put the file back as we found it
+
+  try {
+    var cfg = { preset: 'custom', breakpoints: [
+      { name: 'Desktop', width: 1440 }, { name: 'Tablet', width: 768 }, { name: 'Mobile', width: 375 }] };
+
+    // ── 1 ── the configuration can be written and read back ──────────────
+    var wrote = writeBreakpointConfig(cfg);
+    check('Configuration can be stored', wrote,
+          wrote ? 'figma.root accepted it' : 'this file refused to store plugin data');
+    var readBack = readBreakpointConfig();
+    check('Configuration reads back', !!(readBack && readBack.breakpoints && readBack.breakpoints.length === 3),
+          readBack ? (readBack.breakpoints || []).map(function (b) { return b.name + ' ' + b.width; }).join(', ')
+                   : 'nothing came back');
+
+    // ── 2 ── a frame to work on, built here so nothing of yours is touched
+    var fonts = await resolveKitFonts();
+    var root = figma.createFrame();
+    root.name = SELFTEST_FRAME;
+    made.push(root.id);
+    root.resize(1440, 700);
+    root.layoutMode = 'VERTICAL';
+    root.paddingLeft = 120; root.paddingRight = 120;
+    root.paddingTop = 64; root.paddingBottom = 64;
+    root.itemSpacing = 32;
+    figma.currentPage.appendChild(root);
+
+    var row = figma.createFrame();
+    row.name = 'Cards';
+    row.layoutMode = 'HORIZONTAL';
+    row.itemSpacing = 24;
+    root.appendChild(row);
+    try { row.layoutSizingHorizontal = 'FILL'; } catch (e) {}
+    for (var c = 0; c < 3; c++) {
+      var card = figma.createFrame();
+      card.name = 'Card ' + (c + 1);
+      card.layoutMode = 'VERTICAL';
+      card.itemSpacing = 16;
+      card.paddingLeft = 24; card.paddingRight = 24;
+      card.paddingTop = 24; card.paddingBottom = 24;
+      card.cornerRadius = 8;
+      row.appendChild(card);
+      try { card.layoutSizingHorizontal = 'FILL'; } catch (e) {}
+      var heading = figma.createText();
+      heading.fontName = fonts.bold || fonts.regular;
+      await figma.loadFontAsync(heading.fontName);
+      heading.characters = 'Service ' + (c + 1);
+      heading.fontSize = 32;
+      card.appendChild(heading);
+      var body = figma.createText();
+      body.fontName = fonts.regular;
+      await figma.loadFontAsync(body.fontName);
+      body.characters = 'Copy long enough to wrap once the column narrows on a phone.';
+      body.fontSize = 16;
+      card.appendChild(body);
+    }
+    out.created.push(root.name);
+
+    // ── 3 ── the system, measured from that frame ────────────────────────
+    figma.currentPage.selection = [root];
+    var measured = await measureDesign(root, cfg);
+    check('The frame is measured', measured.rows.length > 0,
+          measured.rows.length + ' tokens, canvas ' +
+          (measured.measured ? measured.measured.canvasWidth : '?') + 'px');
+
+    var gen = await generateScaleVariables(cfg, measured.rows);
+    check('Variables are written', gen.created > 0, gen.created + ' created, ' + gen.reused + ' reused');
+    var cols = await getUiKitCollections(false);
+    if (cols.primitives) madeCollections.push(cols.primitives);
+    if (cols.theme) madeCollections.push(cols.theme);
+    if (cols.responsive) madeCollections.push(cols.responsive);
+
+    // ── 4 ── bound back without moving anything ──────────────────────────
+    var geomBefore = selfTestGeometry(root);
+    var survey = await surveyAdoption([root], {});
+    var applied = await applyAdoption(survey.proposals, {});
+    check('Variables bind to the design', applied.bound > 0,
+          applied.bound + ' bound, ' + applied.failed + ' refused');
+    var geomAfter = selfTestGeometry(root);
+    var moved = selfTestDiff(geomBefore, geomAfter);
+    check('Binding changes nothing visually', moved.length === 0,
+          moved.length ? moved.slice(0, 3).join('; ') : 'every layer identical');
+
+    // ── 5 ── responsive frames ───────────────────────────────────────────
+    figma.currentPage.selection = [root];
+    await makeSelectionFluid({});
+    figma.currentPage.selection = [root];
+    var first = await generateResponsiveFrames(cfg, {});
+    for (var f = 0; f < first.frames.length; f++) made.push(first.frames[f].id);
+    check('Responsive frames are generated', first.created >= 2,
+          first.frames.map(function (x) { return x.name + ' (' + x.breakpoint + ')'; }).join(', ') ||
+          (first.reasons[0] || 'none'));
+    check('Provenance was recorded', !first.unstamped,
+          first.unstamped ? (first.unstamped + ' could not be stamped') : 'every frame stamped');
+
+    // ── 6 ── a second run recognises them instead of duplicating ─────────
+    figma.currentPage.selection = [root];
+    var second = await generateResponsiveFrames(cfg, {});
+    for (var s2 = 0; s2 < second.frames.length; s2++) made.push(second.frames[s2].id);
+    check('A second run creates no duplicates', second.created === 0,
+          second.created + ' created, ' + second.replaced + ' updated');
+
+    // ── 7 ── a frame you edited is protected ─────────────────────────────
+    var tablet = null;
+    for (var tf = 0; tf < first.frames.length; tf++) {
+      if (first.frames[tf].breakpoint === 'Tablet') tablet = await figma.getNodeByIdAsync(first.frames[tf].id);
+    }
+    if (!tablet) {
+      check('An edited frame is protected', false, 'no Tablet frame to edit');
+    } else {
+      var note = figma.createText();
+      note.fontName = fonts.regular;
+      await figma.loadFontAsync(note.fontName);
+      note.characters = 'An edit the designer made';
+      note.fontSize = 16;
+      tablet.appendChild(note);
+      figma.currentPage.selection = [root];
+      var third = await generateResponsiveFrames(cfg, {});
+      for (var s3 = 0; s3 < third.frames.length; s3++) made.push(third.frames[s3].id);
+      check('An edited frame is protected', third.skipped > 0,
+            third.skipped ? (third.skipped + ' left alone') : 'the edit was overwritten');
+    }
+
+    // ── 8 ── no stray variables from running it twice ────────────────────
+    var genAgain = await generateScaleVariables(cfg, measured.rows);
+    check('Rerunning creates no duplicate variables', genAgain.created === 0,
+          genAgain.created + ' created, ' + genAgain.reused + ' reused');
+
+  } catch (e) {
+    out.reasons.push('The self-test stopped early: ' + ((e && e.message) ? e.message : String(e)));
+  }
+
+  // ── tidy up: only what this test made, only by id ──────────────────────
+  var seen = {};
+  for (var m = 0; m < made.length; m++) {
+    if (seen[made[m]]) continue;
+    seen[made[m]] = true;
+    try {
+      var node = await figma.getNodeByIdAsync(made[m]);
+      if (node && !node.removed) { node.remove(); out.cleaned++; }
+    } catch (e) { out.leftBehind.push(made[m]); }
+  }
+  for (var mc = 0; mc < madeCollections.length; mc++) {
+    try { madeCollections[mc].remove(); } catch (e) { /* in use, or already gone */ }
+  }
+  try {
+    if (savedConfig) writeBreakpointConfig(savedConfig);
+    else figma.root.setPluginData(UIKIT_CONFIG_KEY, '');
+  } catch (e) { out.reasons.push('The previous breakpoint configuration could not be restored.'); }
+
+  out.passed = out.checks.filter(function (x) { return x.pass; }).length;
+  out.failed = out.checks.length - out.passed;
+  return out;
+}
+
+function selfTestGeometry(root) {
+  var out = [];
+  (function walk(n) {
+    out.push({
+      id: n.id, name: n.name,
+      x: Math.round((n.x || 0) * 100) / 100, y: Math.round((n.y || 0) * 100) / 100,
+      w: Math.round((n.width || 0) * 100) / 100, h: Math.round((n.height || 0) * 100) / 100,
+      pl: n.paddingLeft, pt: n.paddingTop, gap: n.itemSpacing,
+      r: typeof n.cornerRadius === 'number' ? n.cornerRadius : null,
+      fs: n.type === 'TEXT' ? n.fontSize : null
+    });
+    if (n.children) for (var i = 0; i < n.children.length; i++) walk(n.children[i]);
+  })(root);
+  return out;
+}
+
+function selfTestDiff(before, after) {
+  var byId = {}, diffs = [];
+  for (var a = 0; a < after.length; a++) byId[after[a].id] = after[a];
+  for (var b = 0; b < before.length; b++) {
+    var was = before[b], now = byId[was.id];
+    if (!now) { diffs.push(was.name + ' disappeared'); continue; }
+    var fields = ['x', 'y', 'w', 'h', 'pl', 'pt', 'gap', 'r', 'fs'];
+    for (var f = 0; f < fields.length; f++) {
+      if (was[fields[f]] !== now[fields[f]]) {
+        diffs.push(was.name + '.' + fields[f] + ' ' + was[fields[f]] + ' → ' + now[fields[f]]);
+      }
+    }
+  }
+  return diffs;
+}
+
 async function surveyExistingFile() {
   var paints = (await figma.getLocalPaintStylesAsync()).filter(function (s) { return !s.remote; });
   var texts = (await figma.getLocalTextStylesAsync()).filter(function (s) { return !s.remote; });
@@ -9484,6 +9697,17 @@ async function handleUiKitMessage(msg) {
         if (r.elements && r.elements.created) bits.push(r.elements.created + ' elements');
         summary = 'Design system built — ' + bits.join(', ') + '. One undo reverses all of it.';
       }
+    } else if (msg.type === 'uikit-selftest') {
+      r = await runSelfTest(msg);
+      var sfBits = [r.passed + ' of ' + r.checks.length + ' checks passed'];
+      if (r.failed) {
+        var firstFail = r.checks.filter(function (c) { return !c.pass; })[0];
+        sfBits.push('first failure: ' + firstFail.name + ' \u2014 ' + firstFail.detail);
+      }
+      sfBits.push(r.cleaned + ' test layer' + (r.cleaned === 1 ? '' : 's') + ' removed again');
+      if (r.leftBehind.length) sfBits.push(r.leftBehind.length + ' could not be removed');
+      summary = sfBits.join('. ') + '.';
+      tone = r.failed ? 'warning' : 'success';
     } else if (msg.type === 'uikit-survey-file') {
       r = await surveyExistingFile();
       summary = r.paintStyles + ' paint styles, ' + r.textStyles + ' text styles, ' +
@@ -10590,7 +10814,7 @@ figma.ui.onmessage = async (msg) => {
         msg.type === 'uikit-fluid' || msg.type === 'uikit-survey' ||
         msg.type === 'uikit-adopt' || msg.type === 'uikit-starter' ||
         msg.type === 'uikit-from-design' || msg.type === 'uikit-from-file' ||
-        msg.type === 'uikit-survey-file') {
+        msg.type === 'uikit-survey-file' || msg.type === 'uikit-selftest') {
       await handleUiKitMessage(msg);
       return;
     }

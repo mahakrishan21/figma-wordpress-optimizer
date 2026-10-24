@@ -297,6 +297,27 @@ async function run() {
       JSON.stringify(rr.posted));
   reply({ result:{ rows: ROWS }, state: state(BUILT) });
 
+  // The self-test is the one-button version of the manual Desktop checklist.
+  const stClick = click('uik-selftest');
+  rec('uik-selftest', 'main toolbar', stClick.missing ? 'MISSING'
+      : (stClick.posted.join(',') === 'uikit-selftest' ? 'posts uikit-selftest' : 'UNEXPECTED: ' + stClick.posted.join(',')),
+      JSON.stringify(stClick.posted));
+  // and its results come back as a readable list, not a bare count
+  reply({ result: { checks: [
+            { name: 'Configuration can be stored', pass: true, detail: 'figma.root accepted it' },
+            { name: 'An edited frame is protected', pass: false, detail: 'the edit was overwritten' }
+          ], passed: 1, failed: 1, cleaned: 7, leftBehind: [] },
+          state: state(BUILT) });
+  const stText = text();
+  rec('(self-test results)', 'main screen',
+      /Configuration can be stored/.test(stText) && /An edited frame is protected/.test(stText)
+        ? 'every check is listed by name' : 'CHECKS NOT SHOWN',
+      /all \d+ passed|\d+ of \d+ failed/.test(stText) ? 'with a pass/fail summary' : 'no summary');
+  rec('(self-test results)', 'a failing check',
+      /the edit was overwritten/.test(stText) ? 'shows why it failed' : 'REASON NOT SHOWN', '');
+  rec('(self-test results)', 'cleanup',
+      /removed|Nothing of yours/.test(stText) ? 'says what it removed' : 'NO CLEANUP REPORTED', '');
+
   const rs = click('uik-reset');
   rec('uik-reset', 'main toolbar', act('uik-wizard') ? 'returns to the entry screen' : 'DID NOT RETURN',
       'posted ' + JSON.stringify(rs.posted));

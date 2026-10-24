@@ -5010,7 +5010,7 @@
     preset: 'standard',
     // Export earns its place in the tab but not its screen space: the block
     // is there, closed, until someone wants it.
-    collapsed: { 'uik-export': true }, pendingType: null,
+    collapsed: { 'uik-export': true }, pendingType: null, selfTest: null,
     expanded: {}, pages: {}, names: {}, editing: null,
     ramp: { spacing: 'grid4', spacingBase: null, radius: 'rounded', radiusBase: null },
     screen: 'entry',   // entry | wizard | main
@@ -5707,6 +5707,7 @@
           <button class="btn" data-act="uik-canvas"${KS.busy ? ' disabled' : ''}>${SI.icCanvasDoc}Document on canvas</button>
           <button class="btn" data-act="uik-from-file"${KS.busy || sel !== 1 ? ' disabled' : ''}>${SI.icRead}Measure this frame</button>
           <button class="btn" data-act="uik-reset"${KS.busy ? ' disabled' : ''}>${SI.icSliders}Change breakpoints</button>
+          <button class="btn" data-act="uik-selftest"${KS.busy ? ' disabled' : ''} title="Builds its own frame, runs the whole chain over it, checks what only Figma can answer, and removes everything it made">${SI.icRescan}Self-test</button>
         </div>
       </div>
       ${blockHtml(KS, {
@@ -5715,6 +5716,7 @@
         body: `<div class="sm-actions">${previews}</div>
                <p class="uik-note">Nothing bound stays where it is. That difference is the quickest way to see how much of a frame is actually on the system.</p>`
       })}
+      ${uikSelfTestHtml()}
       ${uikSurveyHtml()}
       ${uikElementsHtml()}
       ${uikResponsiveHtml()}
@@ -5724,6 +5726,34 @@
         body: uikTableHtml()
       })}
       ${uikExportHtml()}`;
+  }
+
+  // The self-test answers the questions only Figma can: that frames persist,
+  // that a second run recognises them, that an edited one is protected, and
+  // that the configuration survives. Its results are worth showing in full,
+  // because a count of passes is no use when one of them failed.
+  function uikSelfTestHtml() {
+    const st = KS.selfTest;
+    if (!st) return '';
+    const rows = st.checks.map(c => `
+      <div class="uik-prop${c.pass ? '' : ' uik-prop-warn'}">
+        <span class="uik-prop-field">${c.pass ? '\u2713' : '\u2715'} ${escHtml(c.name)}</span>
+        <span class="uik-prop-val">${escHtml(c.detail)}</span>
+      </div>`).join('');
+    return blockHtml(KS, {
+      id: 'uik-selftest-block',
+      title: 'Self-test',
+      sub: st.failed ? `${st.failed} of ${st.checks.length} failed`
+                     : `all ${st.checks.length} passed`,
+      count: st.checks.length,
+      countTone: st.failed ? 'warn' : 'ok',
+      body: `<div class="uik-props">${rows}</div>
+        <p class="uik-note">It built its own frame, ran the whole chain over it and removed
+        ${st.cleaned} layer${st.cleaned === 1 ? '' : 's'} again${
+          st.leftBehind && st.leftBehind.length
+            ? `, though ${st.leftBehind.length} could not be removed` : ''}.
+        Nothing of yours was touched.</p>`
+    });
   }
 
   // ── Responsive generation ───────────────────────────────────────────────
@@ -5983,6 +6013,7 @@
         renderUiKit();
         return true;
       }
+      if (msg.result && msg.result.checks) { KS.selfTest = msg.result; }
       if (msg.result && msg.result.proposals) {
         // A survey and an inferred layout both carry "proposals"; only the
         // survey has the matching fields, so tell them apart.
@@ -6056,6 +6087,7 @@
     const act = el.dataset.act;
     if (act === 'toggle') { KS.collapsed[el.dataset.id] = !KS.collapsed[el.dataset.id]; renderUiKit(); return; }
     if (act === 'uik-rescan') { parent.postMessage({ pluginMessage: { type: 'uikit-scan' } }, '*'); return; }
+    if (act === 'uik-selftest') { sendUiKit({ type: 'uikit-selftest' }); return; }
     if (act === 'uik-reset') { KS.screen = 'entry'; renderUiKit(); return; }
     if (act === 'uik-wizard') {
       KS.spec = uikDefaultSpec();

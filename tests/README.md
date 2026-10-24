@@ -14,6 +14,7 @@ no npm install, no network, nothing to keep up to date.
 | `dupgonetests.js` | Near-duplicate detection and merging across styles and variables. |
 | `fromfiletests.js` | Building a system out of a design that already exists: measuring one selected frame — its canvas width, margins, spacing ladder, heading ranking and colours — keeping any styles the file already names, binding it all back, and then generating the Desktop/Tablet/Mobile versions. |
 | `realfilestests.js` | The four sampled real designs as regression cases — reusing a file's own variables instead of duplicating them, two container widths in one page, H5/H6 below body with mixed line-height units, and typography recovered from styled runs where the node reports size 0. |
+| `selftesttests.js` | The in-plugin self-test: that it checks what it claims, removes only the frames it built, leaves an existing design and an existing breakpoint config exactly as it found them, and reports a failure rather than swallowing it. |
 | `workflowtests.js` | The two workflows walked end to end in the order the spec numbers them — Build from Scratch and Build from an Existing File — so a missing step fails by name rather than by symptom. |
 | `qatests.js` | Every design-system message driven through `figma.ui.onmessage`, the way the UI sends them — so routing, the `requestId` the UI correlates on, the undo boundary and the summary line are covered too. |
 | `inbuilttests.js` | The features that shipped before the design-system tab: the audit's rules, ignoring and clearing issues, each automated fix, the copy collector, focus and the window clamp. |
@@ -28,6 +29,18 @@ rejects `?.`, `??` and `\p{...}` property escapes.
 **`jsc` exits 0 even when assertions fail**, so the runner decides from the
 output. A suite that prints `FAIL`, `FAILED`, `THREW` or `Exception` fails the
 run.
+
+## Inside Figma
+
+Four things cannot be proved from here, because they all rest on plugin
+data: that generated frames persist, that a second run recognises them
+instead of duplicating them, that a frame you have edited is protected, and
+that the configuration survives closing the plugin.
+
+The **Self-test** button on the Build design system tab runs those checks in
+the real plugin. It builds its own frame, runs the whole chain over it,
+reports each check by name, and removes every node it created — by id, only
+its own. Run it in a scratch file first.
 
 ## The tab's own buttons
 
