@@ -6760,7 +6760,12 @@ function measureRadii(nodes) {
 // heading, ranked down from h1; everything smaller is secondary copy. That
 // ordering is the whole point — a design's heading levels are a ranking, and
 // measuring recovers the ranking even when the file never named it.
-var MEASURED_TYPE_BELOW = ['body-sm', 'caption'];
+// Two names below body were not enough. A page using 18 for body and 16, 13
+// and 12 below it had the 12 dropped off the end of the scale, and the 12px
+// navigation then matched the 13px token inside tolerance and was bound to
+// it — every nav item rendered a pixel larger and the page grew 1807px.
+// A size the design uses needs a step of its own.
+var MEASURED_TYPE_BELOW = ['body-sm', 'caption', 'overline', 'micro'];
 // Read sizes from the styled RUNS, not from node.fontSize. A headline built
 // as one text node with per-character overrides reports 0 or figma.mixed at
 // node level — in a real file that was the 88px hero, the largest type on
@@ -7663,13 +7668,20 @@ async function buildFromExistingFile(opts) {
     result.survey = await surveyAdoption([root], opts);
     Array.prototype.push.apply(result.reasons, result.survey.reasons);
     var accepted = {};
-    if (opts.exactOnly) {
+    // Exact by default. A near match is a value the plugin would MOVE: the
+    // run above bound 12px text to a 13px token and 15px padding to 14,
+    // which is how a generated desktop came out 22% taller than the design
+    // it was made from. Binding only what already matches keeps the promise
+    // this whole path rests on. opts.exactOnly === false opts into the rest.
+    var exactOnly = opts.exactOnly !== false;
+    if (exactOnly) {
       for (var i = 0; i < result.survey.proposals.length; i++) {
         if (!result.survey.proposals[i].exact) accepted[result.survey.proposals[i].key] = false;
       }
     }
     result.applied = await applyAdoption(result.survey.proposals, accepted);
-    result.nudged = opts.exactOnly ? 0 : result.survey.near;
+    result.nudged = exactOnly ? 0 : result.survey.near;
+    result.heldBack = exactOnly ? result.survey.near : 0;
 
     // Colour never goes through the create-time filter — the survey binds it
     // instead — so without this a colour reused from the file's own
@@ -9937,6 +9949,10 @@ async function handleUiKitMessage(msg) {
         if (r.applied && r.applied.bound) {
           ff.push(r.applied.bound + ' bound back into the design' +
             (r.nudged ? (', ' + r.nudged + ' nudged onto the scale') : ''));
+        }
+        if (r.heldBack) {
+          ff.push(many(r.heldBack, 'value') + ' sat close to a token without matching it and ' +
+            'were left alone, because binding them would have moved the design');
         }
         summary = ff.join('; ') + '.' +
           (r.seededBreakpoints ? ' Desktop, Tablet and Mobile were set up around it.' : '');

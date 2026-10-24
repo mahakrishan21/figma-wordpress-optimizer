@@ -796,6 +796,108 @@ async function run() {
   eq(fh.fontName.family, 'Fira Sans', 'faces: while the heading is still set in the same face');
   eq(fh.fontName.style, 'SemiBold', 'faces: at the same weight');
 
+  // ══ 18 ══ adoption must not move the design, at all ══════════════════
+  // The failure this reproduces: a generated desktop came out 22% taller
+  // than the design it was made from. Every difference was a single pixel —
+  // 12px navigation bound to a 13px token, 15px padding bound to 14 — and
+  // they compounded into 1807px of extra page.
+  freshR();
+  var keepCfg = { preset: 'custom', breakpoints: [
+    { name: 'Desktop', width: 1920 }, { name: 'Tablet', width: 768 }, { name: 'Mobile', width: 375 }] };
+  writeBreakpointConfig(keepCfg);
+
+  var kp = mkFrame({ name: 'Chimney page', width: 1920, height: 1400 });
+  kp.layoutMode = 'VERTICAL'; kp.itemSpacing = 40;
+  kp.paddingLeft = 240; kp.paddingRight = 240;
+  figma.currentPage.appendChild(kp);
+  // Eight spacing steps the page repeats, which is all the scale keeps...
+  var ladder = [8, 16, 24, 32, 48, 56, 64, 72];
+  for (var sl = 0; sl < ladder.length; sl++) {
+    for (var rep = 0; rep < 4; rep++) {
+      var spacer = mkFrame({ name: 'Spacer ' + ladder[sl], width: 1440, height: 20 });
+      spacer.layoutMode = 'VERTICAL';
+      spacer.paddingTop = ladder[sl]; spacer.paddingBottom = ladder[sl];
+      kp.appendChild(spacer);
+    }
+  }
+  var topBar = mkFrame({ name: 'Top Bar', width: 1440, height: 44 });
+  topBar.layoutMode = 'HORIZONTAL'; topBar.itemSpacing = 46;
+  // ...so this 15, used once, falls off the end of the scale. The nearest
+  // token is 16, one pixel away and inside tolerance. Binding it would move
+  // the bar, which is exactly the compounding that grew a real page by 22%.
+  topBar.paddingTop = 15; topBar.paddingBottom = 15;
+  kp.appendChild(topBar);
+  // navigation at 12px — a size the scale must keep rather than round
+  for (var nv = 0; nv < 6; nv++) {
+    var navItem = mkText('Navigation Item', 'Nav');
+    navItem.fontSize = 12;
+    navItem.x = nv * 110; navItem.y = 0;
+    topBar.appendChild(navItem);
+  }
+  // the sizes that dominate, so 12 is the smallest of several
+  var head = mkText('Our Simple 4 Step Chimney Cleaning Process', 'H');
+  head.fontSize = 55; kp.appendChild(head);
+  var sub = mkText('Consultation and Scheduling', 'H3');
+  sub.fontSize = 28; kp.appendChild(sub);
+  for (var bd = 0; bd < 8; bd++) {
+    var para = mkText('Body copy that dominates the page and sets what body means here.', 'P');
+    para.fontSize = 18; kp.appendChild(para);
+  }
+  for (var sm = 0; sm < 3; sm++) {
+    var small = mkText('Smaller supporting line', 'S');
+    small.fontSize = 16; kp.appendChild(small);
+  }
+  var cap = mkText('A caption', 'C');
+  cap.fontSize = 13; kp.appendChild(cap);
+
+  // exactly what the design looks like before anything is applied
+  function snapshot(root) {
+    var out = [];
+    (function walk(n) {
+      out.push({ name: n.name, w: Math.round((n.width || 0) * 10) / 10,
+                 h: Math.round((n.height || 0) * 10) / 10,
+                 pt: n.paddingTop, pb: n.paddingBottom, pl: n.paddingLeft,
+                 gap: n.itemSpacing, fs: n.type === 'TEXT' ? n.fontSize : null });
+      if (n.children) for (var i = 0; i < n.children.length; i++) walk(n.children[i]);
+    })(root);
+    return out;
+  }
+  var was = snapshot(kp);
+
+  figma.currentPage.selection = [kp];
+  var kept = await buildFromExistingFile({ styleChoice: 'keep' });
+  var now = snapshot(kp);
+
+  var moved = [];
+  for (var q = 0; q < was.length && q < now.length; q++) {
+    ['w','h','pt','pb','pl','gap','fs'].forEach(function (f) {
+      if (was[q][f] !== now[q][f]) {
+        moved.push(was[q].name + '.' + f + ' ' + was[q][f] + '->' + now[q][f]);
+      }
+    });
+  }
+  eq(moved.length, 0, 'preserve: adoption moves nothing  (' + moved.slice(0, 4).join('; ') + ')');
+  ok(kept.applied && kept.applied.bound > 0,
+     'preserve: while still binding what matches exactly  (' + (kept.applied ? kept.applied.bound : 0) + ')');
+  eq(kept.nudged, 0, 'preserve: nothing was nudged');
+
+  // the 12px navigation keeps 12, and is never bound to a 13px token
+  var navs = kp.children.filter(function (c) { return c.name === 'Top Bar'; })[0].children;
+  navs.forEach(function (nvItem) {
+    eq(nvItem.fontSize, 12, 'preserve: the navigation is still 12px');
+  });
+  var bar = kp.children.filter(function (c) { return c.name === 'Top Bar'; })[0];
+  eq(bar.paddingTop, 15, 'preserve: a 15 with only a 16 nearby keeps its 15');
+  ok(!(bar.boundVariables && bar.boundVariables.paddingTop),
+     'preserve: and is left unbound rather than snapped');
+  ok(kept.heldBack > 0, 'preserve: the values held back are counted  (' + kept.heldBack + ')');
+  ok((kept.reasons.join(' ') + ' ').length > 0, 'preserve: and reported');
+
+  // and the scale keeps a step for 12, rather than dropping it off the end
+  var typeNames = (kept.measured.type || []).map(function (t) { return t.name + ':' + t.size; });
+  ok(typeNames.some(function (t) { return /:12$/.test(t); }),
+     'preserve: 12px has a step of its own  (' + typeNames.join(' ') + ')');
+
   print('');
   if (fail === 0) print('ALL PASS (' + pass + ' assertions)');
   else print(fail + ' FAILED, ' + pass + ' passed');
